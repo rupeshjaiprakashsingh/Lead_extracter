@@ -1,0 +1,6 @@
+2026/05/01-15:21:41.966 da18 Reusing MANIFEST C:\Users\srupesh\.gemini\antigravity\scratch\lead-automation\.wa_session_data\Default\Local Storage\leveldb/MANIFEST-000001
+2026/05/01-15:21:41.979 da18 Recovering log #3
+2026/05/01-15:21:41.989 da18 Reusing old log C:\Users\srupesh\.gemini\antigravity\scratch\lead-automation\.wa_session_data\Default\Local Storage\leveldb/000003.log 
+2026/05/01-15:23:43.781 52c8 Level-0 table #5: started
+2026/05/01-15:23:43.805 52c8 Level-0 table #5: 20513 bytes OK
+2026/05/01-15:23:43.813 52c8 Delete type=0 #3

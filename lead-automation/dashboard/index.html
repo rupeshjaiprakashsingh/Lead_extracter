@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>🤖 Lead CRM</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div class="hdr">
+  <div style="font-size:24px">🤖</div>
+  <div><h1>Lead Automation CRM</h1><div class="sub">Google Maps → WhatsApp + Email Outreach</div></div>
+  <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
+    <span id="db-badge" class="badge-sm s-warn">⏳ DB</span>
+    <span id="wa-badge" class="badge-sm s-err">⚪ WA</span>
+    <span id="clock" style="font-size:11px;color:#64748b"></span>
+  </div>
+</div>
+
+<!-- Tabs -->
+<div class="tabs">
+  <button class="tab active" onclick="switchTab('leads')">📋 Leads</button>
+  <button class="tab" onclick="switchTab('followup')">🔄 Follow-Up</button>
+  <button class="tab" onclick="switchTab('settings')">⚙️ Settings</button>
+</div>
+
+<!-- ═══════ LEADS TAB ═══════ -->
+<div id="tab-leads" class="tab-body">
+  <div class="stats" id="stats-bar"></div>
+
+  <div class="ctrl">
+    <div class="ig"><label>Keyword</label><input type="text" id="kw" value="refurbished laptop" style="width:170px"></div>
+    <div class="ig"><label>City</label><input type="text" id="city" value="Lucknow" style="width:120px"></div>
+    <div class="ig"><label>Limit</label><input type="number" id="maxr" value="9999" min="5" style="width:80px"></div>
+    <button class="btn b-blue" id="btn-scrape" onclick="doScrape()">🔍 Extract</button>
+    <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <button class="btn b-auto" id="btn-autosend" onclick="startAutoSend()">🚀 Auto-Send WA</button>
+      <button class="btn b-green" onclick="startFollowup('wa')">🔄 Follow-Up WA</button>
+      <a href="/api/leads/export" class="btn b-gray" style="text-decoration:none">📥 Export Excel</a>
+      <button class="btn b-gray" onclick="importManual()">➕ Add</button>
+      <button class="btn b-red" onclick="clearAll()">🗑 Clear</button>
+    </div>
+  </div>
+
+  <!-- Filters -->
+  <div class="filters">
+    <input type="text" id="f-search" placeholder="🔍 Search name, phone, email..." style="width:240px" oninput="debounceFetch()">
+    <select id="f-cat" onchange="fetchLeads()"><option value="">All Categories</option></select>
+    <select id="f-status" onchange="fetchLeads()">
+      <option value="">All Status</option>
+      <option value="new">🆕 New</option>
+      <option value="contacted">📞 Contacted</option>
+      <option value="followup">🔄 Follow-Up</option>
+      <option value="interested">🔥 Interested</option>
+      <option value="converted">✅ Converted</option>
+      <option value="not_interested">❌ Not Interested</option>
+    </select>
+    <select id="f-city" onchange="fetchLeads()"><option value="">All Cities</option></select>
+    <select id="f-limit" onchange="fetchLeads()">
+      <option value="25">25/page</option><option value="50">50</option><option value="100">100</option>
+    </select>
+  </div>
+
+  <!-- Progress -->
+  <div id="progress-panel">
+    <div class="prog-title"><span id="prog-icon" class="pulse">📤</span> <span id="prog-title-txt">Working...</span></div>
+    <div class="prog-bar-wrap"><div class="prog-bar" id="prog-bar"></div></div>
+    <div class="prog-stats">
+      <span>✅ <b id="prog-sent" style="color:#34d399">0</b></span>
+      <span>❌ <b id="prog-failed" style="color:#f87171">0</b></span>
+      <span>📋 <b id="prog-total" style="color:#60a5fa">0</b></span>
+    </div>
+    <div class="prog-current" id="prog-current">...</div>
+    <div class="prog-log" id="prog-log"></div>
+  </div>
+
+  <!-- Table -->
+  <div class="tbl-wrap" id="tbl-wrap"><div class="empty">🔍 Loading...</div></div>
+
+  <!-- Pagination -->
+  <div class="pager" id="pager"></div>
+</div>
+
+<!-- ═══════ FOLLOW-UP TAB ═══════ -->
+<div id="tab-followup" class="tab-body" style="display:none">
+  <div style="padding:20px 28px">
+    <h2 style="font-size:18px;margin-bottom:14px">🔄 AI Follow-Up Manager</h2>
+    <p style="color:#64748b;font-size:13px;margin-bottom:18px">Leads that have been contacted but need follow-up. AI generates personalized follow-up messages.</p>
+    <div style="display:flex;gap:8px;margin-bottom:18px">
+      <button class="btn b-green" onclick="startFollowup('wa')">📱 Follow-Up via WhatsApp</button>
+      <button class="btn b-blue" onclick="startFollowup('email')">📧 Follow-Up via Email</button>
+      <button class="btn b-auto" onclick="startFollowup('both')">🚀 Both WA + Email</button>
+    </div>
+    <div id="followup-list"><div class="empty">Loading...</div></div>
+  </div>
+</div>
+
+<!-- ═══════ SETTINGS TAB ═══════ -->
+<div id="tab-settings" class="tab-body" style="display:none">
+  <div style="padding:20px 28px;max-width:700px">
+    <h2 style="font-size:18px;margin-bottom:18px">⚙️ Configuration</h2>
+
+    <!-- UltraMsg -->
+    <div class="config-section">
+      <h3>📱 UltraMsg WhatsApp API</h3>
+      <div class="cfg-grid">
+        <div class="ig"><label>Instance ID</label><input type="text" id="s-um-id" style="width:200px"></div>
+        <div class="ig"><label>Token</label><input type="password" id="s-um-token" style="width:260px"></div>
+        <button class="btn b-green" onclick="testUltraMsg()">🔌 Test</button>
+      </div>
+      <div id="um-status" class="cfg-status"></div>
+      <div class="steps-mini">
+        <b>Setup:</b> Go to <a href="https://ultramsg.com" target="_blank">ultramsg.com</a> → Create Instance → Scan QR → Copy Instance ID & Token
+      </div>
+    </div>
+
+    <!-- SMTP -->
+    <div class="config-section">
+      <h3>📧 SMTP Email Configuration</h3>
+      <div class="cfg-grid">
+        <div class="ig"><label>SMTP Host</label><input type="text" id="s-smtp-host" value="smtp.gmail.com" style="width:200px"></div>
+        <div class="ig"><label>Port</label><input type="number" id="s-smtp-port" value="587" style="width:80px"></div>
+        <div class="ig"><label>Secure (SSL)</label><select id="s-smtp-secure" style="padding:8px;background:#1a2035;color:#e2e8f0;border:1px solid #2d3748;border-radius:7px"><option value="false">No (TLS)</option><option value="true">Yes (SSL)</option></select></div>
+      </div>
+      <div class="cfg-grid" style="margin-top:8px">
+        <div class="ig"><label>Email/Username</label><input type="text" id="s-smtp-user" placeholder="your@gmail.com" style="width:240px"></div>
+        <div class="ig"><label>App Password</label><input type="password" id="s-smtp-pass" placeholder="App password" style="width:200px"></div>
+        <button class="btn b-blue" onclick="testSmtp()">🔌 Test SMTP</button>
+      </div>
+      <div class="cfg-grid" style="margin-top:8px">
+        <div class="ig"><label>From Name</label><input type="text" id="s-smtp-from" value="Digital Growth Team" style="width:240px"></div>
+      </div>
+      <div id="smtp-status" class="cfg-status"></div>
+      <div class="steps-mini">
+        <b>Gmail:</b> Enable 2FA → Create App Password at <a href="https://myaccount.google.com/apppasswords" target="_blank">myaccount.google.com/apppasswords</a>
+      </div>
+    </div>
+
+    <button class="btn b-blue" onclick="saveSettings()" style="margin-top:14px">💾 Save All Settings</button>
+    <span id="save-status" style="margin-left:12px;font-size:12px;color:#34d399"></span>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
