@@ -136,25 +136,49 @@ async function doScrape(){
 async function startAutoSend(){
   if(sending)return alert('Already sending');
   const sel=getSelected();
-  const count=sel.length||leads.filter(b=>b.phone&&!b.wa_sent).length;
-  if(!count)return alert('No pending leads');
-  if(!confirm(`🚀 Send WhatsApp to ${count} leads?`))return;
+  if(!sel.length) return alert('Please select at least one lead to send WhatsApp messages.');
+  if(!confirm(`⚠️ Warning: You asked for automation.\n\nWe will now open a Chrome window and automatically click 'Send' for you. This will take ~15 seconds per lead to prevent WhatsApp from banning your account.\n\nSend WhatsApp to ${sel.length} selected leads?`))return;
   sending=true;
   document.getElementById('btn-autosend').disabled=true;
-  showProgress('Sending via UltraMsg API...');
+  
+  showProgress('Automating WhatsApp Web...');
   connectSSE();
-  await fetch('/api/send/wa',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:sel.length?sel:null})});
-  plog('Send job started','in');
+  
+  try {
+      await fetch('/api/send/wa',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:sel})});
+      plog('Send job started','in');
+  } catch(err) {
+      alert('Error: ' + err.message);
+      sending=false;
+      document.getElementById('btn-autosend').disabled=false;
+  }
 }
 
 // ── Follow-up ───────────────────────────────────────────────
 async function startFollowup(channel){
   const sel=getSelected();
-  if(!confirm(`🔄 Send ${channel.toUpperCase()} follow-up to ${sel.length||'all due'} leads?`))return;
-  showProgress('Sending AI follow-ups...');
-  connectSSE();
-  await fetch('/api/send/followup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:sel.length?sel:null,channel})});
-  plog('Follow-up started','in');
+  if(!sel.length) return alert(`Please select at least one lead for ${channel.toUpperCase()} follow-up.`);
+  
+  if(channel === 'email' || channel === 'both') {
+      if(!confirm(`🔄 Send Email follow-ups to ${sel.length} selected leads via API?`))return;
+      showProgress('Sending Email follow-ups...');
+      connectSSE();
+      await fetch('/api/send/followup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:sel,channel:'email'})});
+      plog('Email follow-up started','in');
+  }
+  
+  if(channel === 'wa' || channel === 'both') {
+      if(!confirm(`⚠️ Automating WhatsApp Web for ${sel.length} selected WA follow-ups. Continue?`))return;
+      
+      showProgress('Automating WA follow-ups...');
+      connectSSE();
+      try {
+          await fetch('/api/send/followup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:sel,channel:'wa'})});
+          plog('WA Follow-up started','in');
+      } catch(e) {
+          alert(e.message);
+      }
+  }
 }
 
 async function loadFollowups(){

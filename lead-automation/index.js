@@ -33,9 +33,9 @@ app.get('/api/progress', (req, res) => {
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
     registerSSE(res);
-    ultraMsg.registerSSE(res);
+    require('./playwright-sender').registerSSE(res);
     res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
-    req.on('close', () => { removeSSE(res); ultraMsg.removeSSE(res); });
+    req.on('close', () => { removeSSE(res); require('./playwright-sender').removeSSE(res); });
 });
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -217,135 +217,103 @@ app.get('/api/leads/export', async (req, res) => {
     } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── POST Send WhatsApp (UltraMsg) ─────────────────────────────
+// ── GET lead message (for manual WA sending) ──────────────────
+app.get('/api/leads/:id/message', async (req, res) => {
+    try {
+        const lead = await Lead.findById(req.params.id);
+        if(!lead) return res.status(404).json({error: 'Not found'});
+        const type = req.query.type;
+        let text = '';
+        if(type === 'wa') text = await buildInitialWA(lead);
+        else if(type === 'email') text = buildInitialEmail(lead).html;
+        else if(type === 'followup_wa') text = await buildFollowupWA(lead, (lead.followup_count||0)+1);
+        
+        res.json({ phone: lead.phone, text });
+    } catch(e) { res.status(500).json({error: e.message}); }
+});
+
+// ── POST mark WA sent (manual) ────────────────────────────────
+app.post('/api/leads/:id/mark-wa', async (req, res) => {
+    try {
+        const type = req.query.type || 'wa';
+        const today = todayStr();
+        if (type === 'wa') {
+            await Lead.findByIdAndUpdate(req.params.id, {
+                $set:  { wa_sent: true, wa_sent_at: new Date(), wa_last_date: today, status: 'contacted' },
+                $inc:  { wa_count: 1 },
+                $push: { activity: { type: 'wa_sent', message: 'Initial WA sent manually', date: new Date() } }
+            });
+        } else if (type === 'followup_wa') {
+            const lead = await Lead.findById(req.params.id).lean();
+            const followupNum = (lead.followup_count || 0) + 1;
+            await Lead.findByIdAndUpdate(req.params.id, {
+                $inc:  { wa_count: 1, followup_count: 1 },
+                $set:  { wa_last_date: today, next_followup: new Date(Date.now() + 7*24*60*60*1000), status: 'followup' },
+                $push: { activity: { type: 'wa_sent', message: `Followup #${followupNum} WA sent manually`, date: new Date() } }
+            });
+        }
+        res.json({ success: true });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── POST Send WhatsApp (Local Automation via Playwright) ──────
 app.post('/api/send/wa', async (req, res) => {
     const { ids } = req.body;
-    res.json({ success: true, message: 'Auto-send started!' });
-
+    res.json({ success: true, message: 'Local WA Auto-send started!' });
     setImmediate(async () => {
-        const cfg = ultraMsg.loadConfig();
-        if (!cfg.instanceId || !cfg.token) {
-            emit({ type: 'error', message: '❌ UltraMsg not configured. Go to Settings.' });
-            return;
-        }
-
-        const filter = ids?.length
-            ? { _id: { $in: ids }, phone: { $exists: true, $ne: '' } }
-            : { phone: { $exists: true, $ne: '' }, wa_sent: false };
-
-        const leads = await Lead.find(filter).lean();
-        const MAX_PER_DAY = 2;
-        const today = todayStr();
-
-        emit({ type: 'start', total: leads.length });
-        let sent = 0, failed = 0, skipped = 0;
-
-        for (let i = 0; i < leads.length; i++) {
-            const lead = leads[i];
-
-            // Check same-day limit
-            const todaySent = (lead.activity || []).filter(a =>
-                a.type === 'wa_sent' && new Date(a.date).toISOString().slice(0,10) === today
-            ).length;
-            if (todaySent >= MAX_PER_DAY) {
-                skipped++;
-                emit({ type: 'skipped', name: lead.name, reason: `Daily limit (${MAX_PER_DAY}) reached`, sent, failed });
-                continue;
-            }
-
-            const msg = buildInitialWA(lead);
-            emit({ type: 'sending', current: i+1, total: leads.length, name: lead.name, phone: lead.raw_phone || lead.phone, sent, failed });
-
-            try {
-                await ultraMsg.sendSingleMessage(cfg, lead.phone, msg);
-
-                await Lead.findByIdAndUpdate(lead._id, {
-                    $set:  { wa_sent: true, wa_sent_at: new Date(), wa_last_date: today, status: 'contacted' },
-                    $inc:  { wa_count: 1 },
-                    $push: { activity: { type: 'wa_sent', message: 'Initial WA sent', date: new Date() } }
-                });
-
-                sent++;
-                emit({ type: 'sent', name: lead.name, sent, failed, total: leads.length });
-                if (i < leads.length - 1) await sleep(6000);
-            } catch(e) {
-                failed++;
-                emit({ type: 'failed', name: lead.name, reason: e.message, sent, failed });
-                await sleep(1000);
-            }
-        }
-        emit({ type: 'done', sent, failed, skipped, total: leads.length });
+        const { sendLocalWA } = require('./playwright-sender');
+        await sendLocalWA(ids, false);
     });
 });
 
-// ── POST Send Follow-up (AI) ──────────────────────────────────
+// ── POST Send Follow-up (Email API + WA Local) ──────────────────────
 app.post('/api/send/followup', async (req, res) => {
-    const { ids, channel } = req.body; // channel: 'wa' | 'email' | 'both'
+    const { ids, channel } = req.body; 
     res.json({ success: true, message: 'Follow-up started!' });
 
     setImmediate(async () => {
-        const today = todayStr();
-        const filter = ids?.length
-            ? { _id: { $in: ids } }
-            : { wa_sent: true, next_followup: { $lte: new Date() } };
-
-        const leads = await Lead.find(filter).lean();
-        const cfg   = ultraMsg.loadConfig();
-        let sent = 0, failed = 0;
-
-        emit({ type: 'start', total: leads.length });
-
-        for (let i = 0; i < leads.length; i++) {
-            const lead = leads[i];
-            const followupNum = (lead.followup_count || 0) + 1;
-
-            // Check same-day limit (max 1 followup per day per lead)
-            const todayWA = (lead.activity || []).filter(a =>
-                a.type === 'wa_sent' && new Date(a.date).toISOString().slice(0,10) === today
-            ).length;
-
-            if (todayWA >= 2) {
-                emit({ type: 'skipped', name: lead.name, reason: 'Daily limit reached' });
-                continue;
-            }
-
-            emit({ type: 'sending', current: i+1, total: leads.length, name: lead.name, sent, failed });
-
-            let waDone = false, emailDone = false;
-
-            // Send WhatsApp follow-up
-            if ((channel === 'wa' || channel === 'both') && lead.phone && cfg.instanceId) {
-                try {
-                    const msg = buildFollowupWA(lead, followupNum);
-                    await ultraMsg.sendSingleMessage(cfg, lead.phone, msg);
-                    await Lead.findByIdAndUpdate(lead._id, {
-                        $inc:  { wa_count: 1, followup_count: 1 },
-                        $set:  { wa_last_date: today, next_followup: new Date(Date.now() + 7*24*60*60*1000), status: 'followup' },
-                        $push: { activity: { type: 'wa_sent', message: `Followup #${followupNum} WA sent`, date: new Date() } }
-                    });
-                    waDone = true;
-                    await sleep(5000);
-                } catch(e) { console.error('Followup WA error:', e.message); }
-            }
-
-            // Send Email follow-up
-            if ((channel === 'email' || channel === 'both') && lead.email) {
-                try {
-                    const { subject, html } = buildFollowupEmail(lead, followupNum);
-                    await sendEmail(lead.email, subject, html);
-                    await Lead.findByIdAndUpdate(lead._id, {
-                        $inc:  { email_count: 1 },
-                        $set:  { email_sent: true, email_last_date: today },
-                        $push: { activity: { type: 'email_sent', message: `Followup #${followupNum} email sent`, date: new Date() } }
-                    });
-                    emailDone = true;
-                } catch(e) { console.error('Followup email error:', e.message); }
-            }
-
-            if (waDone || emailDone) { sent++; emit({ type: 'sent', name: lead.name, sent, failed, total: leads.length }); }
-            else { failed++; emit({ type: 'failed', name: lead.name, reason: 'No channel available', sent, failed }); }
+        if (channel === 'wa' || channel === 'both') {
+            const { sendLocalWA } = require('./playwright-sender');
+            await sendLocalWA(ids, true);
         }
-        emit({ type: 'done', sent, failed, total: leads.length });
+
+        if (channel === 'email' || channel === 'both') {
+            const today = todayStr();
+            const filter = ids?.length
+                ? { _id: { $in: ids } }
+                : { wa_sent: true, next_followup: { $lte: new Date() } };
+
+            const leads = await Lead.find(filter).lean();
+            let sent = 0, failed = 0;
+
+            emit({ type: 'start', total: leads.length });
+
+            for (let i = 0; i < leads.length; i++) {
+                const lead = leads[i];
+                const followupNum = (lead.followup_count || 0) + 1;
+
+                emit({ type: 'sending', current: i+1, total: leads.length, name: lead.name, sent, failed });
+
+                let emailDone = false;
+
+                if (lead.email) {
+                    try {
+                        const { subject, html } = buildFollowupEmail(lead, followupNum);
+                        await sendEmail(lead.email, subject, html);
+                        await Lead.findByIdAndUpdate(lead._id, {
+                            $inc:  { email_count: 1 },
+                            $set:  { email_sent: true, email_last_date: today },
+                            $push: { activity: { type: 'email_sent', message: `Followup #${followupNum} email sent`, date: new Date() } }
+                        });
+                        emailDone = true;
+                    } catch(e) { console.error('Followup email error:', e.message); }
+                }
+
+                if (emailDone) { sent++; emit({ type: 'sent', name: lead.name, sent, failed, total: leads.length }); }
+                else { failed++; emit({ type: 'failed', name: lead.name, reason: 'No email address', sent, failed }); }
+            }
+            emit({ type: 'done', sent, failed, total: leads.length });
+        }
     });
 });
 

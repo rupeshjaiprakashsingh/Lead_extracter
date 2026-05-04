@@ -10,7 +10,9 @@
     "send-email": "node email-sender.js"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "dotenv": "^17.4.2",
     "express": "^4.22.1",
     "mongoose": "^9.6.1",
     "nodemailer": "^6.10.1",

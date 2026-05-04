@@ -1,80 +1,132 @@
 // AI-style personalized message generator (no API key needed)
 // Generates context-aware follow-up messages based on lead data
 
+const { GoogleGenerativeAI } = require("@google/generative-ai");
+require('dotenv').config();
+
+const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
+const aiModel = genAI ? genAI.getGenerativeModel({ model: "gemini-1.5-flash" }) : null;
+
 function daysSince(date) {
     if (!date) return 999;
     return Math.floor((Date.now() - new Date(date)) / (1000 * 60 * 60 * 24));
 }
 
-function buildInitialWA(lead) {
-    const name     = lead.name || 'there';
-    const rating   = lead.rating || '';
-    const reviews  = lead.reviews || '';
-    const hasWeb   = lead.website && !lead.website.includes('facebook') && !lead.website.includes('instagram');
-    const category = lead.category || 'business';
-
-    const ratingLine = rating ? `⭐ ${rating} stars with ${reviews} reviews — bahut achha!` : '';
-
-    const painPoints = hasWeb
-        ? `🔴 Website hai but Google Ads campaign nahi — competitors aapke customers le ja rahe hain\n🔴 Sirf ${reviews||'kuch'} reviews — zyada reviews se pehle trust milta hai`
-        : `🔴 Website nahi hai — online customers miss ho rahe hain\n🔴 Google Maps profile weak hai — competitors aage hain\n🔴 Digital presence zero — aaj ke time mein yeh bahut badi kami hai`;
-
-    return `Namaste! 🙏
-
-Aapka *${name}* Google Maps pe dekha — ${ratingLine} 👏
-
-Lekin ek important cheez share karna tha:
-
-${painPoints}
-
-Main aapke liye laya hoon:
-✅ *Google Ads Campaign* — "${lead.keyword || lead.city} ${category}" me top mein aao
-✅ *${hasWeb ? 'Landing Page Optimization' : 'Professional Website'}* — leads convert karein
-✅ *Review Generation Strategy* — reviews fast badhaao
-✅ *Social Media* — Instagram & Reels se brand viral karo
-
-Kya ek *FREE 10-minute call* ho sakti hai? Main aapko poora plan share karunga. 🙏
-
-📞 Reply "YES" ya Call karein!`;
+function cleanName(rawName) {
+    if (!rawName) return '';
+    // Take only the first part before a pipe, hyphen, or comma
+    let cleaned = rawName.split(/\||-|,/)[0].trim();
+    // If it's still weirdly long (keyword stuffing), just take first 4 words
+    if (cleaned.split(' ').length > 4) {
+        cleaned = cleaned.split(' ').slice(0, 4).join(' ');
+    }
+    return cleaned;
 }
 
-function buildFollowupWA(lead, followupNum) {
-    const name = lead.name || 'Sir/Ma\'am';
-    const days = daysSince(lead.wa_sent_at);
+function getRandom(arr) {
+    return arr[Math.floor(Math.random() * arr.length)];
+}
+
+async function buildInitialWA(lead) {
+    const name = cleanName(lead.name) || 'sir/ma\'am';
+    const hasWeb = lead.website && !lead.website.includes('facebook') && !lead.website.includes('instagram');
+    
+    if (aiModel) {
+        try {
+            const prompt = `Write a short, highly professional WhatsApp cold outreach message in conversational Hinglish.
+Target Business Name: ${name}
+Has Website: ${hasWeb}
+Google Reviews: ${lead.reviews ? lead.rating + ' stars' : 'Unknown'}
+
+Rules:
+1. Max 3-4 short sentences. Extremely conversational.
+2. Do NOT sound like a sales bot. Sound like a real digital marketing consultant casually reaching out.
+3. If they don't have a website (Has Website: false), politely point out they might be losing online customers.
+4. If they have a website, say their Google ranking could be optimized to beat competitors.
+5. Ask for a quick 5-min call at the end.
+6. Max 2 emojis in the whole message.
+7. Use WhatsApp bolding (*word*) for important keywords.
+8. Only output the message text itself.`;
+            
+            const result = await aiModel.generateContent(prompt);
+            return result.response.text().replace(/\*\*/g, '*').trim();
+        } catch (e) {
+            console.log('Gemini API failed, falling back to Spintax:', e.message);
+        }
+    }
+
+    // Fallback to Spintax
+    const greeting = getRandom(['Hello!', 'Hi there!', 'Namaste!', 'Hi!']);
+    const intro = getRandom([
+        'Main abhi Google par search kar raha tha',
+        'Main local businesses check kar raha tha',
+        'Google Maps par dekhte waqt'
+    ]);
+    
+    let msg = `${greeting} 👋\n\n${intro} aur mujhe aapka *"${name}"* mila. `;
+    
+    if (lead.rating && lead.reviews) {
+        msg += getRandom([
+            `Aapke reviews kaafi acche hain (*${lead.rating}⭐*)!\n\n`,
+            `Great to see your positive reviews (*${lead.rating}⭐*)!\n\n`
+        ]);
+    } else {
+        msg += `\n\n`;
+    }
+
+    msg += `Lekin maine ek cheez notice ki — `;
+    if (!hasWeb) {
+        msg += getRandom([
+            `aapki koi proper *website nahi hai* aur *online presence thodi missing* hai. `,
+            `aapki *online website missing* hai jisse digital presence weak ho rahi hai. `
+        ]);
+    } else {
+        msg += getRandom([
+            `aapki *Google ranking utni optimized nahi hai* jitni honi chahiye. `,
+            `aapki website to hai but *Google par proper visibility missing* hai. `
+        ]);
+    }
+
+    msg += `Aaj kal customers sab kuch Google pe search karke aate hain, aur is wajah se aapke kaafi *potential customers competitors ke paas ja rahe hain*.\n\n`;
+    
+    const pitch = getRandom([
+        `Main ek *digital marketing consultant* hu. Hum local businesses ko *online grow* karne mein help karte hain. `,
+        `Hum ek digital agency hain jo clinic aur businesses ki *daily inquiries badhane* mein help karte hain. `
+    ]);
+    
+    msg += `${pitch}Kya aap free hain toh hum ek *5-min ki quick call* par is baare mein discuss kar sakte hain?\n\n`;
+    
+    msg += getRandom([
+        `Please let me know if it's a good time to call you. Thank you!`,
+        `Agar aap interested hain toh please reply karein. Thanks!`,
+        `Aap kis time free honge baat karne ke liye?`
+    ]);
+    
+    return msg;
+}
+
+async function buildFollowupWA(lead, followupNum) {
+    const name = cleanName(lead.name) || 'sir/ma\'am';
+
+    if (aiModel) {
+        try {
+            const prompt = `Write a short follow-up WhatsApp message in Hinglish to ${name} for digital marketing services. This is follow-up #${followupNum}. Keep it under 3 sentences, very polite, and ask if they have 5 minutes to chat. Do not sound like a bot. Only output the message.`;
+            const result = await aiModel.generateContent(prompt);
+            return result.response.text().replace(/\*\*/g, '*').trim();
+        } catch (e) {
+            console.log('Gemini API failed, falling back to Spintax:', e.message);
+        }
+    }
 
     if (followupNum === 1) {
-        return `Namaste ${name}! 🙏
-
-Maine pehle ek message bheja tha aapke *digital growth* ke baare mein.
-
-Aajkal competition bahut badh gaya hai — jo businesses online hain, woh baaki sab se aage nikal rahe hain. 📈
-
-Sirf *1 FREE call* mein main aapko bataunga:
-✅ Aapke competitors kya kar rahe hain
-✅ Aapke liye best digital strategy kya hogi
-✅ Kitna budget lagega aur kitna return milega
-
-Reply karein "CALL" — main call schedule karunga! 🤝`;
+        return `Hi again! Just following up on my previous message regarding *"${name}"*.\n\nMain samajh sakta hu aap apne business mein kaafi busy honge. Mujhe sirf aapke *5 minute chahiye* the ek idea discuss karne ke liye jisse aapki *online sales/inquiries badh sakti hain*.\n\nKis time call karna sahi rahega aapko?`;
     }
 
     if (followupNum === 2) {
-        return `*Last message* — ${name} ji 🙏
-
-Aapke business ki care karta hoon isliye ek baar aur reach kar raha hoon.
-
-Agar aap *digital marketing* mein interested nahi hain toh koi baat nahi — yeh mera last message hoga.
-
-Lekin agar aap chahte hain ki:
-📈 Aapka business online grow kare
-⭐ Reviews aur reputation badhein  
-💰 Online se leads aayein
-
-Toh abhi reply karein — *LIMITED TIME FREE CONSULTATION* offer hai!
-
-Best wishes 🙏`;
+        return `Hello! Yeh mera *last message hai* aapko aage disturb nahi karunga. 😊\n\nHumne recently kaafi local businesses ki *growth double ki hai* sirf unki Google listing aur online presence theek karke. Agar aap kabhi future mein apna business grow karna chahein, toh is number par zaroor contact kijiyega.\n\nHave a great day ahead!`;
     }
 
-    return `${name} ji, best of luck for your business! 🙏 Kabhi bhi digital marketing ki zaroorat ho toh humse zaroor contact karein. 😊`;
+    return `Best wishes for your business! Kabhi bhi *website ya marketing* ki zarurat ho toh yaad rakhiyega. 😊`;
 }
 
 function buildInitialEmail(lead) {
