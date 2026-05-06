@@ -6,13 +6,13 @@ echo   LEAD AUTOMATION TOOL - Starting...
 echo  ============================================
 echo.
 
-set "NODE_PATH=C:\Users\srupesh\.gemini\antigravity\scratch\node\node-v20.19.1-win-x64"
+set "NODE_PATH=%~dp0..\node\node-v20.19.1-win-x64"
 set "PATH=%NODE_PATH%;%PATH%"
-set "APP_DIR=C:\Users\srupesh\.gemini\antigravity\scratch\lead-automation"
+set "APP_DIR=%~dp0"
 
 cd /d "%APP_DIR%"
 
-echo  [1/2] Checking Node.js...
+echo  [1/4] Checking Node.js...
 node --version
 if %errorlevel% neq 0 (
     echo  ERROR: Node.js not found!
@@ -20,7 +20,13 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-echo  [2/2] Starting server...
+echo  [2/4] Installing dependencies...
+call npm install
+
+echo  [3/4] Installing Playwright browsers...
+call npx playwright install
+
+echo  [4/4] Starting server...
 echo.
 echo  Opening dashboard at: http://localhost:3000
 echo.
