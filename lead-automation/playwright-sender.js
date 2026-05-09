@@ -6,9 +6,21 @@ const mongoose = require('mongoose');
 // We don't require the model file because index.js defines it. We can just get it from mongoose.
 const getLeadModel = () => mongoose.model('Lead');
 const { buildInitialWA, buildFollowupWA } = require('./services/ai-messages');
+const { saveContactQuiet, isAuthorized } = require('./services/google-contacts');
 
 const SESSION_DIR = path.join(__dirname, '.wa_session_data');
-const DELAY_MS = 12000; // 12 seconds between messages to prevent bans
+
+// ── Human-like random delays ─────────────────────────────────
+function getDelay(index) {
+    // Every 10 messages: take a 1–2 min human break
+    if (index > 0 && index % 10 === 0) {
+        const ms = 60000 + Math.random() * 60000;
+        console.log(`  ☕ Human break: ${Math.round(ms/1000)}s`);
+        return ms;
+    }
+    // Normal: 25–45 seconds
+    return 25000 + Math.random() * 20000;
+}
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -25,7 +37,9 @@ async function isWALoggedIn(page) {
     return await page.locator('#pane-side, [aria-label="Search or start a new chat"], header').first().isVisible({ timeout: 6000 }).catch(() => false);
 }
 
-async function sendLocalWA(ids, isFollowup = false) {
+async function sendLocalWA(ids, isFollowup = false, options = {}) {
+    const { skipWaSent = false, isScheduled = false, onComplete } = options;
+    let finalSent = 0, finalFailed = 0;
     try {
         const Lead = getLeadModel();
         const leads = await Lead.find({ _id: { $in: ids }, phone: { $exists: true, $ne: '' } });
@@ -75,6 +89,12 @@ async function sendLocalWA(ids, isFollowup = false) {
 
         for (let i = 0; i < leads.length; i++) {
             const lead = leads[i];
+
+            // Skip already-sent leads if toggle is ON
+            if (!isFollowup && skipWaSent && lead.wa_sent) {
+                emit({ type: 'skipped', name: lead.name, reason: 'WA already sent (Skip ON)' });
+                continue;
+            }
             
             let msg = '';
             let followupNum = (lead.followup_count || 0) + 1;
@@ -86,6 +106,21 @@ async function sendLocalWA(ids, isFollowup = false) {
             }
 
             emit({ type: 'sending', current: i + 1, total, name: lead.name, phone: lead.phone, sent, failed });
+
+            // ── Auto-save to Google Contacts BEFORE sending ──────────
+            if (isAuthorized() && !lead.contact_saved) {
+                emit({ type: 'status', message: `📒 Saving ${lead.name} to Google Contacts...` });
+                const saved = await saveContactQuiet(lead);
+                if (saved) {
+                    const Lead = getLeadModel();
+                    await Lead.findByIdAndUpdate(lead._id, {
+                        $set: { contact_saved: true, contact_saved_at: new Date() }
+                    }).catch(() => {});
+                    emit({ type: 'status', message: `✅ Saved to Google Contacts: ${lead.name}` });
+                    // Small extra pause after saving contact — gives Google Contacts time to sync to phone
+                    await sleep(3000);
+                }
+            }
 
             try {
                 const waUrl = `https://web.whatsapp.com/send?phone=${lead.phone}&text=${encodeURIComponent(msg)}`;
@@ -144,29 +179,36 @@ async function sendLocalWA(ids, isFollowup = false) {
                     await Lead.findByIdAndUpdate(lead._id, {
                         $set:  { wa_sent: true, wa_sent_at: new Date(), wa_last_date: today, status: 'contacted' },
                         $inc:  { wa_count: 1 },
-                        $push: { activity: { type: 'wa_sent', message: 'Initial WA sent via Playwright', date: new Date() } }
+                        $push: { activity: { type: 'wa_sent', message: isScheduled ? 'WA sent via Auto-Scheduler' : 'Initial WA sent via Playwright', date: new Date() } }
                     });
                 }
 
                 sent++;
+                finalSent = sent;
                 emit({ type: 'sent', name: lead.name, sent, failed, total });
 
                 if (i < leads.length - 1) {
-                    emit({ type: 'waiting', seconds: Math.round(DELAY_MS / 1000), next: leads[i+1]?.name });
-                    await sleep(DELAY_MS); // Crucial delay to avoid ban
+                    const delay = getDelay(i);
+                    emit({ type: 'waiting', seconds: Math.round(delay / 1000), next: leads[i+1]?.name });
+                    await sleep(delay);
                 }
 
             } catch(err) {
                 failed++;
+                finalFailed = failed;
                 emit({ type: 'failed', name: lead.name, reason: err.message.split('\n')[0], sent, failed });
             }
         }
 
         await browser.close();
+        if (onComplete) onComplete(sent, failed);
         emit({ type: 'done', sent, failed, total });
-        
+        return { sent, failed, total };
+
     } catch(e) {
         emit({ type: 'error', message: 'Internal error: ' + e.message });
+        if (onComplete) onComplete(finalSent, finalFailed);
+        return { sent: finalSent, failed: finalFailed, total: 0 };
     }
 }
 

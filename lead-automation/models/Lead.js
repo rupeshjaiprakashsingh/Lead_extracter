@@ -19,9 +19,13 @@ const leadSchema = new mongoose.Schema({
     city:       { type: String },
     address:    { type: String },
     place_id:   { type: String },
-    source:     { type: String, default: 'google_maps', enum: ['google_maps','manual','import'] },
+    source:     { type: String, default: 'google_maps', enum: ['google_maps','manual','import','excel_import'] },
     status:     { type: String, default: 'new',
                   enum: ['new','contacted','followup','interested','converted','not_interested','lost'] },
+
+    // ── Google Contacts sync ───────────────────────────────
+    contact_saved:    { type: Boolean, default: false },
+    contact_saved_at: { type: Date },
 
     // ── WhatsApp tracking ─────────────────────────────────
     wa_sent:      { type: Boolean, default: false },

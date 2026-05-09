@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Environment variables & Secrets
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+token.json
+client_secret.json
+
+# Browser automation data
+.wa_session_data/
+.baileys_auth/
+playwright-profile/
+test-results/
+playwright-report/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# App Data
+leads.json
+leads.json.bak

@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🚀 Lead CRM — Multi-Instance Control Panel</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:'Inter',sans-serif;background:#060b14;color:#e2e8f0;min-height:100vh}
+
+  .header{background:linear-gradient(135deg,#0f172a,#1e1b4b);border-bottom:1px solid #312e81;padding:18px 28px;display:flex;align-items:center;justify-content:space-between}
+  .header-title{font-size:20px;font-weight:800;color:#fff}
+  .header-sub{font-size:12px;color:#6366f1;margin-top:2px}
+  .status-dot{width:10px;height:10px;border-radius:50%;background:#34d399;display:inline-block;margin-right:6px;animation:pulse 2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+  .container{padding:24px;max-width:1600px;margin:0 auto}
+
+  /* Summary Stats */
+  .summary{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:24px}
+  .sum-card{background:#0f172a;border:1px solid #1e293b;border-radius:12px;padding:16px;text-align:center}
+  .sum-card .num{font-size:28px;font-weight:800;margin-bottom:4px}
+  .sum-card .lbl{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.05em}
+
+  /* Batch launcher */
+  .batch-panel{background:#0f172a;border:1px solid #312e81;border-radius:14px;padding:20px;margin-bottom:24px}
+  .batch-title{font-size:14px;font-weight:700;color:#a5b4fc;margin-bottom:14px}
+  .city-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px}
+  .city-row{display:flex;gap:8px;align-items:center}
+  .city-row label{font-size:11px;color:#64748b;width:80px}
+  .city-row input,.city-row select{flex:1;padding:7px 10px;background:#1e293b;border:1px solid #334155;border-radius:7px;color:#e2e8f0;font-size:12px;font-family:inherit}
+  .batch-actions{display:flex;gap:10px;margin-top:14px}
+  .btn{padding:9px 18px;border-radius:8px;font-size:12px;font-weight:600;border:none;cursor:pointer;transition:all .2s;font-family:inherit}
+  .btn-purple{background:#6d28d9;color:#fff}
+  .btn-purple:hover{background:#7c3aed}
+  .btn-green{background:#065f46;color:#34d399;border:1px solid #10b981}
+  .btn-green:hover{background:#064e3b}
+  .btn-red{background:#7f1d1d;color:#fca5a5;border:1px solid #ef4444}
+  .btn-gray{background:#1e293b;color:#94a3b8;border:1px solid #334155}
+  .btn-gray:hover{background:#334155}
+
+  /* Instance Cards */
+  .instances-title{font-size:14px;font-weight:700;color:#e2e8f0;margin-bottom:14px}
+  .instances-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
+  .instance-card{background:#0f172a;border:1px solid #1e293b;border-radius:14px;overflow:hidden;transition:border-color .2s}
+  .instance-card:hover{border-color:#4f46e5}
+  .instance-card.running{border-color:#10b981}
+  .instance-card.scraping{border-color:#f59e0b;animation:border-pulse 1.5s infinite}
+  @keyframes border-pulse{0%,100%{border-color:#f59e0b}50%{border-color:#78350f}}
+
+  .inst-header{padding:12px 14px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #1e293b}
+  .inst-num{font-size:13px;font-weight:700;color:#fff}
+  .inst-port{font-size:11px;color:#64748b}
+  .inst-status{font-size:10px;font-weight:600;padding:3px 8px;border-radius:10px}
+  .status-idle{background:#1e293b;color:#64748b}
+  .status-running{background:#064e3b;color:#34d399}
+  .status-scraping{background:#451a03;color:#fbbf24}
+  .status-error{background:#450a0a;color:#f87171}
+
+  .inst-body{padding:12px 14px}
+  .inst-field{margin-bottom:8px}
+  .inst-field label{font-size:10px;color:#64748b;display:block;margin-bottom:3px;text-transform:uppercase;letter-spacing:.05em}
+  .inst-field input,.inst-field select{width:100%;padding:7px 10px;background:#1e293b;border:1px solid #334155;border-radius:7px;color:#e2e8f0;font-size:12px;font-family:inherit}
+  .inst-field input:focus,.inst-field select:focus{outline:none;border-color:#6366f1}
+
+  .inst-stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin:10px 0;text-align:center}
+  .inst-stat-val{font-size:18px;font-weight:700}
+  .inst-stat-lbl{font-size:9px;color:#64748b;margin-top:1px}
+
+  .inst-log{background:#020617;border-radius:6px;padding:8px;font-size:10px;color:#64748b;font-family:monospace;height:60px;overflow-y:auto;margin:8px 0;border:1px solid #0f172a}
+  .inst-log .ok{color:#34d399}
+  .inst-log .err{color:#f87171}
+  .inst-log .info{color:#60a5fa}
+
+  .inst-actions{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .inst-btn{padding:7px;border-radius:7px;font-size:11px;font-weight:600;border:none;cursor:pointer;text-align:center;font-family:inherit}
+
+  .progress-bar{height:3px;background:#1e293b;border-radius:2px;margin-top:8px;overflow:hidden}
+  .progress-fill{height:100%;background:linear-gradient(90deg,#6366f1,#8b5cf6);width:0%;transition:width .5s;border-radius:2px}
+
+  /* Live Log panel */
+  .live-panel{background:#020617;border:1px solid #1e293b;border-radius:12px;padding:16px;margin-top:20px}
+  .live-title{font-size:12px;font-weight:600;color:#64748b;margin-bottom:10px}
+  .live-log{font-family:monospace;font-size:11px;color:#64748b;height:120px;overflow-y:auto}
+  .live-log .ok{color:#34d399}
+  .live-log .warn{color:#fbbf24}
+  .live-log .err{color:#f87171}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="header-title">🚀 Lead CRM — Multi-Instance Control Panel</div>
+    <div class="header-sub"><span class="status-dot"></span> Parallel scraping across multiple cities simultaneously</div>
+  </div>
+  <div style="display:flex;gap:10px">
+    <button class="btn btn-red" onclick="stopAll()">🛑 Stop All</button>
+    <button class="btn btn-purple" onclick="launchAllScrape()">▶️ Start All Scraping</button>
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- Summary Stats -->
+  <div class="summary">
+    <div class="sum-card">
+      <div class="num" id="total-instances" style="color:#a5b4fc">0</div>
+      <div class="lbl">Instances Online</div>
+    </div>
+    <div class="sum-card">
+      <div class="num" id="total-scraping" style="color:#fbbf24">0</div>
+      <div class="lbl">Currently Scraping</div>
+    </div>
+    <div class="sum-card">
+      <div class="num" id="total-leads-today" style="color:#34d399">0</div>
+      <div class="lbl">Leads Added Today</div>
+    </div>
+    <div class="sum-card">
+      <div class="num" id="total-all" style="color:#60a5fa">0</div>
+      <div class="lbl">Total Leads (All)</div>
+    </div>
+  </div>
+
+  <!-- Quick Batch Launcher -->
+  <div class="batch-panel">
+    <div class="batch-title">⚡ Quick Batch — Assign Keyword + City to Each Instance</div>
+    <div id="batch-config">
+      <!-- Generated dynamically -->
+    </div>
+    <div class="batch-actions">
+      <button class="btn btn-purple" onclick="applyBatchConfig()">✅ Apply Config to All Instances</button>
+      <button class="btn btn-green" onclick="startAllFromBatch()">🚀 Apply & Start All Scraping</button>
+      <button class="btn btn-gray" onclick="fillPreset('coaching')">🎓 Coaching Preset</button>
+      <button class="btn btn-gray" onclick="fillPreset('clinic')">🏥 Clinic Preset</button>
+      <button class="btn btn-gray" onclick="fillPreset('realestate')">🏠 Real Estate Preset</button>
+    </div>
+  </div>
+
+  <!-- Instance Cards -->
+  <div class="instances-title">📡 Active Instances</div>
+  <div class="instances-grid" id="instances-grid">
+    <div style="color:#64748b;padding:40px;text-align:center;grid-column:1/-1">
+      ⏳ Detecting running instances...
+    </div>
+  </div>
+
+  <!-- Live Combined Log -->
+  <div class="live-panel">
+    <div class="live-title">📋 Combined Activity Log</div>
+    <div class="live-log" id="live-log"></div>
+  </div>
+
+</div>
+
+<script>
+// ── Configuration ────────────────────────────────────────────
+const BASE_PORT  = 3000;
+const MAX_PORTS  = 10;   // check ports 3000–3009
+const REFRESH_MS = 3000; // poll interval
+
+// City presets
+const PRESETS = {
+  coaching:    { keyword: 'coaching center', cities: ['Lucknow','Kanpur','Agra','Varanasi','Allahabad','Jaipur','Indore','Bhopal','Nagpur','Surat'] },
+  clinic:      { keyword: 'clinic',          cities: ['Lucknow','Kanpur','Agra','Varanasi','Allahabad','Jaipur','Indore','Bhopal','Nagpur','Surat'] },
+  realestate:  { keyword: 'real estate',     cities: ['Mumbai','Delhi','Bangalore','Hyderabad','Chennai','Pune','Ahmedabad','Lucknow','Jaipur','Surat'] },
+};
+
+// ── State ────────────────────────────────────────────────────
+let instances = {};  // port → { status, stats, log[] }
+let liveLog   = [];
+
+// ── Init ─────────────────────────────────────────────────────
+window.onload = () => {
+  buildBatchConfig();
+  detectInstances();
+  setInterval(refreshAll, REFRESH_MS);
+};
+
+// ── Detect which ports are running ───────────────────────────
+async function detectInstances() {
+  const checks = [];
+  for (let p = BASE_PORT; p < BASE_PORT + MAX_PORTS; p++) {
+    checks.push(checkPort(p));
+  }
+  await Promise.all(checks);
+  renderGrid();
+  updateSummary();
+}
+
+async function checkPort(port) {
+  try {
+    const r = await fetch(`http://localhost:${port}/api/stats`, { signal: AbortSignal.timeout(1500) });
+    if (r.ok) {
+      const stats = await r.json();
+      if (!instances[port]) instances[port] = { status: 'idle', log: [], stats };
+      else instances[port].stats = stats;
+      instances[port].online = true;
+    }
+  } catch(e) {
+    instances[port] = { ...(instances[port]||{}), online: false, status: 'offline' };
+  }
+}
+
+async function refreshAll() {
+  await detectInstances();
+}
+
+// ── Render Instance Cards ─────────────────────────────────────
+function renderGrid() {
+  const grid = document.getElementById('instances-grid');
+  const online = Object.entries(instances).filter(([,v]) => v.online);
+  
+  if (!online.length) {
+    grid.innerHTML = `<div style="color:#64748b;padding:40px;text-align:center;grid-column:1/-1">
+      ❌ No instances detected.<br><br>
+      <span style="font-size:12px">Run <b style="color:#a5b4fc">start-multi.ps1</b> to launch multiple instances</span>
+    </div>`;
+    return;
+  }
+
+  grid.innerHTML = online.map(([port, inst]) => {
+    const num  = parseInt(port) - BASE_PORT + 1;
+    const stat = inst.status || 'idle';
+    const s    = inst.stats  || {};
+    const logHTML = (inst.log||[]).slice(-4).map(l =>
+      `<div class="${l.type}">[${l.time}] ${l.msg}</div>`
+    ).join('');
+    
+    return `<div class="instance-card ${stat !== 'offline' ? 'running' : ''} ${stat === 'scraping' ? 'scraping' : ''}" id="card-${port}">
+      <div class="inst-header">
+        <div>
+          <span class="inst-num">Instance ${num}</span>
+          <span class="inst-port" style="margin-left:8px">:${port}</span>
+        </div>
+        <span class="inst-status status-${stat === 'scraping' ? 'scraping' : stat === 'offline' ? 'error' : 'running'}">
+          ${stat === 'scraping' ? '⚡ SCRAPING' : stat === 'offline' ? '❌ OFFLINE' : '✅ READY'}
+        </span>
+      </div>
+      <div class="inst-body">
+        <div class="inst-field">
+          <label>🔍 Keyword</label>
+          <input type="text" id="kw-${port}" placeholder="e.g. clinic" value="${inst.keyword||''}">
+        </div>
+        <div class="inst-field">
+          <label>📍 City</label>
+          <input type="text" id="city-${port}" placeholder="e.g. Lucknow" value="${inst.city||''}">
+        </div>
+        <div class="inst-stats">
+          <div><div class="inst-stat-val" style="color:#60a5fa">${s.total||0}</div><div class="inst-stat-lbl">Total</div></div>
+          <div><div class="inst-stat-val" style="color:#fbbf24">${s.pending||0}</div><div class="inst-stat-lbl">Pending</div></div>
+          <div><div class="inst-stat-val" style="color:#34d399">${s.waSent||0}</div><div class="inst-stat-lbl">Sent</div></div>
+        </div>
+        <div class="inst-log" id="log-${port}">${logHTML||'<span style="color:#334155">No activity yet...</span>'}</div>
+        <div class="progress-bar"><div class="progress-fill" id="prog-${port}"></div></div>
+        <div class="inst-actions" style="margin-top:8px">
+          <button class="inst-btn btn-green" onclick="startScrape(${port})" style="background:#064e3b;color:#34d399;border:1px solid #10b981">▶ Start</button>
+          <button class="inst-btn btn-gray" onclick="window.open('http://localhost:${port}','_blank')" style="background:#1e293b;color:#94a3b8;border:1px solid #334155">🔗 Open</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── Start scraping on one instance ───────────────────────────
+async function startScrape(port) {
+  const kw   = document.getElementById(`kw-${port}`)?.value?.trim();
+  const city = document.getElementById(`city-${port}`)?.value?.trim();
+  if (!kw || !city) return alert('Enter keyword and city for port ' + port);
+  
+  if (!instances[port]) instances[port] = { log: [] };
+  instances[port].keyword = kw;
+  instances[port].city    = city;
+  instances[port].status  = 'scraping';
+  addLog(port, `⚡ Scraping "${kw}" in ${city}...`, 'info');
+  renderGrid();
+  
+  try {
+    const r = await fetch(`http://localhost:${port}/api/scrape`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keyword: kw, city, max: 9999 })
+    });
+    const data = await r.json();
+    instances[port].status = 'idle';
+    addLog(port, `✅ Done: ${data.added||0} new leads`, 'ok');
+  } catch(e) {
+    instances[port].status = 'error';
+    addLog(port, `❌ ${e.message}`, 'err');
+  }
+  renderGrid();
+  updateSummary();
+}
+
+// ── Batch controls ───────────────────────────────────────────
+function buildBatchConfig() {
+  const div = document.getElementById('batch-config');
+  div.innerHTML = `<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:8px">` +
+    Array.from({length:10}, (_,i) => {
+      const port = BASE_PORT + i;
+      return `<div style="background:#0a0f1e;border:1px solid #1e293b;border-radius:8px;padding:10px">
+        <div style="font-size:10px;color:#6366f1;font-weight:700;margin-bottom:6px">Instance ${i+1} :${port}</div>
+        <input id="batch-kw-${i}" placeholder="keyword" style="width:100%;padding:5px 8px;background:#1e293b;border:1px solid #334155;border-radius:5px;color:#e2e8f0;font-size:11px;margin-bottom:4px">
+        <input id="batch-city-${i}" placeholder="city" style="width:100%;padding:5px 8px;background:#1e293b;border:1px solid #334155;border-radius:5px;color:#e2e8f0;font-size:11px">
+      </div>`;
+    }).join('') + `</div>`;
+}
+
+function fillPreset(type) {
+  const p = PRESETS[type];
+  if (!p) return;
+  for (let i = 0; i < 10; i++) {
+    const kwEl   = document.getElementById(`batch-kw-${i}`);
+    const cityEl = document.getElementById(`batch-city-${i}`);
+    if (kwEl)   kwEl.value   = p.keyword;
+    if (cityEl) cityEl.value = p.cities[i] || p.cities[0];
+  }
+  addGlobalLog(`⚡ Preset "${type}" applied to all instances`, 'info');
+}
+
+function applyBatchConfig() {
+  for (let i = 0; i < 10; i++) {
+    const port   = BASE_PORT + i;
+    const kw     = document.getElementById(`batch-kw-${i}`)?.value?.trim();
+    const city   = document.getElementById(`batch-city-${i}`)?.value?.trim();
+    if (!instances[port]) instances[port] = { log: [] };
+    if (kw)   instances[port].keyword = kw;
+    if (city) instances[port].city    = city;
+  }
+  renderGrid();
+  addGlobalLog('✅ Config applied to all instances', 'ok');
+}
+
+async function launchAllScrape() {
+  const online = Object.entries(instances).filter(([,v]) => v.online);
+  if (!online.length) return alert('No instances online. Run start-multi.ps1 first.');
+  addGlobalLog(`🚀 Starting scrape on ${online.length} instances...`, 'info');
+  for (const [port] of online) {
+    const kw   = instances[port]?.keyword;
+    const city = instances[port]?.city;
+    if (kw && city) {
+      startScrape(parseInt(port));
+      await sleep(500); // stagger starts slightly
+    } else {
+      addGlobalLog(`⚠️ Port ${port}: No keyword/city set`, 'warn');
+    }
+  }
+}
+
+async function startAllFromBatch() {
+  applyBatchConfig();
+  await sleep(300);
+  await launchAllScrape();
+}
+
+function stopAll() {
+  if (!confirm('Stop all scraping instances?')) return;
+  Object.keys(instances).forEach(port => {
+    if (instances[port]) instances[port].status = 'idle';
+  });
+  addGlobalLog('🛑 All instances stopped', 'err');
+  renderGrid();
+}
+
+// ── Summary ───────────────────────────────────────────────────
+function updateSummary() {
+  const online   = Object.values(instances).filter(v => v.online).length;
+  const scraping = Object.values(instances).filter(v => v.status === 'scraping').length;
+  const totalAll = Object.values(instances).reduce((a,v) => a + (v.stats?.total||0), 0);
+  document.getElementById('total-instances').textContent   = online;
+  document.getElementById('total-scraping').textContent   = scraping;
+  document.getElementById('total-all').textContent        = totalAll;
+}
+
+// ── Logging ───────────────────────────────────────────────────
+function addLog(port, msg, type='info') {
+  if (!instances[port]) instances[port] = { log: [] };
+  const time = new Date().toLocaleTimeString('en-IN', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  instances[port].log.push({ msg, type, time });
+  if (instances[port].log.length > 50) instances[port].log.shift();
+  addGlobalLog(`[Port ${port}] ${msg}`, type);
+}
+
+function addGlobalLog(msg, type='info') {
+  const el = document.getElementById('live-log');
+  const time = new Date().toLocaleTimeString('en-IN');
+  liveLog.push({ msg, type, time });
+  if (liveLog.length > 200) liveLog.shift();
+  el.innerHTML = liveLog.slice(-30).map(l =>
+    `<div class="${l.type}">[${l.time}] ${l.msg}</div>`
+  ).join('');
+  el.scrollTop = el.scrollHeight;
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+</script>
+</body>
+</html>

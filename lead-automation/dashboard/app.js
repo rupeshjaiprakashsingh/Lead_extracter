@@ -1,6 +1,24 @@
 let leads=[],curPage=1,totalPages=1,sending=false,sse=null,debounceTimer=null;
 setInterval(()=>document.getElementById('clock').textContent=new Date().toLocaleString('en-IN',{timeZone:'Asia/Kolkata'}),1000);
 
+// Inject .b-purple style
+(()=>{ const s=document.createElement('style');
+  s.textContent='.b-purple{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;border:none;} .b-purple:hover{opacity:.9}';
+  document.head.appendChild(s); })();
+
+// ── Quick keyword chip setter ────────────────────────────────
+function setKw(keyword) {
+  document.getElementById('kw').value = keyword;
+  // Highlight active chip
+  document.querySelectorAll('.kw-chip').forEach(c => c.classList.remove('active'));
+  event.target.classList.add('active');
+  // Auto-focus city field so user can change city
+  document.getElementById('city').focus();
+  document.getElementById('city').select();
+}
+
+
+
 // ── Tabs ────────────────────────────────────────────────────
 function switchTab(t){
   document.querySelectorAll('.tab-body').forEach(e=>e.style.display='none');
@@ -19,9 +37,17 @@ async function loadStats(){
       `<div class="stat"><div class="n">${s.total}</div><div class="l">Total</div></div>`+
       `<div class="stat"><div class="n" style="color:#fbbf24">${s.pending}</div><div class="l">Pending WA</div></div>`+
       `<div class="stat"><div class="n" style="color:#34d399">${s.waSent}</div><div class="l">WA Sent</div></div>`+
-      `<div class="stat"><div class="n" style="color:#f87171">${s.noSite}</div><div class="l">No Website</div></div>`+
+      `<div class="stat" title="Click to filter No Website leads" style="cursor:pointer;border:1px solid #f59e0b" onclick="applyNoWebsiteFilter()"><div class="n" style="color:#fb923c">${s.noSite}</div><div class="l" style="color:#f59e0b">🌐 No Website ▶</div></div>`+
       `<div class="stat"><div class="n" style="color:#c084fc">${s.followup}</div><div class="l">Follow-Up Due</div></div>`;
   }catch(e){}
+}
+
+// One-click: apply No Website filter from stat card
+function applyNoWebsiteFilter() {
+  const cb = document.getElementById('f-no-website');
+  if (cb) { cb.checked = true; fetchLeads(1); }
+  // Scroll to filter bar
+  document.querySelector('.filters')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 // ── Fetch leads (paginated) ─────────────────────────────────
@@ -32,7 +58,10 @@ async function fetchLeads(page){
   const status=document.getElementById('f-status').value;
   const city=document.getElementById('f-city').value;
   const limit=document.getElementById('f-limit').value;
-  const q=new URLSearchParams({page:curPage,limit,search,category:cat,status,city});
+  const skipWa=document.getElementById('f-skip-wa')?.checked?'1':'';
+  const skipEmail=document.getElementById('f-skip-email')?.checked?'1':'';
+  const noWebsite=document.getElementById('f-no-website')?.checked?'1':'';
+  const q=new URLSearchParams({page:curPage,limit,search,category:cat,status,city,skipWaSent:skipWa,skipEmailSent:skipEmail,noWebsite});
   try{
     const r=await(await fetch('/api/leads?'+q)).json();
     leads=r.leads; totalPages=r.pages; curPage=r.page;
@@ -80,8 +109,9 @@ function renderTable(){
   const perPage=parseInt(document.getElementById('f-limit').value)||25;
   leads.forEach((b,i)=>{
     const num=((curPage-1)*perPage)+i+1;
-    h+=`<tr>
-      <td><input type="checkbox" data-id="${b._id}"></td>
+    const isChecked = selectedIds.has(b._id) ? 'checked' : '';
+    h+=`<tr ${isChecked ? 'style="background:rgba(124,58,237,.12);outline:1px solid rgba(124,58,237,.3)"' : ''}>
+      <td><input type="checkbox" data-id="${b._id}" ${isChecked} onchange="onCheckChange(this)"></td>
       <td style="color:#64748b;font-size:10px">${num}</td>
       <td><div style="font-weight:600;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${b.name||''}">${b.name||'—'}</div>
           <div style="font-size:9px;color:#64748b">${b.city||''}</div></td>
@@ -98,7 +128,9 @@ function renderTable(){
   });
   h+='</tbody></table>';
   w.innerHTML=h;
+  updateSelectionBar();
 }
+
 
 // ── Pagination ──────────────────────────────────────────────
 function renderPager(total){
@@ -114,8 +146,48 @@ function renderPager(total){
   p.innerHTML=h;
 }
 
-function toggleAll(c){ document.querySelectorAll('input[data-id]').forEach(e=>e.checked=c); }
-function getSelected(){ return[...document.querySelectorAll('input[data-id]:checked')].map(e=>e.dataset.id); }
+// ── Persistent cross-page selection ─────────────────────────────────
+const selectedIds = new Set();
+
+function onCheckChange(cb) {
+  const id = cb.dataset.id;
+  if (cb.checked) selectedIds.add(id);
+  else selectedIds.delete(id);
+  updateSelectionBar();
+}
+
+function toggleAll(checked) {
+  document.querySelectorAll('input[data-id]').forEach(cb => {
+    cb.checked = checked;
+    const id = cb.dataset.id;
+    if (checked) selectedIds.add(id);
+    else selectedIds.delete(id);
+  });
+  updateSelectionBar();
+}
+
+function clearAllSelections() {
+  selectedIds.clear();
+  document.querySelectorAll('input[data-id]').forEach(cb => cb.checked = false);
+  const hdrCb = document.querySelector('thead input[type=checkbox]');
+  if (hdrCb) hdrCb.checked = false;
+  updateSelectionBar();
+}
+
+function getSelected() { return [...selectedIds]; }
+
+function updateSelectionBar() {
+  const bar  = document.getElementById('sel-bar');
+  const cnt  = document.getElementById('sel-count');
+  if (!bar) return;
+  if (selectedIds.size === 0) {
+    bar.style.display = 'none';
+  } else {
+    bar.style.display = 'flex';
+    cnt.textContent   = selectedIds.size;
+  }
+}
+
 
 // ── Scrape ──────────────────────────────────────────────────
 async function doScrape(){
@@ -136,8 +208,10 @@ async function doScrape(){
 async function startAutoSend(){
   if(sending)return alert('Already sending');
   const sel=getSelected();
+  const skipWaSent=document.getElementById('f-skip-wa')?.checked||false;
   if(!sel.length) return alert('Please select at least one lead to send WhatsApp messages.');
-  if(!confirm(`⚠️ Warning: You asked for automation.\n\nWe will now open a Chrome window and automatically click 'Send' for you. This will take ~15 seconds per lead to prevent WhatsApp from banning your account.\n\nSend WhatsApp to ${sel.length} selected leads?`))return;
+  const skipNote=skipWaSent?'\n\n✅ "Skip WA Sent" is ON — already-messaged leads will be skipped automatically.':'';
+  if(!confirm(`⚠️ Warning: You asked for automation.\n\nWe will now open a Chrome window and automatically click 'Send' for you. This will take ~15 seconds per lead to prevent WhatsApp from banning your account.\n\nSend WhatsApp to ${sel.length} selected leads?${skipNote}`))return;
   sending=true;
   document.getElementById('btn-autosend').disabled=true;
   
@@ -145,7 +219,7 @@ async function startAutoSend(){
   connectSSE();
   
   try {
-      await fetch('/api/send/wa',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:sel})});
+      await fetch('/api/send/wa',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:sel,skipWaSent})});
       plog('Send job started','in');
   } catch(err) {
       alert('Error: ' + err.message);
@@ -169,7 +243,6 @@ async function startFollowup(channel){
   
   if(channel === 'wa' || channel === 'both') {
       if(!confirm(`⚠️ Automating WhatsApp Web for ${sel.length} selected WA follow-ups. Continue?`))return;
-      
       showProgress('Automating WA follow-ups...');
       connectSSE();
       try {
@@ -180,6 +253,26 @@ async function startFollowup(channel){
       }
   }
 }
+
+// ── Send Email to selected (from floating bar) ───────────────
+async function sendEmailToSelected() {
+  const sel = getSelected();
+  if (!sel.length) return alert('Please select at least one lead to send email.');
+  if (!confirm(`📧 Send AI-personalised emails to ${sel.length} selected leads?\n\nThis will use your SMTP settings to send individual emails.`)) return;
+  showProgress('Sending emails...');
+  connectSSE();
+  try {
+    await fetch('/api/send/email', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ ids: sel })
+    });
+    plog('Email send job started','in');
+  } catch(e) {
+    alert('Error: ' + e.message);
+  }
+}
+
 
 async function loadFollowups(){
   try{
@@ -275,6 +368,13 @@ async function loadSettings(){
     if(s.smtp_user) document.getElementById('s-smtp-user').value=s.smtp_user;
     if(s.smtp_from) document.getElementById('s-smtp-from').value=s.smtp_from;
     if(s.smtp_pass) document.getElementById('s-smtp-pass').placeholder='Password saved ✓ (hidden)';
+    // Load message templates
+    if(s.wa_template)    document.getElementById('s-wa-template').value   = s.wa_template;
+    if(s.email_subject)  document.getElementById('s-email-subject').value = s.email_subject;
+    if(s.email_body)     document.getElementById('s-email-body').value    = s.email_body;
+    // Google Contacts credentials
+    if(s.google_client_id)     document.getElementById('s-google-client-id').value     = s.google_client_id;
+    if(s.google_client_secret) document.getElementById('s-google-client-secret').placeholder = 'Secret saved ✓';
   }catch(e){}
 }
 
@@ -285,6 +385,13 @@ async function saveSettings(){
     smtp_secure: document.getElementById('s-smtp-secure').value,
     smtp_user: document.getElementById('s-smtp-user').value,
     smtp_from: document.getElementById('s-smtp-from').value,
+    // Message templates
+    wa_template:   document.getElementById('s-wa-template').value,
+    email_subject: document.getElementById('s-email-subject').value,
+    email_body:    document.getElementById('s-email-body').value,
+    // Google OAuth credentials
+    google_client_id:     document.getElementById('s-google-client-id').value.trim(),
+    google_client_secret: document.getElementById('s-google-client-secret').value.trim() || undefined,
   };
   const pass=document.getElementById('s-smtp-pass').value;
   if(pass && pass!=='••••••••') body.smtp_pass=pass;
@@ -314,6 +421,128 @@ async function testSmtp(){
     :`<span style="color:#f87171">❌ ${r.error}</span>`;
 }
 
+async function syncContacts(){
+  document.getElementById('vcf-modal').style.display='flex';
+  document.getElementById('vcf-step2').style.display='none';
+  try {
+    const s = await (await fetch('/api/contacts/stats')).json();
+    document.getElementById('vcf-stat-pending').textContent = s.pending;
+    document.getElementById('vcf-stat-saved').textContent   = s.saved;
+    document.getElementById('vcf-stat-total').textContent   = s.total;
+
+    const newBtn = document.getElementById('vcf-btn-new');
+    const banner = document.getElementById('vcf-already-imported-banner');
+
+    // Show warning banner if NOTHING is marked saved yet but there are many leads
+    // (means user already imported manually before this tracking system existed)
+    if (s.saved === 0 && s.total > 50) {
+      banner.style.display = 'block';
+    } else {
+      banner.style.display = 'none';
+    }
+
+    if (s.pending === 0) {
+      newBtn.disabled = true;
+      newBtn.innerHTML = '✅ All contacts already saved — nothing new!';
+      newBtn.style.opacity = '.5';
+    } else {
+      newBtn.disabled = false;
+      newBtn.style.opacity = '1';
+      newBtn.innerHTML = `⬇️ Download NEW Contacts Only <span style="background:rgba(0,0,0,.3);padding:2px 8px;border-radius:10px;font-size:11px">${s.pending} contacts</span>`;
+    }
+    document.getElementById('vcf-new-count').textContent = `${s.pending} contacts`;
+  } catch(e) {
+    console.error('Stats load error:', e);
+  }
+}
+
+// One-time fix: mark ALL current leads as already saved
+async function markAllAsSaved() {
+  const btn = document.getElementById('vcf-mark-all-btn');
+  const msg = document.getElementById('vcf-mark-all-msg');
+  if (!confirm(`This will mark ALL ${document.getElementById('vcf-stat-total').textContent} leads as already saved in your phone contacts.\n\nOnly NEW leads added after today will appear in future exports.\n\nContinue?`)) return;
+  btn.disabled = true;
+  btn.textContent = '⏳ Marking all as saved...';
+  try {
+    const r = await (await fetch('/api/contacts/mark-all-saved', { method: 'POST' })).json();
+    if (r.success) {
+      msg.style.color = '#34d399';
+      msg.textContent = `✅ Done! ${r.marked} leads marked as saved. Future exports will only include new leads.`;
+      btn.style.display = 'none';
+      // Refresh stats
+      await syncContacts();
+    } else {
+      msg.style.color = '#f87171';
+      msg.textContent = '❌ Error: ' + r.error;
+      btn.disabled = false;
+      btn.textContent = '✅ I Already Imported All These — Mark All as Saved';
+    }
+  } catch(e) {
+    msg.style.color = '#f87171';
+    msg.textContent = '❌ ' + e.message;
+    btn.disabled = false;
+  }
+}
+
+
+// ── Smart VCF downloader ─────────────────────────────────────
+async function downloadVcf(newOnly = true) {
+  const sel = getSelected();
+  const btn = newOnly ? document.getElementById('vcf-btn-new') : null;
+  const orig = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Generating...'; }
+
+  try {
+    const resp = await fetch('/api/leads/export-vcf', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // If user selected specific leads → export those; else use newOnly flag
+      body: JSON.stringify({
+        ids:     sel.length ? sel : undefined,
+        newOnly: sel.length ? false : newOnly
+      })
+    });
+
+    const count = parseInt(resp.headers.get('X-Exported-Count') || '0');
+    const blob  = await resp.blob();
+
+    if (count === 0) {
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '✅ All contacts already saved on your phone!';
+      }
+      document.getElementById('vcf-mark-msg').textContent = '✅ Nothing new to export — all leads already saved.';
+      return;
+    }
+
+    // Trigger file download
+    const url = URL.createObjectURL(blob);
+    const a   = document.createElement('a');
+    a.href     = url;
+    a.download = `new_contacts_${new Date().toISOString().slice(0,10)}.vcf`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    // Server already marked them as saved — just show confirmation
+    if (btn) btn.innerHTML = `✅ Downloaded ${count} new contacts!`;
+    document.getElementById('vcf-mark-msg').textContent =
+      `✅ ${count} contacts saved & marked — they won't appear in future downloads`;
+    document.getElementById('vcf-step2').style.display = 'block';
+
+    // Refresh live stats
+    await syncContacts();
+
+  } catch(e) {
+    if (btn) { btn.innerHTML = orig; btn.disabled = false; }
+    alert('❌ Download error: ' + e.message);
+  }
+}
+
+
+
+
 // ── Connection badges ───────────────────────────────────────
 async function checkConnections(){
   try{
@@ -326,6 +555,15 @@ async function checkConnections(){
     const hasCfg=cfg.ultramsg?.instanceId && cfg.ultramsg?.token;
     document.getElementById('wa-badge').className='badge-sm '+(hasCfg?'s-warn':'s-err');
     document.getElementById('wa-badge').textContent=hasCfg?'🟡 WA':'🔴 WA';
+  }catch(e){}
+  // Google Contacts badge
+  try{
+    const g=await(await fetch('/api/google-status')).json();
+    const badge=document.getElementById('google-badge');
+    if(badge){
+      badge.className='badge-sm '+(g.authorized?'s-ok':'s-err');
+      badge.textContent=g.authorized?'🟢 Google Connected':'⚪ Not Connected';
+    }
   }catch(e){}
 }
 
@@ -354,9 +592,304 @@ async function importManual(){
   fetchLeads();
 }
 
+// ── Excel Import ────────────────────────────────────────────
+let _xlFile = null;
+let _xlPreviewRows = [];
+
+function openExcelImport(){
+  _xlFile = null;
+  _xlPreviewRows = [];
+  document.getElementById('xl-file-input').value = '';
+  document.getElementById('xl-preview').innerHTML = '';
+  document.getElementById('xl-actions').style.display = 'none';
+  document.getElementById('excel-modal').style.display = 'block';
+  document.body.style.overflow = 'hidden';
+}
+
+function closeExcelImport(){
+  document.getElementById('excel-modal').style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+async function onExcelFileChosen(file){
+  if(!file) return;
+  _xlFile = file;
+  const prev = document.getElementById('xl-preview');
+  prev.innerHTML = '<div style="color:#60a5fa;font-size:13px;padding:10px 0">⏳ Parsing file...</div>';
+
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const r = await fetch('/api/leads/import-excel/preview', { method:'POST', body:fd });
+    const d = await r.json();
+    if(!r.ok) { prev.innerHTML = `<div style="color:#f87171;font-size:13px">❌ ${d.error||'Parse error'}</div>`; return; }
+    _xlPreviewRows = d.rows || [];
+    renderExcelPreview(d.rows);
+  } catch(e) {
+    prev.innerHTML = `<div style="color:#f87171;font-size:13px">❌ Network error: ${e.message}</div>`;
+  }
+}
+
+function renderExcelPreview(rows){
+  const prev = document.getElementById('xl-preview');
+  if(!rows.length){
+    prev.innerHTML = '<div style="color:#f87171;font-size:13px;padding:10px 0">❌ No valid rows found. Make sure columns are: Party Name, Address, Phone No</div>';
+    return;
+  }
+
+  const phoneOk = rows.filter(r=>r.phone).length;
+  const noPhone = rows.length - phoneOk;
+
+  let h = `
+    <div style="display:flex;gap:12px;margin-bottom:14px;flex-wrap:wrap">
+      <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:10px 16px;font-size:12px">
+        📋 <b style="color:#60a5fa">${rows.length}</b> rows found
+      </div>
+      <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:10px 16px;font-size:12px">
+        📱 <b style="color:#34d399">${phoneOk}</b> with phone
+      </div>
+      ${noPhone > 0 ? `<div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:10px 16px;font-size:12px">
+        ⚠️ <b style="color:#fbbf24">${noPhone}</b> no phone (will still import)
+      </div>` : ''}
+    </div>
+    <div style="max-height:320px;overflow-y:auto;border:1px solid #2d3748;border-radius:10px">
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="background:#1e293b;position:sticky;top:0">
+        <th style="padding:8px 12px;text-align:left;color:#94a3b8;font-weight:600">#</th>
+        <th style="padding:8px 12px;text-align:left;color:#94a3b8;font-weight:600">Party / Business Name</th>
+        <th style="padding:8px 12px;text-align:left;color:#94a3b8;font-weight:600">Address</th>
+        <th style="padding:8px 12px;text-align:left;color:#94a3b8;font-weight:600">Phone No</th>
+        <th style="padding:8px 12px;text-align:left;color:#94a3b8;font-weight:600">Status</th>
+      </tr></thead><tbody>`;
+
+  rows.slice(0,200).forEach((r,i)=>{
+    const hasPhone = !!r.phone;
+    h += `<tr style="border-top:1px solid #1e293b">
+      <td style="padding:7px 12px;color:#64748b">${i+1}</td>
+      <td style="padding:7px 12px;color:#e2e8f0;font-weight:500">${esc(r.name||'—')}</td>
+      <td style="padding:7px 12px;color:#94a3b8;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.address)}">${esc(r.address||'—')}</td>
+      <td style="padding:7px 12px;color:${hasPhone?'#34d399':'#f87171'};font-family:monospace">${esc(r.raw_phone||'—')}</td>
+      <td style="padding:7px 12px">${hasPhone?'<span style="color:#34d399">✅</span>':'<span style="color:#fbbf24">⚠️ No phone</span>'}</td>
+    </tr>`;
+  });
+  if(rows.length>200) h+=`<tr><td colspan="5" style="padding:8px 12px;color:#64748b;text-align:center;font-style:italic">…and ${rows.length-200} more rows (all will be imported)</td></tr>`;
+  h += '</tbody></table></div>';
+
+  prev.innerHTML = h;
+  const actions = document.getElementById('xl-actions');
+  actions.style.display = 'flex';
+}
+
+function esc(s){ const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
+
+async function confirmExcelImport(){
+  if(!_xlFile) return;
+  const btn = document.getElementById('xl-import-btn');
+  const cat = document.getElementById('xl-category').value.trim() || 'Customer List';
+  btn.disabled = true;
+  btn.textContent = '⏳ Importing...';
+
+  const fd = new FormData();
+  fd.append('file', _xlFile);
+  fd.append('category', cat);
+
+  try {
+    const r = await fetch('/api/leads/import-excel', { method:'POST', body:fd });
+    const d = await r.json();
+    if(r.ok && d.success){
+      alert(`✅ Import complete!\n\n📥 Added: ${d.added}\n🔁 Duplicates skipped: ${d.dupes}\n⚠️ Skipped (no name/phone): ${d.skipped}\n📋 Total rows: ${d.total}`);
+      closeExcelImport();
+      fetchLeads(1);
+      loadStats();
+      loadFilters();
+    } else {
+      alert('❌ Import failed: ' + (d.error || 'Unknown error'));
+    }
+  } catch(e) {
+    alert('❌ Network error: ' + e.message);
+  }
+  btn.disabled = false;
+  btn.textContent = '✅ Import Leads';
+}
+
+// Close modal when clicking outside
+document.getElementById('excel-modal').addEventListener('click', function(e){
+  if(e.target === this) closeExcelImport();
+});
+
+// ── WA Template Preview ─────────────────────────────────────
+async function previewWATemplate(){
+  const status = document.getElementById('wa-preview-status');
+  const panel  = document.getElementById('wa-preview-panel');
+  const txt    = document.getElementById('wa-preview-text');
+  status.textContent = '⏳ Saving & generating preview...';
+  // Save first so server gets the latest template
+  await saveSettings();
+  // Grab any lead to preview with
+  try {
+    const r = await fetch('/api/leads?limit=1&page=1');
+    const d = await r.json();
+    if(!d.leads||!d.leads.length){ status.textContent='⚠️ Add at least one lead to preview'; return; }
+    const leadId = d.leads[0]._id;
+    const mr = await fetch(`/api/leads/${leadId}/message?type=wa`);
+    const md = await mr.json();
+    panel.style.display='block';
+    txt.textContent = md.text || '(no message)';
+    status.textContent = '✅ Preview generated!';
+    setTimeout(()=>status.textContent='',3000);
+  } catch(e) {
+    status.textContent = '❌ ' + e.message;
+  }
+}
+
 // ── Init ────────────────────────────────────────────────────
 fetchLeads(1);
 loadFilters();
 loadStats();
 loadSettings();
 checkConnections();
+
+// ── Auto Schedule Modal ─────────────────────────────────────
+let _schedCats = [];
+
+async function openSchedule() {
+  document.getElementById('schedule-modal').style.display = 'flex';
+  await loadScheduleData();
+}
+
+function closeSchedule() {
+  document.getElementById('schedule-modal').style.display = 'none';
+}
+
+async function loadScheduleData() {
+  try {
+    const s = await (await fetch('/api/schedule')).json();
+    // Status panel
+    document.getElementById('sch-today-sent').textContent  = s.today_sent  || 0;
+    document.getElementById('sch-today-limit').textContent = s.daily_limit || 60;
+    document.getElementById('sch-total-sent').textContent  = s.total_sent  || 0;
+    document.getElementById('sch-last-run').textContent    = s.last_run
+      ? '⏰ Last run: ' + new Date(s.last_run).toLocaleString('en-IN', {timeZone:'Asia/Kolkata'})
+      : 'Not run yet';
+    // Badge
+    const badge = document.getElementById('sch-enabled-badge');
+    badge.textContent = s.enabled ? '🟢 ACTIVE' : '⚪ PAUSED';
+    badge.style.background = s.enabled ? '#14532d' : '#1e3a5f';
+    badge.style.color      = s.enabled ? '#86efac' : '#60a5fa';
+    // Toggle
+    document.getElementById('sch-enabled').checked = !!s.enabled;
+    updateEnableVisual();
+    // Limit slider
+    document.getElementById('sch-limit-slider').value   = s.daily_limit || 60;
+    document.getElementById('sch-limit-num').textContent = s.daily_limit || 60;
+    // Options
+    document.getElementById('sch-skip-sent').checked    = s.skip_sent    !== false;
+    document.getElementById('sch-allow-resend').checked = !!s.allow_resend;
+    // Time selectors
+    if (s.morning_hour) document.getElementById('sch-morning-hour').value = s.morning_hour;
+    if (s.evening_hour) document.getElementById('sch-evening-hour').value = s.evening_hour;
+    // Report email
+    document.getElementById('sch-report-email').value = s.report_email || '';
+    // Categories
+    const cats = s.categories_list || [];
+    _schedCats = s.categories || [];
+    const container = document.getElementById('sch-cat-list');
+    container.innerHTML = '';
+    cats.forEach(cat => {
+      const selected = _schedCats.includes(cat);
+      const chip = document.createElement('span');
+      chip.textContent = cat;
+      chip.style.cssText = `cursor:pointer;padding:4px 10px;border-radius:20px;font-size:11px;border:1px solid ${selected?'#7c3aed':'#334155'};background:${selected?'#4f46e5':'transparent'};color:${selected?'#fff':'#94a3b8'};transition:.2s`;
+      chip.onclick = () => {
+        const idx = _schedCats.indexOf(cat);
+        if (idx === -1) { _schedCats.push(cat); chip.style.background='#4f46e5'; chip.style.color='#fff'; chip.style.borderColor='#7c3aed'; }
+        else { _schedCats.splice(idx,1); chip.style.background='transparent'; chip.style.color='#94a3b8'; chip.style.borderColor='#334155'; }
+      };
+      container.appendChild(chip);
+    });
+  } catch(e) {
+    document.getElementById('sch-msg').textContent = '❌ Load error: ' + e.message;
+  }
+}
+
+function updateEnableVisual() {
+  const on = document.getElementById('sch-enabled').checked;
+  document.getElementById('sch-toggle-bg').style.background    = on ? '#7c3aed' : '#334155';
+  document.getElementById('sch-toggle-knob').style.left        = on ? '25px' : '3px';
+}
+
+async function saveSchedule() {
+  const msg = document.getElementById('sch-msg');
+  msg.textContent = '⏳ Saving...';
+  msg.style.color = '#64748b';
+  try {
+    const body = {
+      enabled:      document.getElementById('sch-enabled').checked,
+      categories:   _schedCats,
+      daily_limit:  parseInt(document.getElementById('sch-limit-slider').value),
+      skip_sent:    document.getElementById('sch-skip-sent').checked,
+      allow_resend: document.getElementById('sch-allow-resend').checked,
+      morning_hour: parseInt(document.getElementById('sch-morning-hour').value),
+      evening_hour: parseInt(document.getElementById('sch-evening-hour').value),
+      report_email: document.getElementById('sch-report-email').value.trim(),
+    };
+    const r = await (await fetch('/api/schedule', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    })).json();
+    if (r.success) {
+      msg.textContent = '✅ Schedule saved! ' + (body.enabled ? `Will send at ${body.morning_hour}:00 AM + ${body.evening_hour}:00 PM IST` : 'Scheduler is paused.');
+      msg.style.color = '#34d399';
+      await loadScheduleData();
+    } else {
+      msg.textContent = '❌ ' + (r.error || 'Save failed');
+      msg.style.color = '#f87171';
+    }
+  } catch(e) {
+    msg.textContent = '❌ ' + e.message;
+    msg.style.color = '#f87171';
+  }
+}
+
+async function runScheduleNow() {
+  const btn = document.getElementById('sch-run-btn');
+  const msg = document.getElementById('sch-msg');
+  btn.disabled = true;
+  btn.textContent = '⏳ Starting...';
+  try {
+    // Save first
+    await saveSchedule();
+    await new Promise(r => setTimeout(r, 500));
+    const r = await (await fetch('/api/schedule/run-now', {method:'POST'})).json();
+    if (r.success) {
+      msg.textContent = '✅ ' + r.message;
+      msg.style.color = '#34d399';
+      closeSchedule();
+      connectSSE();
+    } else {
+      msg.textContent = '⚠️ ' + (r.error || 'Could not start');
+      msg.style.color = '#fbbf24';
+    }
+  } catch(e) {
+    msg.textContent = '❌ ' + e.message;
+    msg.style.color = '#f87171';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '▶️ Run Now';
+  }
+}
+
+async function testScheduleReport() {
+  const msg = document.getElementById('sch-msg');
+  msg.textContent = '⏳ Sending test report...';
+  msg.style.color = '#64748b';
+  try {
+    const r = await (await fetch('/api/schedule/test-report', {method:'POST'})).json();
+    msg.textContent = r.success ? '✅ Test report sent! Check your email.' : '❌ ' + r.error;
+    msg.style.color = r.success ? '#34d399' : '#f87171';
+  } catch(e) {
+    msg.textContent = '❌ ' + e.message;
+    msg.style.color = '#f87171';
+  }
+}

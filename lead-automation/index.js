@@ -4,6 +4,11 @@
 const express    = require('express');
 const path       = require('path');
 const fs         = require('fs');
+const multer     = require('multer');
+const XLSX       = require('xlsx');
+
+// multer — keep file in memory (no disk write needed)
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 const app = express();
 app.use(express.json());
@@ -15,11 +20,15 @@ const { categorize, ALL_CATEGORIES } = require('./services/categories');
 const { exportLeads }             = require('./services/excel');
 const { sendEmail, testSmtp }     = require('./services/email-sender');
 const { buildInitialWA, buildFollowupWA, buildInitialEmail, buildFollowupEmail, daysSince } = require('./services/ai-messages');
+const { setTemplates } = require('./services/templates-cache');
+const googleContacts = require('./services/google-contacts');
 const ultraMsg = require('./ultramsg-sender');
 
 // Models (require early — mongoose buffers commands until connected)
 const Lead     = require('./models/Lead');
 const Settings = require('./models/Settings');
+const Schedule = require('./models/Schedule');
+const scheduler = require('./services/scheduler');
 
 // ── SSE Progress ──────────────────────────────────────────────
 let sseClients = [];
@@ -82,6 +91,9 @@ app.get('/api/leads', async (req, res) => {
         const status   = req.query.status   || '';
         const city     = req.query.city     || '';
         const sort     = req.query.sort     || '-createdAt';
+        const skipWaSent    = req.query.skipWaSent    === '1';
+        const skipEmailSent = req.query.skipEmailSent === '1';
+        const noWebsite     = req.query.noWebsite     === '1';
 
         const filter = {};
         if (search) {
@@ -91,6 +103,19 @@ app.get('/api/leads', async (req, res) => {
         if (category) filter.category = category;
         if (status)   filter.status   = status;
         if (city)     filter.city     = new RegExp(city, 'i');
+        if (skipWaSent)    filter.wa_sent    = { $ne: true };
+        if (skipEmailSent) filter.email_sent = { $ne: true };
+        if (noWebsite) {
+            // No website = empty/null OR social media links (not real business sites)
+            const socialPatterns = ['facebook', 'instagram', 'whatsapp', 'wa.me', 'youtube', 'twitter'];
+            filter.$or = [
+                { website: { $exists: false } },
+                { website: null },
+                { website: '' },
+                { website: 'No Site' },
+                { website: { $regex: socialPatterns.join('|'), $options: 'i' } }
+            ];
+        }
 
         const total = await Lead.countDocuments(filter);
         const leads = await Lead.find(filter)
@@ -206,6 +231,136 @@ app.post('/api/leads/import', async (req, res) => {
     } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Helper: parse Excel buffer → lead rows ───────────────────
+// Handles merged cells, multi-row records, numeric phone values
+function parseExcelBuffer(buffer) {
+    const wb = XLSX.read(buffer, { type: 'buffer' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    if (!ws['!ref']) return [];
+
+    const range = XLSX.utils.decode_range(ws['!ref']);
+
+    // Column keyword lists (lowercase)
+    const NAME_KEYS    = ['party name','name','business name','company','customer name','party'];
+    const ADDRESS_KEYS = ['address','location','area'];
+    const PHONE_KEYS   = ['phone no','phone','mobile','contact','phone number','mobile no','ph no','ph'];
+    const EMAIL_KEYS   = ['email','email id','e-mail','mail'];
+
+    // ── Find header row & column indices ────────────────────────
+    let headerRow = -1;
+    let colName = -1, colAddr = -1, colPhone = -1, colEmail = -1;
+
+    for (let R = range.s.r; R <= Math.min(range.e.r, range.s.r + 9); R++) {
+        let matchCount = 0;
+        for (let C = range.s.c; C <= range.e.c; C++) {
+            const cell = ws[XLSX.utils.encode_cell({ r: R, c: C })];
+            if (!cell) continue;
+            const val = String(cell.v || '').trim().toLowerCase();
+            if (NAME_KEYS.some(k => val.includes(k)))    { colName  = C; matchCount++; }
+            if (ADDRESS_KEYS.some(k => val.includes(k))) { colAddr  = C; matchCount++; }
+            if (PHONE_KEYS.some(k => val.includes(k)))   { colPhone = C; matchCount++; }
+            if (EMAIL_KEYS.some(k => val.includes(k)))   { colEmail = C; }
+        }
+        if (matchCount >= 2) { headerRow = R; break; }
+    }
+
+    // Fallback: first row = header
+    if (headerRow === -1) {
+        headerRow = range.s.r;
+        colName  = range.s.c;
+        colAddr  = range.s.c + 1;
+        colPhone = range.s.c + 2;
+        colEmail = range.s.c + 3;
+    }
+
+    // ── Walk rows, carry-forward merged-cell values ─────────────
+    const leads = [];
+    let lastName = '', lastAddr = '', lastEmail = '';
+
+    const getVal = (R, C) => {
+        if (C < 0) return '';
+        const cell = ws[XLSX.utils.encode_cell({ r: R, c: C })];
+        if (!cell) return '';
+        // Numeric cells (Excel stores phone numbers as numbers — pad to string)
+        if (cell.t === 'n') return String(Math.round(cell.v));
+        return String(cell.v || '').trim();
+    };
+
+    for (let R = headerRow + 1; R <= range.e.r; R++) {
+        const nameVal  = getVal(R, colName).trim();
+        const addrVal  = getVal(R, colAddr).trim();
+        const phoneVal = getVal(R, colPhone).trim();
+        const emailVal = getVal(R, colEmail).trim();
+
+        // Carry forward for merged / split rows
+        if (nameVal)  lastName  = nameVal;
+        if (addrVal)  lastAddr  = addrVal;
+        if (emailVal) lastEmail = emailVal;
+
+        // Only emit a lead when a phone number is present on this row
+        if (!phoneVal) continue;
+        if (!lastName && !phoneVal) continue;
+
+        // Support "7045177925/9930822387" — create one lead per number
+        const phoneParts = phoneVal.split(/[/,]/).map(p => p.replace(/\D/g, '').trim()).filter(p => p.length >= 7);
+        if (!phoneParts.length) continue;
+
+        for (const raw_phone of phoneParts) {
+            const phone = raw_phone.length === 10 ? '91' + raw_phone : raw_phone;
+
+            let city = '';
+            if (lastAddr) {
+                const parts = lastAddr.split(/[,()]/);
+                city = (parts[parts.length - 1] || parts[0] || '').trim();
+            }
+
+            leads.push({
+                name:     lastName || 'Unknown',
+                address:  lastAddr,
+                city,
+                raw_phone,
+                phone,
+                email:    lastEmail || '',
+                source:   'excel_import'
+            });
+        }
+    }
+
+    return leads;
+}
+
+// ── POST Import Excel (preview) ───────────────────────────────
+app.post('/api/leads/import-excel/preview', upload.single('file'), (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+        const rows = parseExcelBuffer(req.file.buffer);
+        res.json({ rows, total: rows.length });
+    } catch(e) { res.status(500).json({ error: 'Failed to parse file: ' + e.message }); }
+});
+
+// ── POST Import Excel (save) ───────────────────────────────────
+app.post('/api/leads/import-excel', upload.single('file'), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+        const rows   = parseExcelBuffer(req.file.buffer);
+        const category = req.body.category || 'Excel Import';
+        let added = 0, dupes = 0, skipped = 0;
+
+        for (const row of rows) {
+            if (!row.name && !row.phone) { skipped++; continue; }
+            try {
+                const doc = { ...row, keyword: category, category };
+                const filter = row.phone
+                    ? { phone: row.phone }
+                    : { name: row.name, city: row.city };
+                await Lead.findOneAndUpdate(filter, { $setOnInsert: doc }, { upsert: true, new: false });
+                added++;
+            } catch(e) { if (e.code === 11000) dupes++; else console.error(e.message); }
+        }
+        res.json({ success: true, added, dupes, skipped, total: rows.length });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── GET Export Excel ──────────────────────────────────────────
 app.get('/api/leads/export', async (req, res) => {
     try {
@@ -217,6 +372,126 @@ app.get('/api/leads/export', async (req, res) => {
     } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── GET Contact Sync Stats ────────────────────────────────────
+app.get('/api/contacts/stats', async (req, res) => {
+    try {
+        const total   = await Lead.countDocuments({ phone: { $exists: true, $ne: '' } });
+        const saved   = await Lead.countDocuments({ phone: { $exists: true, $ne: '' }, contact_saved: true });
+        const pending = total - saved;
+        res.json({ total, saved, pending });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── POST Mark contacts as saved (specific IDs) ───────────────
+app.post('/api/contacts/mark-saved', async (req, res) => {
+    try {
+        const { ids } = req.body;
+        const filter = ids?.length
+            ? { _id: { $in: ids } }
+            : { contact_saved: { $ne: true }, phone: { $exists: true, $ne: '' } };
+        const result = await Lead.updateMany(filter, {
+            $set: { contact_saved: true, contact_saved_at: new Date() }
+        });
+        res.json({ success: true, marked: result.modifiedCount });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── POST Mark ALL leads as saved (one-time fix when user already imported) ─
+app.post('/api/contacts/mark-all-saved', async (req, res) => {
+    try {
+        const result = await Lead.updateMany(
+            { phone: { $exists: true, $ne: '' } },
+            { $set: { contact_saved: true, contact_saved_at: new Date() } }
+        );
+        console.log(`✅ Marked all ${result.modifiedCount} leads as contact_saved=true`);
+        res.json({ success: true, marked: result.modifiedCount });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+
+
+// ── GET Export VCard — ALL leads (no dedup) ───────────────────
+app.get('/api/leads/export-vcf', async (req, res) => {
+    try {
+        const leads = await Lead.find({ phone: { $exists: true, $ne: '' } }).lean();
+        res.setHeader('Content-Type', 'text/vcard; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="all_contacts_${todayStr()}.vcf"`);
+        res.send(buildVcf(leads));
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── POST Export VCard — SMART (new only, auto-marks as saved server-side) ─
+app.post('/api/leads/export-vcf', async (req, res) => {
+    try {
+        const { ids, newOnly } = req.body;
+
+        let filter;
+        if (ids?.length) {
+            filter = { _id: { $in: ids }, phone: { $exists: true, $ne: '' } };
+        } else if (newOnly) {
+            // Only leads NOT yet saved to contacts
+            filter = { contact_saved: { $ne: true }, phone: { $exists: true, $ne: '' } };
+        } else {
+            filter = { phone: { $exists: true, $ne: '' } };
+        }
+
+        const leads = await Lead.find(filter).lean();
+
+        if (!leads.length) {
+            return res.status(200)
+                .setHeader('Content-Type', 'text/vcard; charset=utf-8')
+                .send('BEGIN:VCARD\r\nVERSION:3.0\r\nFN:No New Contacts\r\nNOTE:All contacts already saved\r\nEND:VCARD\r\n');
+        }
+
+        // ✅ Mark as saved SERVER-SIDE immediately (guaranteed, no header size limit)
+        if (newOnly) {
+            const exportedIds = leads.map(l => l._id);
+            await Lead.updateMany(
+                { _id: { $in: exportedIds } },
+                { $set: { contact_saved: true, contact_saved_at: new Date() } }
+            );
+        }
+
+        res.setHeader('Content-Type', 'text/vcard; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="new_contacts_${todayStr()}.vcf"`);
+        res.setHeader('X-Exported-Count', leads.length);
+        res.setHeader('Access-Control-Expose-Headers', 'X-Exported-Count');
+        res.send(buildVcf(leads));
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+
+
+
+// ── Helper: build .vcf string ─────────────────────────────────
+function buildVcf(leads) {
+    return leads.map(lead => {
+        const name     = (lead.name || 'Unknown').replace(/[\\n\\r;]/g, ' ').trim();
+        const phone    = lead.phone   || lead.raw_phone || '';
+        const city     = lead.city    || '';
+        const address  = lead.address || '';
+        const email    = lead.email   || '';
+        const category = lead.category || lead.keyword || '';
+
+        // Phone in E.164 format
+        const e164 = phone.startsWith('+') ? phone : '+' + phone;
+
+        let card = `BEGIN:VCARD\r\nVERSION:3.0\r\n`;
+        card += `FN:${name}\r\n`;
+        card += `N:${name};;;;\r\n`;
+        if (e164) card += `TEL;TYPE=CELL:${e164}\r\n`;
+        if (email) card += `EMAIL;TYPE=WORK:${email}\r\n`;
+        if (address || city) {
+            const adr = [address, city, 'India'].filter(Boolean).join(', ');
+            card += `ADR;TYPE=WORK:;;${adr};;;;\r\n`;
+        }
+        if (category) card += `ORG:${name};${category}\r\n`;
+        card += `NOTE:Lead from Innvoque CRM\r\n`;
+        card += `END:VCARD\r\n`;
+        return card;
+    }).join('\r\n');
+}
+
 // ── GET lead message (for manual WA sending) ──────────────────
 app.get('/api/leads/:id/message', async (req, res) => {
     try {
@@ -225,7 +500,7 @@ app.get('/api/leads/:id/message', async (req, res) => {
         const type = req.query.type;
         let text = '';
         if(type === 'wa') text = await buildInitialWA(lead);
-        else if(type === 'email') text = buildInitialEmail(lead).html;
+        else if(type === 'email') text = (await buildInitialEmail(lead)).html;
         else if(type === 'followup_wa') text = await buildFollowupWA(lead, (lead.followup_count||0)+1);
         
         res.json({ phone: lead.phone, text });
@@ -258,11 +533,11 @@ app.post('/api/leads/:id/mark-wa', async (req, res) => {
 
 // ── POST Send WhatsApp (Local Automation via Playwright) ──────
 app.post('/api/send/wa', async (req, res) => {
-    const { ids } = req.body;
+    const { ids, skipWaSent } = req.body;
     res.json({ success: true, message: 'Local WA Auto-send started!' });
     setImmediate(async () => {
         const { sendLocalWA } = require('./playwright-sender');
-        await sendLocalWA(ids, false);
+        await sendLocalWA(ids, false, { skipWaSent: !!skipWaSent });
     });
 });
 
@@ -339,6 +614,10 @@ app.post('/api/settings', async (req, res) => {
             }
         }
         if (um?.instanceId) ultraMsg.saveConfig(um);
+        // ── Refresh message-templates cache ───────────────────────
+        await loadTemplatesCache();
+        // ── Refresh Google OAuth credentials if provided ─────────────
+        await loadGoogleCredentials();
         res.json({ success: true });
     } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -355,6 +634,135 @@ app.post('/api/test-ultramsg', async (req, res) => {
 app.post('/api/test-smtp', async (req, res) => {
     const result = await testSmtp();
     res.json(result);
+});
+
+// ── Schedule: GET ───────────────────────────────────────────────
+app.get('/api/schedule', async (req, res) => {
+    try {
+        let s = await Schedule.findOne({});
+        if (!s) s = await Schedule.create({});
+        res.json({ ...s.toObject(), categories_list: ALL_CATEGORIES });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Schedule: POST (save) ────────────────────────────────────
+app.post('/api/schedule', async (req, res) => {
+    try {
+        const { enabled, categories, daily_limit, skip_sent, allow_resend,
+                morning_hour, evening_hour, report_email } = req.body;
+        const s = await Schedule.findOneAndUpdate(
+            {},
+            { enabled, categories, daily_limit: parseInt(daily_limit) || 60,
+              skip_sent, allow_resend, morning_hour: parseInt(morning_hour) || 10,
+              evening_hour: parseInt(evening_hour) || 16, report_email },
+            { upsert: true, new: true }
+        );
+        // Restart cron with new settings
+        scheduler.startScheduler(s);
+        res.json({ success: true, schedule: s });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Schedule: Run Now (manual trigger) ──────────────────────────
+app.post('/api/schedule/run-now', async (req, res) => {
+    if (scheduler.isRunning()) {
+        return res.json({ success: false, error: 'Already sending — please wait for current batch to finish' });
+    }
+    res.json({ success: true, message: 'Scheduled batch started! WhatsApp window will open shortly.' });
+    setImmediate(() => {
+        scheduler.runScheduledSend('manual').catch(e => console.error('Run-now error:', e.message));
+    });
+});
+
+// ── Schedule: Test Daily Report Email ────────────────────────
+app.post('/api/schedule/test-report', async (req, res) => {
+    try {
+        await scheduler.sendDailyReport();
+        res.json({ success: true, message: 'Test report sent!' });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Schedule: Status ─────────────────────────────────────────────
+app.get('/api/schedule/status', async (req, res) => {
+    try {
+        const s = await Schedule.findOne({});
+        res.json({
+            enabled:     s?.enabled || false,
+            today_sent:  s?.today_sent || 0,
+            today_failed:s?.today_failed || 0,
+            daily_limit: s?.daily_limit || 60,
+            last_run:    s?.last_run,
+            is_running:  scheduler.isRunning()
+        });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Google OAuth Status ─────────────────────────────────────
+app.get('/api/google-status', (req, res) => {
+    res.json({ authorized: googleContacts.isAuthorized() });
+});
+
+// ── Google OAuth — Redirect to consent screen ─────────────────
+app.get('/auth/google', (req, res) => {
+    const url = googleContacts.getAuthUrl();
+    if (!url) return res.status(400).send('Google OAuth not configured. Add Client ID & Secret in Settings first.');
+    res.redirect(url);
+});
+
+// ── Google OAuth Callback ─────────────────────────────────
+app.get('/auth/google/callback', async (req, res) => {
+    const code = req.query.code;
+    if (!code) return res.status(400).send('No authorization code received.');
+    try {
+        await googleContacts.exchangeCode(code, Settings);
+        res.send(`
+            <html><body style="font-family:Arial;text-align:center;padding:60px;background:#0f172a;color:#e2e8f0">
+            <div style="font-size:48px">✅</div>
+            <h2 style="color:#34d399">Google Contacts Connected!</h2>
+            <p>Your account is now linked. Contacts will be saved automatically before each WhatsApp message.</p>
+            <p><a href="/" style="color:#60a5fa">← Back to CRM</a></p>
+            </body></html>
+        `);
+    } catch(e) {
+        res.status(500).send('OAuth error: ' + e.message);
+    }
+});
+
+// ── Bulk sync contacts to Google ─────────────────────────────
+app.post('/api/contacts/sync', async (req, res) => {
+    const { ids } = req.body;
+    if (!googleContacts.isAuthorized()) {
+        return res.status(401).json({ error: 'Google not connected. Go to Settings → Connect Google.' });
+    }
+    res.json({ success: true, message: 'Contact sync started...' });
+
+    setImmediate(async () => {
+        const filter = ids?.length
+            ? { _id: { $in: ids } }
+            : { contact_saved: { $ne: true }, phone: { $exists: true, $ne: '' } };
+
+        const leads = await Lead.find(filter).lean();
+        emit({ type: 'start', total: leads.length });
+        emit({ type: 'status', message: `📒 Syncing ${leads.length} contacts to Google Contacts...` });
+
+        const { saved, skipped, failed } = await googleContacts.saveContactsBatch(leads, (progress) => {
+            if (progress.type === 'saved') {
+                emit({ type: 'sent', name: progress.name, sent: progress.saved, failed: progress.failed, total: leads.length });
+                // Mark in DB
+                Lead.findOneAndUpdate(
+                    { name: progress.name },
+                    { $set: { contact_saved: true, contact_saved_at: new Date() } }
+                ).catch(() => {});
+            } else if (progress.type === 'fail') {
+                emit({ type: 'failed', name: progress.name, reason: progress.reason, sent: progress.saved || 0, failed: progress.failed || 0 });
+            } else if (progress.type === 'skip') {
+                emit({ type: 'skipped', name: progress.name, reason: progress.reason });
+            }
+        });
+
+        emit({ type: 'done', sent: saved, failed, total: leads.length,
+            message: `✅ Sync complete: ${saved} saved, ${skipped} skipped, ${failed} failed` });
+    });
 });
 
 // ── Get Follow-ups due ────────────────────────────────────────
@@ -403,8 +811,39 @@ async function migrateJson() {
     } catch(e) { console.error('Migration error:', e.message); }
 }
 
-// ── Start ─────────────────────────────────────────────────────
-const PORT = 3000;
+// ── Load message templates from DB into memory cache ────────────
+async function loadTemplatesCache() {
+    try {
+        const rows = await Settings.find({ key: { $in: ['wa_template','email_subject','email_body'] } });
+        const obj  = {};
+        rows.forEach(r => { obj[r.key] = r.value; });
+        setTemplates(obj);
+        console.log('  📝 Message templates loaded into cache');
+    } catch(e) { console.log('  ⚠️  Could not load templates:', e.message); }
+}
+
+// ── Load Google OAuth credentials from DB and restore tokens ────
+async function loadGoogleCredentials() {
+    try {
+        const rows = await Settings.find({ key: { $in: ['google_client_id','google_client_secret'] } });
+        const cfg  = {};
+        rows.forEach(r => { cfg[r.key] = r.value; });
+        if (cfg.google_client_id && cfg.google_client_secret) {
+            googleContacts.setupCredentials({
+                client_id:     cfg.google_client_id,
+                client_secret: cfg.google_client_secret,
+                redirect_uri:  `http://localhost:3000/auth/google/callback`
+            });
+            const hasTokens = await googleContacts.loadTokens(Settings);
+            console.log('  📲 Google Contacts:', hasTokens ? '✅ Connected' : '⚠️ Not authorized yet');
+        } else {
+            console.log('  📲 Google Contacts: Not configured (add credentials in Settings)');
+        }
+    } catch(e) { console.log('  ⚠️  Google credentials load error:', e.message); }
+}
+
+// ── Start ────────────────────────────────────────────────────
+const PORT = parseInt(process.env.PORT) || 3000;
 
 async function start() {
     console.log('\n' + '='.repeat(52));
@@ -416,8 +855,15 @@ async function start() {
 
     app.listen(PORT, async () => {
         console.log(`\n  ✅ http://localhost:${PORT}\n`);
-        if (ok) await migrateJson();
-        require('child_process').exec(`start http://localhost:${PORT}`);
+        if (ok) {
+            await migrateJson();
+            await loadTemplatesCache();
+            await loadGoogleCredentials();
+            // ── Start scheduler from saved settings ──────────────────────
+            const savedSchedule = await Schedule.findOne({});
+            if (savedSchedule) scheduler.startScheduler(savedSchedule);
+        }
+        if (PORT === 3000 && !process.env.NO_BROWSER) require('child_process').exec(`start http://localhost:${PORT}`);
     });
 }
 
