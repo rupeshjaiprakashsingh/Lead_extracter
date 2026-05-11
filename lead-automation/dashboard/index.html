@@ -28,6 +28,8 @@
 <!-- ═══════ LEADS TAB ═══════ -->
 <div id="tab-leads" class="tab-body">
   <div class="stats" id="stats-bar"></div>
+  <!-- Category count breakdown -->
+  <div id="cat-breakdown-bar" style="display:none;padding:6px 16px 4px;flex-wrap:wrap;gap:5px;align-items:center;background:#080f1f;border-bottom:1px solid #1e293b;overflow-x:auto"></div>
 
   <div class="ctrl">
     <div class="ig"><label>Keyword</label><input type="text" id="kw" value="clinic" style="width:170px"></div>
@@ -70,6 +72,11 @@
     .kw-chip.t1{background:#14532d;color:#86efac} .kw-chip.t1:hover{background:#166534}
     .kw-chip.t2{background:#713f12;color:#fde68a} .kw-chip.t2:hover{background:#92400e}
     .kw-chip.active{outline:2px solid #fff}
+    /* Category count chips */
+    .cat-count-chip{display:inline-flex;align-items:center;gap:5px;background:#0f1e38;border:1px solid #1e3a6e;border-radius:20px;padding:2px 8px 2px 9px;font-size:10px;color:#93c5fd;cursor:pointer;transition:.15s;white-space:nowrap}
+    .cat-count-chip:hover{background:#1e3a6e;border-color:#3b82f6}
+    .cat-count-name{font-weight:600;max-width:120px;overflow:hidden;text-overflow:ellipsis}
+    .cat-count-num{background:#1d4ed8;color:#fff;border-radius:10px;padding:1px 6px;font-size:9px;font-weight:700;min-width:18px;text-align:center}
   </style>
   <div class="ctrl">
     <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;align-items:center">

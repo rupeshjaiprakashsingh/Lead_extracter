@@ -39,8 +39,36 @@ async function loadStats(){
       `<div class="stat"><div class="n" style="color:#34d399">${s.waSent}</div><div class="l">WA Sent</div></div>`+
       `<div class="stat" title="Click to filter No Website leads" style="cursor:pointer;border:1px solid #f59e0b" onclick="applyNoWebsiteFilter()"><div class="n" style="color:#fb923c">${s.noSite}</div><div class="l" style="color:#f59e0b">🌐 No Website ▶</div></div>`+
       `<div class="stat"><div class="n" style="color:#c084fc">${s.followup}</div><div class="l">Follow-Up Due</div></div>`;
+
+    // ── Category Breakdown Bar ───────────────────────────────
+    const breakdown = s.categoryBreakdown || [];
+    const catBar = document.getElementById('cat-breakdown-bar');
+    if(catBar && breakdown.length){
+      catBar.style.display = 'flex';
+      catBar.innerHTML = '<span style="font-size:10px;color:#64748b;font-weight:700;margin-right:4px;white-space:nowrap">📊 BY CATEGORY:</span>' +
+        breakdown.map(c =>
+          `<span class="cat-count-chip" onclick="filterByCategory('${c.name.replace(/'/g,"\\'")}')" title="Filter: ${c.name}">
+            <span class="cat-count-name">${c.name}</span>
+            <span class="cat-count-num">${c.count}</span>
+          </span>`
+        ).join('') +
+        '<span class="cat-count-chip" onclick="clearCatFilter()" style="background:#1e293b;border-color:#475569" title="Show All">All <span class="cat-count-num" style="background:#475569">'+ s.total +'</span></span>';
+    }
   }catch(e){}
 }
+
+function filterByCategory(cat){
+  const sel = document.getElementById('f-cat');
+  if(!sel) return;
+  const opt = Array.from(sel.options).find(o => o.value === cat);
+  if(opt){ sel.value = cat; fetchLeads(1); }
+}
+
+function clearCatFilter(){
+  const sel = document.getElementById('f-cat');
+  if(sel){ sel.value = ''; fetchLeads(1); }
+}
+
 
 // One-click: apply No Website filter from stat card
 function applyNoWebsiteFilter() {

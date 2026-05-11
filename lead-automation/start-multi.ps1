@@ -10,7 +10,7 @@ $DIR  = "c:\Rupesh\Lead_extracter\lead-automation"
 
 # ── Configure: How many instances to start ──────────────────
 # Change this number (1–10) — each gets its own port
-$INSTANCES = 5   # <-- change to 10 for max
+$INSTANCES = 10   # <-- changed to 10 for max
 
 # ── Kill any existing node processes first ──────────────────
 Write-Host "`n🔄 Stopping existing instances..." -ForegroundColor Yellow

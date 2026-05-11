@@ -75,10 +75,24 @@ app.get('/api/stats', async (req, res) => {
         const total    = await Lead.countDocuments();
         const pending  = await Lead.countDocuments({ wa_sent: false });
         const waSent   = await Lead.countDocuments({ wa_sent: true });
-        const noSite   = await Lead.countDocuments({ $or: [{ website: { $exists: false } }, { website: '' }, { website: null }] });
+        // Fix: include 'No Site' string AND social links AND empty
+        const socialPatterns = ['facebook','instagram','whatsapp','wa.me','youtube','twitter'];
+        const noSite = await Lead.countDocuments({ $or: [
+            { website: { $exists: false } },
+            { website: null },
+            { website: '' },
+            { website: 'No Site' },
+            { website: { $regex: socialPatterns.join('|'), $options: 'i' } }
+        ]});
         const followup = await Lead.countDocuments({ next_followup: { $lte: new Date() } });
-        res.json({ total, pending, waSent, noSite, followup });
-    } catch(e) { res.json({ total:0, pending:0, waSent:0, noSite:0, followup:0 }); }
+        // Per-category breakdown
+        const catAgg = await Lead.aggregate([
+            { $group: { _id: '$category', count: { $sum: 1 } } },
+            { $sort: { count: -1 } }
+        ]);
+        const categoryBreakdown = catAgg.map(c => ({ name: c._id || 'Uncategorized', count: c.count }));
+        res.json({ total, pending, waSent, noSite, followup, categoryBreakdown });
+    } catch(e) { res.json({ total:0, pending:0, waSent:0, noSite:0, followup:0, categoryBreakdown:[] }); }
 });
 
 // ── GET Leads (paginated, filtered, searched) ─────────────────
