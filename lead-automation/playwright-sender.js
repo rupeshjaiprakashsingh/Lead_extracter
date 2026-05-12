@@ -53,12 +53,21 @@ async function sendLocalWA(ids, isFollowup = false, options = {}) {
         
         if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
 
-        const browser = await chromium.launchPersistentContext(SESSION_DIR, {
-            headless: false, // Must be visible for safety
-            args: ['--no-sandbox', '--start-maximized', '--disable-blink-features=AutomationControlled'],
-            viewport: null,
-            slowMo: 100 // Slow down actions to simulate human
-        });
+        let browser;
+        try {
+            browser = await chromium.launchPersistentContext(SESSION_DIR, {
+                headless: false, // Must be visible for safety
+                args: ['--no-sandbox', '--start-maximized', '--disable-blink-features=AutomationControlled'],
+                viewport: null,
+                slowMo: 100 // Slow down actions to simulate human
+            });
+        } catch (err) {
+            if (err.message.includes('existing browser session') || err.message.includes('has been closed')) {
+                emit({ type: 'error', message: '❌ WhatsApp sender is already running in another window. Please wait for it to finish.' });
+                return { sent: 0, failed: 0, total: 0 };
+            }
+            throw err;
+        }
 
         const page = await browser.newPage();
         emit({ type: 'status', message: 'Opening WhatsApp Web locally...' });

@@ -94,7 +94,11 @@ async function scrapeGoogleMaps(keyword, city, maxResults = 9999) {
     // ── Use persistent profile (avoids repeated CAPTCHA) ──────
     if (!fs.existsSync(PROFILE_DIR)) fs.mkdirSync(PROFILE_DIR, { recursive: true });
 
-    const browser = await chromium.launchPersistentContext(PROFILE_DIR, {
+    let browser;
+    let usedProfileDir = PROFILE_DIR;
+    let isTempProfile = false;
+
+    const launchArgs = {
         headless: false,
         args: [
             '--no-sandbox',
@@ -105,7 +109,21 @@ async function scrapeGoogleMaps(keyword, city, maxResults = 9999) {
         ignoreDefaultArgs: ['--enable-automation'],
         viewport: null,
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    });
+    };
+
+    try {
+        browser = await chromium.launchPersistentContext(usedProfileDir, launchArgs);
+    } catch (err) {
+        if (err.message.includes('existing browser session') || err.message.includes('has been closed')) {
+            console.log('\n  ⚠️ Persistent profile in use by another instance. Using a temporary profile for this run.');
+            usedProfileDir = PROFILE_DIR + '_' + Date.now();
+            isTempProfile = true;
+            fs.mkdirSync(usedProfileDir, { recursive: true });
+            browser = await chromium.launchPersistentContext(usedProfileDir, launchArgs);
+        } else {
+            throw err;
+        }
+    }
 
     const page = await browser.newPage();
 
@@ -317,6 +335,14 @@ async function scrapeGoogleMaps(keyword, city, maxResults = 9999) {
     }
 
     await browser.close();
+
+    if (isTempProfile) {
+        try {
+            fs.rmSync(usedProfileDir, { recursive: true, force: true });
+        } catch (e) {
+            console.log(`  ⚠️ Could not remove temporary profile: ${e.message}`);
+        }
+    }
 
     // Save & merge (dedup by phone)
     const existing = loadLeads();
