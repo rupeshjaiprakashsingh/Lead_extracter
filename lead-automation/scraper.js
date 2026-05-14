@@ -176,20 +176,28 @@ async function scrapeGoogleMaps(keyword, city, maxResults = 9999) {
     // ── SCROLL AGGRESSIVELY until "end of list" ───────────────
     const collectedUrls = new Set();
     let noNewCount = 0;
-    const MAX_NO_NEW = 20;    // stop after 20 scrolls with zero new results
+    const MAX_NO_NEW = 40;    // Even more persistence
     let totalScrolls = 0;
 
-    console.log(`\n  📜 Starting aggressive scroll to collect ALL business URLs...\n`);
+    console.log(`\n  📜 Starting DEEP SCROLL to collect ALL business URLs...\n`);
 
     while (noNewCount < MAX_NO_NEW) {
-        // Collect all visible place links
-        const links = await page.locator('[role="feed"] a[href*="/maps/place/"]').all();
+        // Collect all visible place links (Broadened search)
+        const links = await page.locator('a[href*="/maps/place/"]').all();
         let added = 0;
         for (const link of links) {
             const href = await link.getAttribute('href').catch(() => null);
-            if (href && !collectedUrls.has(href)) {
-                collectedUrls.add(href);
-                added++;
+            if (href) {
+                // Ensure it's a valid place URL and not an ad/suggested link from elsewhere
+                const isRealResult = await link.evaluate(el => {
+                    const parent = el.closest('[role="feed"], [aria-label^="Results for"], .m67qEc');
+                    return !!parent;
+                }).catch(() => true);
+
+                if (isRealResult && !collectedUrls.has(href)) {
+                    collectedUrls.add(href);
+                    added++;
+                }
             }
         }
 
@@ -210,14 +218,16 @@ async function scrapeGoogleMaps(keyword, city, maxResults = 9999) {
 
         // Check for true end-of-list
         const endSelectors = [
-            "span:has-text(\"You've reached the end of the list\")",
+            "span:has-text(\"reached the end of the list\")",
             "span:has-text(\"No more results\")",
+            "span:has-text(\"no further results\")",
+            "div:has-text(\"You've reached the end\")",
             ".HlvSq",
             "p.fontBodyMedium:has-text(\"end\")"
         ];
         let reachedEnd = false;
         for (const sel of endSelectors) {
-            if (await page.locator(sel).isVisible({ timeout: 500 }).catch(() => false)) {
+            if (await page.locator(sel).isVisible({ timeout: 400 }).catch(() => false)) {
                 reachedEnd = true; break;
             }
         }
@@ -229,33 +239,53 @@ async function scrapeGoogleMaps(keyword, city, maxResults = 9999) {
         // Check for mid-scroll CAPTCHA
         await waitForCaptchaIfNeeded(page, `after ${totalScrolls} scrolls`);
 
-        // ── SCROLL THE FEED ──────────────────────────────────
+        // ── DEEP SCROLL MECHANISM ─────────────────────────────
         try {
-            await page.locator('[role="feed"]').evaluate(el => {
-                el.scrollTop += 5000;
-            });
-        } catch(e) {
-            try {
-                // Fallback: click feed then press End key
-                await page.locator('[role="feed"]').click({ force: true, position: { x: 10, y: 300 } });
-                await page.keyboard.press('End');
-            } catch(e2) {
-                console.log('  ⚠️  Scroll failed, trying mouse wheel...');
-                try {
-                    await page.mouse.wheel(0, 5000);
-                } catch(e3) {}
+            // 1. Find the results container
+            const feed = page.locator('[role="feed"], [aria-label^="Results for"], .m67qEc').first();
+
+            // 2. Scroll the container to its bottom
+            await feed.evaluate(el => el.scrollTo(0, el.scrollHeight)).catch(() => {});
+            await sleep(800);
+
+            // 3. Find the last result and scroll it into view specifically
+            const lastResult = page.locator('[role="article"], a[href*="/maps/place/"]').last();
+            if (await lastResult.count() > 0) {
+                await lastResult.scrollIntoViewIfNeeded({ timeout: 1000 }).catch(() => {});
             }
+
+            // 4. Multiple small mouse wheel scrolls to trigger dynamic loading
+            for (let j = 0; j < 3; j++) {
+                await page.mouse.wheel(0, 2000);
+                await sleep(400);
+            }
+
+            // 5. Check for "More results" button
+            const moreBtn = page.locator('button:has-text("More results"), button:has-text("Show more results"), button[aria-label="More results"]').first();
+            if (await moreBtn.isVisible({ timeout: 500 }).catch(() => false)) {
+                console.log('  🖱️  Found "More results" button, clicking...');
+                await moreBtn.click();
+                await sleep(2000);
+            }
+
+            // 6. Hard PageDown if no results added for a while
+            if (noNewCount > 5) {
+                await page.keyboard.press('PageDown');
+                await sleep(1000);
+            }
+        } catch(e) {
+            await page.keyboard.press('End');
         }
 
         totalScrolls++;
 
-        // Human-like wait between scrolls
-        const waitMs = noNewCount > 8 ? 3500 : 1800;
+        // Human-like wait: longer if we're struggling to find new results
+        const waitMs = noNewCount > 10 ? 5000 : 2500;
         await sleep(waitMs);
 
-        // Hard limit: 300 scrolls = ~3000+ results
-        if (totalScrolls >= 300) {
-            console.log(`  ⚠️  Reached max 300 scrolls. Collected ${collectedUrls.size} URLs.`);
+        // Hard limit: 500 scrolls
+        if (totalScrolls >= 500) {
+            console.log(`  ⚠️  Reached max 500 scrolls. Collected ${collectedUrls.size} URLs.`);
             break;
         }
     }

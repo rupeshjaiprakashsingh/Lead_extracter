@@ -8,25 +8,27 @@ echo    (Opens browser automatically)
 echo  ====================================================
 echo.
 
-set "NODE=C:\Rupesh\Lead_extracter\node\node-v20.19.1-win-x64\node.exe"
-set "APP=C:\Rupesh\Lead_extracter\lead-automation\index.js"
-set PORT=3000
+set "NODE_DIR=%~dp0..\..\node\node-v20.19.1-win-x64"
+set "APP_DIR=%~dp0.."
+set "APP_JS=%APP_DIR%\index.js"
+set "PORT=3000"
 
-cd /d "C:\Rupesh\Lead_extracter\lead-automation"
+cd /d "%APP_DIR%"
 
-echo  [CHECK] Node path: %NODE%
-echo  [CHECK] App path:  %APP%
-echo.
-
-if not exist "%NODE%" (
-    echo  ERROR: node.exe not found at %NODE%
-    echo  Please check your Node.js installation path.
-    pause
-    exit /b 1
+:: Check if bundled node exists
+if exist "%NODE_DIR%\node.exe" (
+    set "NODE_EXE=%NODE_DIR%\node.exe"
+) else (
+    set "NODE_EXE=node"
 )
+
+echo  [CHECK] Using Node: %NODE_EXE%
+echo  [CHECK] App path:  %APP_JS%
+echo.
 
 echo  Starting Instance 1 on port 3000...
 echo  Browser will open automatically...
 echo.
-"%NODE%" "%APP%"
+
+"%NODE_EXE%" "%APP_JS%"
 pause

@@ -1,23 +1,33 @@
 @echo off
 title CRM Instance 4 - Port 3003
-color 0D
+color 0B
 echo.
 echo  ====================================================
 echo    CRM INSTANCE 4  -  http://localhost:3003
 echo  ====================================================
 echo.
 
-set "NODE=C:\Rupesh\Lead_extracter\node\node-v20.19.1-win-x64\node.exe"
-set "APP=C:\Rupesh\Lead_extracter\lead-automation\index.js"
-set PORT=3003
-set NO_BROWSER=1
+set "NODE_DIR=%~dp0..\..\node\node-v20.19.1-win-x64"
+set "APP_DIR=%~dp0.."
+set "APP_JS=%APP_DIR%\index.js"
+set "PORT=3003"
+set "NO_BROWSER=1"
 
-cd /d "C:\Rupesh\Lead_extracter\lead-automation"
+cd /d "%APP_DIR%"
 
-if not exist "%NODE%" ( echo  ERROR: node.exe not found & pause & exit /b 1 )
+:: Check if bundled node exists
+if exist "%NODE_DIR%\node.exe" (
+    set "NODE_EXE=%NODE_DIR%\node.exe"
+) else (
+    set "NODE_EXE=node"
+)
+
+echo  [CHECK] Using Node: %NODE_EXE%
+echo  [CHECK] App path:  %APP_JS%
+echo.
 
 echo  Starting Instance 4 on port 3003...
-echo  Dashboard: http://localhost:3003
 echo.
-"%NODE%" "%APP%"
+
+"%NODE_EXE%" "%APP_JS%"
 pause
