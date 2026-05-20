@@ -25,10 +25,12 @@ const googleContacts = require('./services/google-contacts');
 const ultraMsg = require('./ultramsg-sender');
 
 // Models (require early — mongoose buffers commands until connected)
-const Lead     = require('./models/Lead');
-const Settings = require('./models/Settings');
-const Schedule = require('./models/Schedule');
-const scheduler = require('./services/scheduler');
+const Lead           = require('./models/Lead');
+const Settings       = require('./models/Settings');
+const Schedule       = require('./models/Schedule');
+const SocialSettings = require('./models/SocialSettings');
+const SocialPost     = require('./models/SocialPost');
+const scheduler      = require('./services/scheduler');
 
 // ── SSE Progress ──────────────────────────────────────────────
 let sseClients = [];
@@ -555,6 +557,71 @@ app.post('/api/send/wa', async (req, res) => {
     });
 });
 
+// ── POST Send WA — DRAFT mode (pre-fill all, user sends) ────────────────────
+app.post('/api/send/wa-draft', async (req, res) => {
+    const { ids, skipWaSent } = req.body;
+    if (!ids || !ids.length) return res.status(400).json({ error: 'No leads selected' });
+    res.json({ success: true, message: '📝 Draft mode started — WhatsApp will open and pre-fill all messages!' });
+    setImmediate(async () => {
+        const { sendLocalWA_Draft } = require('./playwright-sender');
+        await sendLocalWA_Draft(ids, false, { skipWaSent: !!skipWaSent });
+    });
+});
+
+// ── POST Send WA — MANUAL mode (user clicks send one by one) ──────────────
+app.post('/api/send/wa-manual', async (req, res) => {
+    const { ids, skipWaSent } = req.body;
+    if (!ids || !ids.length) return res.status(400).json({ error: 'No leads selected' });
+    res.json({ success: true, message: '👆 Manual WA mode started — WhatsApp will open. Click Send for each lead!' });
+    setImmediate(async () => {
+        const { sendLocalWA_Manual } = require('./playwright-sender');
+        await sendLocalWA_Manual(ids, false, { skipWaSent: !!skipWaSent });
+    });
+});
+
+// ── POST Send Initial Email ─────────────────────────────────────────
+app.post('/api/send/email', async (req, res) => {
+    const { ids } = req.body;
+    if (!ids || !ids.length) return res.status(400).json({ error: 'No IDs provided' });
+    res.json({ success: true, message: 'Email sending started!' });
+
+    setImmediate(async () => {
+        try {
+            const leads = await Lead.find({ _id: { $in: ids } }).lean();
+            let sent = 0, failed = 0;
+            emit({ type: 'start', total: leads.length });
+            
+            for (let i = 0; i < leads.length; i++) {
+                const lead = leads[i];
+                emit({ type: 'sending', current: i+1, total: leads.length, name: lead.name, sent, failed });
+                
+                let emailDone = false;
+                if (lead.email) {
+                    try {
+                        const { subject, html } = await buildInitialEmail(lead);
+                        await sendEmail(lead.email, subject, html);
+                        
+                        await Lead.findByIdAndUpdate(lead._id, {
+                            $inc:  { email_count: 1 },
+                            $set:  { email_sent: true, email_last_date: todayStr() },
+                            $push: { activity: { type: 'email_sent', message: 'Initial email sent', date: new Date() } }
+                        });
+                        emailDone = true;
+                    } catch(e) {
+                        console.error('Email send error:', e.message);
+                    }
+                }
+                
+                if (emailDone) { sent++; emit({ type: 'sent', name: lead.name, sent, failed, total: leads.length }); }
+                else { failed++; emit({ type: 'failed', name: lead.name, reason: 'No valid email found or send error', sent, failed }); }
+            }
+            emit({ type: 'done', sent, failed, total: leads.length });
+        } catch(e) {
+            emit({ type: 'error', message: 'Failed to send emails: ' + e.message });
+        }
+    });
+});
+
 // ── POST Send Follow-up (Email API + WA Local) ──────────────────────
 app.post('/api/send/followup', async (req, res) => {
     const { ids, channel } = req.body; 
@@ -602,6 +669,33 @@ app.post('/api/send/followup', async (req, res) => {
                 else { failed++; emit({ type: 'failed', name: lead.name, reason: 'No email address', sent, failed }); }
             }
             emit({ type: 'done', sent, failed, total: leads.length });
+        }
+    });
+});
+
+// ── POST Extract Emails from Websites ──────────────────────────────────
+app.post('/api/leads/extract-emails', async (req, res) => {
+    const { ids } = req.body;
+    res.json({ success: true, message: 'Email extraction started...' });
+    setImmediate(async () => {
+        const { extractEmailsForLeads } = require('./services/email-extractor');
+        try {
+            await extractEmailsForLeads(ids, (progress) => {
+                if (progress.type === 'start') {
+                    emit({ type: 'start', total: progress.total });
+                    emit({ type: 'status', message: `🌐 Extracting emails from ${progress.total} websites...` });
+                } else if (progress.type === 'status') {
+                    emit({ type: 'sending', current: progress.current, total: progress.total, name: progress.name, sent: progress.current - 1, failed: 0 }); 
+                } else if (progress.type === 'success') {
+                    emit({ type: 'sent', name: progress.name + ` (${progress.email})`, sent: progress.extracted, failed: progress.failed, total: progress.total });
+                } else if (progress.type === 'failed') {
+                    emit({ type: 'failed', name: progress.name, reason: progress.reason, sent: progress.extracted || 0, failed: progress.failed || 0 });
+                } else if (progress.type === 'done') {
+                    emit({ type: 'done', sent: progress.extracted, failed: progress.failed, total: progress.total, message: `✅ Extracted ${progress.extracted} emails.` });
+                }
+            });
+        } catch(e) {
+            emit({ type: 'error', message: '❌ Extraction failed: ' + e.message });
         }
     });
 });
@@ -708,6 +802,127 @@ app.get('/api/schedule/status', async (req, res) => {
             last_run:    s?.last_run,
             is_running:  scheduler.isRunning()
         });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Social Poster: GET Settings ──────────────────────────────
+app.get('/api/social/settings', async (req, res) => {
+    try {
+        let s = await SocialSettings.findOne({});
+        if (!s) s = await SocialSettings.create({});
+        
+        const settingsObj = s.toObject();
+        // Mask passwords/tokens
+        if (settingsObj.channels) {
+            for (const ch of Object.keys(settingsObj.channels)) {
+                if (settingsObj.channels[ch].token) {
+                    settingsObj.channels[ch].token = '••••••••';
+                }
+                if (settingsObj.channels[ch].apiKey) {
+                    settingsObj.channels[ch].apiKey = '••••••••';
+                }
+            }
+        }
+        res.json(settingsObj);
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Social Poster: SAVE Settings ─────────────────────────────
+app.post('/api/social/settings', async (req, res) => {
+    try {
+        const { enabled, frequency, time_hour, website_url, topic, title, custom_content, channels } = req.body;
+        let s = await SocialSettings.findOne({});
+        if (!s) s = new SocialSettings({});
+
+        s.enabled = !!enabled;
+        s.frequency = frequency || 'daily';
+        s.time_hour = parseInt(time_hour) || 10;
+        s.website_url = website_url || '';
+        s.topic = topic || '';
+        s.title = title || '';
+        s.custom_content = custom_content || '';
+
+        if (channels) {
+            for (const [ch, config] of Object.entries(channels)) {
+                if (!s.channels[ch]) s.channels[ch] = {};
+                s.channels[ch].enabled = !!config.enabled;
+                
+                if (config.token !== undefined && config.token !== '••••••••') {
+                    s.channels[ch].token = config.token;
+                }
+                if (config.pageId !== undefined) {
+                    s.channels[ch].pageId = config.pageId;
+                }
+                if (config.accountId !== undefined) {
+                    s.channels[ch].accountId = config.accountId;
+                }
+                if (config.urn !== undefined) {
+                    s.channels[ch].urn = config.urn;
+                }
+                if (config.apiKey !== undefined && config.apiKey !== '••••••••') {
+                    s.channels[ch].apiKey = config.apiKey;
+                }
+                if (config.boardId !== undefined) {
+                    s.channels[ch].boardId = config.boardId;
+                }
+            }
+        }
+
+        await s.save();
+        scheduler.startSocialScheduler();
+        res.json({ success: true, settings: s });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Social Poster: GET Recent Posts ──────────────────────────
+app.get('/api/social/posts', async (req, res) => {
+    try {
+        const posts = await SocialPost.find({}).sort({ createdAt: -1 }).limit(100).lean();
+        res.json(posts);
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Social Poster: Generate Preview ──────────────────────────
+app.post('/api/social/generate-preview', async (req, res) => {
+    try {
+        const { website_url, topic, title, custom_content } = req.body;
+        if (!website_url) return res.status(400).json({ error: 'Website URL is required' });
+        
+        const { scrapeWebsite, generateSocialPosts } = require('./services/social-poster');
+        const webData = await scrapeWebsite(website_url);
+        const posts = await generateSocialPosts(webData, topic, title, custom_content);
+        res.json({ success: true, posts, webData });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Social Poster: Post Now (Trigger Instant Simulation) ─────
+app.post('/api/social/post-now', async (req, res) => {
+    try {
+        const { website_url, topic, title, custom_content } = req.body;
+        const { scrapeWebsite, generateSocialPosts, postToSocial } = require('./services/social-poster');
+        
+        let settings = await SocialSettings.findOne({});
+        if (!settings) {
+            return res.status(400).json({ error: 'Please save settings first before running immediate post.' });
+        }
+
+        // Use request body inputs as temporary overrides if provided
+        const webUrl = website_url || settings.website_url;
+        if (!webUrl) return res.status(400).json({ error: 'Website URL is required' });
+        
+        const tempSettings = {
+            website_url: webUrl,
+            topic: topic || settings.topic,
+            title: title || settings.title,
+            custom_content: custom_content || settings.custom_content,
+            channels: settings.channels
+        };
+
+        const webData = await scrapeWebsite(webUrl);
+        const posts = await generateSocialPosts(webData, tempSettings.topic, tempSettings.title, tempSettings.custom_content);
+        const postDoc = await postToSocial(posts, tempSettings);
+        
+        res.json({ success: true, post: postDoc });
     } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -876,6 +1091,9 @@ async function start() {
             // ── Start scheduler from saved settings ──────────────────────
             const savedSchedule = await Schedule.findOne({});
             if (savedSchedule) scheduler.startScheduler(savedSchedule);
+
+            // ── Start social poster scheduler ───────────────────────────
+            scheduler.startSocialScheduler();
         }
         if (PORT === 3000 && !process.env.NO_BROWSER) require('child_process').exec(`start http://localhost:${PORT}`);
     });

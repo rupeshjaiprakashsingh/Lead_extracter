@@ -137,7 +137,7 @@ async function scrapeGoogleMaps(keyword, city, maxResults = 9999) {
     //  PHASE 1: Navigate to Google MAPS and scroll ALL the way
     // ─────────────────────────────────────────────────────────
     // ✅ Always use maps.google.com — NOT google.com/search
-    const mapsUrl = `https://www.google.com/maps/search/${encodeURIComponent(keyword + ' ' + city)}`;
+    const mapsUrl = `https://www.google.com/maps/search/${encodeURIComponent(keyword + ' in ' + city)}`;
     console.log(`  🗺️  Navigating to Google Maps: ${mapsUrl}`);
 
     try {
@@ -245,6 +245,7 @@ async function scrapeGoogleMaps(keyword, city, maxResults = 9999) {
             const feed = page.locator('[role="feed"], [aria-label^="Results for"], .m67qEc').first();
 
             // 2. Scroll the container to its bottom
+            await feed.hover().catch(() => {});
             await feed.evaluate(el => el.scrollTo(0, el.scrollHeight)).catch(() => {});
             await sleep(800);
 
@@ -334,12 +335,38 @@ async function scrapeGoogleMaps(keyword, city, maxResults = 9999) {
             );
             const phone = cleanPhone(phoneRaw.trim());
 
+            let emails = '';
+            if (webHref) {
+                try {
+                    console.log(`  🌐 Extracting emails from: ${webHref}`);
+                    const webPage = await browser.newPage();
+                    await webPage.goto(webHref, { waitUntil: 'domcontentloaded', timeout: 15000 });
+                    
+                    const pageText = await webPage.content();
+                    const emailRegex = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/gi;
+                    const foundEmails = pageText.match(emailRegex);
+                    
+                    if (foundEmails) {
+                        const validEmails = foundEmails.filter(e => {
+                            const lower = e.toLowerCase();
+                            return !lower.endsWith('.png') && !lower.endsWith('.jpg') && !lower.endsWith('.jpeg') && !lower.endsWith('.gif') && !lower.endsWith('.webp') && !lower.endsWith('.svg') && !lower.includes('sentry') && !lower.includes('wixpress');
+                        });
+                        const uniqueEmails = [...new Set(validEmails.map(e => e.toLowerCase()))];
+                        emails = uniqueEmails.join(',');
+                    }
+                    await webPage.close();
+                } catch(e) {
+                    console.log(`  ⚠️ Could not extract emails from ${webHref}: ${e.message.split('\n')[0]}`);
+                }
+            }
+
             const biz = {
                 id: Date.now() + Math.random(),
                 name: name.trim(),
                 raw_phone: phoneRaw.trim(),
                 phone,
                 website,
+                email: emails,
                 rating: rating.trim(),
                 reviews,
                 category: category.trim(),

@@ -22,6 +22,7 @@
 <div class="tabs">
   <button class="tab active" onclick="switchTab('leads')">📋 Leads</button>
   <button class="tab" onclick="switchTab('followup')">🔄 Follow-Up</button>
+  <button class="tab" onclick="switchTab('social')">📱 Social Poster</button>
   <button class="tab" onclick="switchTab('settings')">⚙️ Settings</button>
 </div>
 
@@ -80,12 +81,13 @@
   </style>
   <div class="ctrl">
     <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-      <button class="btn b-auto" id="btn-autosend" onclick="startAutoSend()">🚀 Auto-Send WA</button>
+      <button class="btn b-auto" id="btn-autosend" onclick="startAutoSend()">📝 Draft WA Messages</button>
       <button class="btn b-green" onclick="startFollowup('wa')">🔄 Follow-Up WA</button>
       <button class="btn b-purple" id="btn-schedule" onclick="openSchedule()">⏰ Auto Schedule</button>
       <a href="/api/leads/export" class="btn b-gray" style="text-decoration:none">📥 Export Excel</a>
       <button class="btn b-gray" onclick="openExcelImport()">📂 Import Excel</button>
       <button class="btn b-green" id="btn-sync-contacts" onclick="syncContacts()">📒 Sync Contacts</button>
+      <button class="btn b-blue" onclick="startEmailExtraction()">🌐 Extract Emails</button>
       <button class="btn b-gray" onclick="importManual()">➕ Add</button>
       <button class="btn b-red" onclick="clearAll()">🗑 Clear</button>
     </div>
@@ -155,6 +157,9 @@
     </button>
     <button class="btn" style="background:#3b82f6;color:#fff;border:none;padding:8px 16px;font-size:12px;font-weight:600" onclick="sendEmailToSelected()">
       📧 Send Email
+    </button>
+    <button class="btn" style="background:#0ea5e9;color:#fff;border:none;padding:8px 16px;font-size:12px;font-weight:600" onclick="extractEmailsForSelected()">
+      🌐 Find Emails
     </button>
     <button class="btn" style="background:rgba(255,255,255,.15);color:#fff;border:1px solid rgba(255,255,255,.3);padding:8px 14px;font-size:12px" onclick="clearAllSelections()">
       ✕ Clear
@@ -300,6 +305,359 @@
 
     <button class="btn b-blue" onclick="saveSettings()" style="margin-top:18px">💾 Save All Settings</button>
     <span id="save-status" style="margin-left:12px;font-size:12px;color:#34d399"></span>
+  </div>
+</div>
+
+<!-- ═══════ SOCIAL POSTER TAB ═══════ -->
+<div id="tab-social" class="tab-body" style="display:none">
+  <div style="padding:20px 28px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+      <div>
+        <h2 style="font-size:18px;margin-bottom:4px">📱 AI Social Auto-Poster</h2>
+        <p style="color:#64748b;font-size:13px">Scrape website content, generate platform-specific posts using Gemini, and schedule auto-posting.</p>
+      </div>
+      <div id="soc-scheduler-badge" style="font-size:11px;padding:4px 12px;border-radius:20px;background:#1e3a5f;color:#60a5fa;font-weight:700">⏳ LOADING SCHEDULER...</div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1.1fr;gap:24px;align-items:start">
+      
+      <!-- LEFT COLUMN: SETTINGS & CHANNELS -->
+      <div style="display:flex;flex-direction:column;gap:18px">
+        
+        <!-- Section 1: AI Prompt & Web Source -->
+        <div class="config-section" style="margin-bottom:0">
+          <h3 style="margin-bottom:14px;border-bottom:1px solid #2d3748;padding-bottom:8px;font-size:13px;text-transform:uppercase;letter-spacing:.03em;color:#94a3b8">🔗 AI Source & Overrides</h3>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <div class="ig">
+              <label>Company Website URL (Target Scrape)</label>
+              <input type="text" id="soc-website" placeholder="e.g. https://innvoque.com" style="width:100%">
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+              <div class="ig">
+                <label>Post Topic Focus (Optional)</label>
+                <input type="text" id="soc-topic" placeholder="e.g. Software Development" style="width:100%">
+              </div>
+              <div class="ig">
+                <label>Company/Post Title (Optional)</label>
+                <input type="text" id="soc-title" placeholder="e.g. Innvoque Solutions" style="width:100%">
+              </div>
+            </div>
+            <div class="ig">
+              <label>Custom Instructions / Keywords (Optional)</label>
+              <input type="text" id="soc-custom" placeholder="e.g. emphasize local support, key tech stack, 24/7 service" style="width:100%">
+            </div>
+          </div>
+        </div>
+
+        <!-- Section 2: Automation Scheduler -->
+        <div class="config-section" style="margin-bottom:0">
+          <h3 style="margin-bottom:14px;border-bottom:1px solid #2d3748;padding-bottom:8px;font-size:13px;text-transform:uppercase;letter-spacing:.03em;color:#94a3b8">⏰ Social Scheduler Settings</h3>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <div style="display:flex;align-items:center;justify-content:space-between;background:#1e293b;border-radius:8px;padding:10px 14px;border:1px solid #2d3748">
+              <div>
+                <div style="font-size:12px;font-weight:700;color:#e2e8f0">Enable Auto-Posting</div>
+                <div style="font-size:10px;color:#64748b">Generates and posts content automatically on schedule</div>
+              </div>
+              <label class="skip-toggle" style="padding:0;background:none;border:none">
+                <input type="checkbox" id="soc-enabled" onchange="updateSocialEnabledVisual()">
+                <span class="skip-track em-track" id="soc-toggle-track"><span class="skip-thumb" id="soc-toggle-thumb"></span></span>
+              </label>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+              <div class="ig">
+                <label>Frequency</label>
+                <select id="soc-frequency" onchange="toggleSocialTimeSelect()" style="width:100%">
+                  <option value="daily">Every Day</option>
+                  <option value="hourly">Every Hour</option>
+                </select>
+              </div>
+              <div class="ig" id="soc-time-wrap">
+                <label>Time of Day (IST)</label>
+                <select id="soc-hour" style="width:100%">
+                  <option value="0">12:00 AM</option>
+                  <option value="1">1:00 AM</option>
+                  <option value="2">2:00 AM</option>
+                  <option value="3">3:00 AM</option>
+                  <option value="4">4:00 AM</option>
+                  <option value="5">5:00 AM</option>
+                  <option value="6">6:00 AM</option>
+                  <option value="7">7:00 AM</option>
+                  <option value="8">8:00 AM</option>
+                  <option value="9">9:00 AM</option>
+                  <option value="10" selected>10:00 AM</option>
+                  <option value="11">11:00 AM</option>
+                  <option value="12">12:00 PM</option>
+                  <option value="13">1:00 PM</option>
+                  <option value="14">2:00 PM</option>
+                  <option value="15">3:00 PM</option>
+                  <option value="16">4:00 PM</option>
+                  <option value="17">5:00 PM</option>
+                  <option value="18">6:00 PM</option>
+                  <option value="19">7:00 PM</option>
+                  <option value="20">8:00 PM</option>
+                  <option value="21">9:00 PM</option>
+                  <option value="22">10:00 PM</option>
+                  <option value="23">11:00 PM</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Section 3: Channels Credentials Table -->
+        <div class="config-section" style="margin-bottom:0">
+          <h3 style="margin-bottom:14px;border-bottom:1px solid #2d3748;padding-bottom:8px;font-size:13px;text-transform:uppercase;letter-spacing:.03em;color:#94a3b8">🔑 Social Media Channels</h3>
+          <div style="overflow-x:auto">
+            <table style="width:100%;font-size:11px">
+              <thead>
+                <tr>
+                  <th style="width:100px">Channel</th>
+                  <th>Credentials & Tokens</th>
+                  <th style="width:70px;text-align:center">Auto-Post</th>
+                </tr>
+              </thead>
+              <tbody id="soc-channels-list">
+                <!-- LinkedIn -->
+                <tr>
+                  <td style="font-weight:600"><span style="color:#0a66c2;font-size:14px;margin-right:4px">💼</span>LinkedIn</td>
+                  <td>
+                    <input type="password" id="ch-linkedin-token" placeholder="Access Token" style="width:100%;margin-bottom:4px;padding:4px 8px;font-size:10px">
+                    <input type="text" id="ch-linkedin-urn" placeholder="Person/Company URN (e.g. urn:li:organization:123)" style="width:100%;padding:4px 8px;font-size:10px">
+                  </td>
+                  <td style="text-align:center">
+                    <input type="checkbox" id="ch-linkedin-enabled" style="width:16px;height:16px;accent-color:#7c3aed">
+                  </td>
+                </tr>
+                <!-- Facebook -->
+                <tr>
+                  <td style="font-weight:600"><span style="color:#1877f2;font-size:14px;margin-right:4px">👤</span>Facebook</td>
+                  <td>
+                    <input type="password" id="ch-facebook-token" placeholder="Page Access Token" style="width:100%;margin-bottom:4px;padding:4px 8px;font-size:10px">
+                    <input type="text" id="ch-facebook-pageId" placeholder="Page ID" style="width:100%;padding:4px 8px;font-size:10px">
+                  </td>
+                  <td style="text-align:center">
+                    <input type="checkbox" id="ch-facebook-enabled" style="width:16px;height:16px;accent-color:#7c3aed">
+                  </td>
+                </tr>
+                <!-- Instagram -->
+                <tr>
+                  <td style="font-weight:600"><span style="color:#e1306c;font-size:14px;margin-right:4px">📸</span>Instagram</td>
+                  <td>
+                    <input type="password" id="ch-instagram-token" placeholder="Access Token" style="width:100%;margin-bottom:4px;padding:4px 8px;font-size:10px">
+                    <input type="text" id="ch-instagram-accountId" placeholder="Business Account ID" style="width:100%;padding:4px 8px;font-size:10px">
+                  </td>
+                  <td style="text-align:center">
+                    <input type="checkbox" id="ch-instagram-enabled" style="width:16px;height:16px;accent-color:#7c3aed">
+                  </td>
+                </tr>
+                <!-- Twitter/X -->
+                <tr>
+                  <td style="font-weight:600"><span style="color:#fff;font-size:14px;margin-right:4px">🐦</span>Twitter/X</td>
+                  <td>
+                    <input type="password" id="ch-twitter-token" placeholder="Bearer Token" style="width:100%;margin-bottom:4px;padding:4px 8px;font-size:10px">
+                    <input type="text" id="ch-twitter-apiKey" placeholder="API Key" style="width:100%;padding:4px 8px;font-size:10px">
+                  </td>
+                  <td style="text-align:center">
+                    <input type="checkbox" id="ch-twitter-enabled" style="width:16px;height:16px;accent-color:#7c3aed">
+                  </td>
+                </tr>
+                <!-- Pinterest -->
+                <tr>
+                  <td style="font-weight:600"><span style="color:#bd081c;font-size:14px;margin-right:4px">📌</span>Pinterest</td>
+                  <td>
+                    <input type="password" id="ch-pinterest-token" placeholder="Access Token" style="width:100%;margin-bottom:4px;padding:4px 8px;font-size:10px">
+                    <input type="text" id="ch-pinterest-boardId" placeholder="Board ID" style="width:100%;padding:4px 8px;font-size:10px">
+                  </td>
+                  <td style="text-align:center">
+                    <input type="checkbox" id="ch-pinterest-enabled" style="width:16px;height:16px;accent-color:#7c3aed">
+                  </td>
+                </tr>
+                <!-- Threads -->
+                <tr>
+                  <td style="font-weight:600"><span style="color:#e2e8f0;font-size:14px;margin-right:4px">🧵</span>Threads</td>
+                  <td>
+                    <input type="password" id="ch-threads-token" placeholder="Access Token / Bearer Key" style="width:100%;padding:4px 8px;font-size:10px">
+                  </td>
+                  <td style="text-align:center">
+                    <input type="checkbox" id="ch-threads-enabled" style="width:16px;height:16px;accent-color:#7c3aed">
+                  </td>
+                </tr>
+                <!-- YouTube -->
+                <tr>
+                  <td style="font-weight:600"><span style="color:#ff0000;font-size:14px;margin-right:4px">🎥</span>YouTube</td>
+                  <td>
+                    <input type="password" id="ch-youtube-token" placeholder="YouTube Data API Key" style="width:100%;padding:4px 8px;font-size:10px">
+                  </td>
+                  <td style="text-align:center">
+                    <input type="checkbox" id="ch-youtube-enabled" style="width:16px;height:16px;accent-color:#7c3aed">
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Section 4: Trigger Buttons -->
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn b-blue" style="flex:1.5;padding:12px;font-size:13px" onclick="saveSocialSettings()">💾 Save Configuration</button>
+          <button class="btn b-green" style="flex:1.2;padding:12px;font-size:13px" onclick="generateSocialPreview()" id="soc-preview-btn">🔍 Generate Preview</button>
+          <button class="btn b-auto" style="flex:1;padding:12px;font-size:13px" onclick="runSocialPostNow()" id="soc-run-btn">🚀 Post Now</button>
+        </div>
+        <div id="soc-msg" style="font-size:12px;text-align:center;color:#64748b;font-weight:600;min-height:18px"></div>
+
+      </div>
+
+      <!-- RIGHT COLUMN: LIVE MOCKUP & POST LOGS -->
+      <div style="display:flex;flex-direction:column;gap:18px">
+        
+        <!-- Live Post Preview Mockup Window -->
+        <div class="config-section" style="margin-bottom:0;background:#131722;border-color:#334155;box-shadow:0 10px 30px rgba(0,0,0,.5)">
+          <h3 style="margin-bottom:12px;font-size:13px;display:flex;justify-content:space-between;align-items:center;color:#60a5fa">
+            <span>🔍 AI Post Preview Mockups</span>
+            <span style="font-size:10px;background:#1e293b;padding:2px 8px;border-radius:10px;color:#94a3b8" id="preview-src-indicator">No Website Loaded</span>
+          </h3>
+
+          <!-- Platform Selector Tabs -->
+          <div style="display:flex;gap:4px;background:#0d111a;padding:4px;border-radius:8px;margin-bottom:14px;overflow-x:auto" id="preview-tabs">
+            <button class="btn b-gray active" onclick="switchPreviewPlatform('linkedin')" style="flex:1;padding:6px;font-size:10px" id="tab-p-linkedin">LinkedIn</button>
+            <button class="btn b-gray" onclick="switchPreviewPlatform('facebook')" style="flex:1;padding:6px;font-size:10px" id="tab-p-facebook">Facebook</button>
+            <button class="btn b-gray" onclick="switchPreviewPlatform('instagram')" style="flex:1;padding:6px;font-size:10px" id="tab-p-instagram">Instagram</button>
+            <button class="btn b-gray" onclick="switchPreviewPlatform('twitter')" style="flex:1;padding:6px;font-size:10px" id="tab-p-twitter">Twitter/X</button>
+            <button class="btn b-gray" onclick="switchPreviewPlatform('pinterest')" style="flex:1;padding:6px;font-size:10px" id="tab-p-pinterest">Pinterest</button>
+            <button class="btn b-gray" onclick="switchPreviewPlatform('threads')" style="flex:1;padding:6px;font-size:10px" id="tab-p-threads">Threads</button>
+            <button class="btn b-gray" onclick="switchPreviewPlatform('youtube')" style="flex:1;padding:6px;font-size:10px" id="tab-p-youtube">YouTube</button>
+          </div>
+
+          <!-- Mockup Display Container -->
+          <div id="mockup-window" style="background:#0b0e14;border:1px solid #1e293b;border-radius:10px;padding:16px;min-height:180px;position:relative">
+            <!-- Simulated LinkedIn Preview -->
+            <div id="mock-linkedin" class="mock-content" style="display:block">
+              <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center">
+                <div style="width:36px;height:36px;border-radius:50%;background:#0a66c2;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:16px">L</div>
+                <div>
+                  <div style="font-weight:700;font-size:13px;color:#fff" id="mock-li-title">Your Company</div>
+                  <div style="font-size:10px;color:#64748b">1,240 followers • Promoted</div>
+                </div>
+              </div>
+              <div style="font-size:12px;color:#e2e8f0;line-height:1.6;white-space:pre-wrap" id="mock-li-body">Click "Generate Preview" to fetch website data and view LinkedIn post layout.</div>
+            </div>
+
+            <!-- Simulated Facebook Preview -->
+            <div id="mock-facebook" class="mock-content" style="display:none">
+              <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center">
+                <div style="width:36px;height:36px;border-radius:50%;background:#1877f2;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:16px">F</div>
+                <div>
+                  <div style="font-weight:700;font-size:13px;color:#fff" id="mock-fb-title">Your Page</div>
+                  <div style="font-size:10px;color:#64748b">Sponsored • 🌐</div>
+                </div>
+              </div>
+              <div style="font-size:12px;color:#e2e8f0;line-height:1.6;white-space:pre-wrap" id="mock-fb-body">Click "Generate Preview" to preview Facebook post layout.</div>
+            </div>
+
+            <!-- Simulated Instagram Preview -->
+            <div id="mock-instagram" class="mock-content" style="display:none">
+              <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center">
+                <div style="width:36px;height:36px;border-radius:50%;background:linear-gradient(45deg,#f09433,#e6683c,#dc2743,#cc2366,#bc1888);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:16px">I</div>
+                <div>
+                  <div style="font-weight:700;font-size:13px;color:#fff" id="mock-ig-title">your_handle</div>
+                  <div style="font-size:10px;color:#64748b">Original Audio</div>
+                </div>
+              </div>
+              <div style="width:100%;height:140px;background:#1a2035;border-radius:6px;margin-bottom:10px;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:12px;border:1px dashed #334155" id="mock-ig-media">
+                📸 [AI Visual Post Media Placeholder]
+              </div>
+              <div style="font-size:12px;color:#e2e8f0;line-height:1.6;white-space:pre-wrap" id="mock-ig-body">Click "Generate Preview" to preview Instagram post layout.</div>
+            </div>
+
+            <!-- Simulated Twitter/X Preview -->
+            <div id="mock-twitter" class="mock-content" style="display:none">
+              <div style="display:flex;gap:10px;margin-bottom:10px;align-items:flex-start">
+                <div style="width:36px;height:36px;border-radius:50%;background:#e2e8f0;display:flex;align-items:center;justify-content:center;color:#000;font-weight:700;font-size:16px">X</div>
+                <div style="flex:1">
+                  <div style="display:flex;gap:4px;align-items:center">
+                    <span style="font-weight:700;font-size:13px;color:#fff" id="mock-tw-title">Your Business</span>
+                    <span style="font-size:11px;color:#64748b" id="mock-tw-handle">@business</span>
+                    <span style="font-size:11px;color:#64748b">&bull; now</span>
+                  </div>
+                  <div style="font-size:12px;color:#e2e8f0;line-height:1.6;margin-top:4px;white-space:pre-wrap" id="mock-tw-body">Click "Generate Preview" to preview Twitter/X post layout (under 280 chars).</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Simulated Pinterest Preview -->
+            <div id="mock-pinterest" class="mock-content" style="display:none">
+              <div style="display:flex;gap:14px;align-items:flex-start">
+                <div style="width:120px;height:160px;background:#1a2035;border-radius:10px;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:11px;border:1px dashed #334155;flex-shrink:0">
+                  📌 Pin Visual
+                </div>
+                <div>
+                  <div style="font-weight:700;font-size:14px;color:#fff;margin-bottom:6px" id="mock-pin-title">Pin Board Title</div>
+                  <div style="font-size:12px;color:#e2e8f0;line-height:1.5;white-space:pre-wrap" id="mock-pin-body">Click "Generate Preview" to view Pinterest description.</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Simulated Threads Preview -->
+            <div id="mock-threads" class="mock-content" style="display:none">
+              <div style="display:flex;gap:10px;align-items:flex-start">
+                <div style="width:36px;height:36px;border-radius:50%;background:#000;border:1px solid #334155;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:16px">T</div>
+                <div style="flex:1">
+                  <div style="font-weight:700;font-size:13px;color:#fff" id="mock-th-title">threads_user</div>
+                  <div style="font-size:12px;color:#e2e8f0;line-height:1.6;margin-top:4px;white-space:pre-wrap" id="mock-th-body">Click "Generate Preview" to preview Threads post layout.</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Simulated YouTube Preview -->
+            <div id="mock-youtube" class="mock-content" style="display:none">
+              <div style="width:100%;height:120px;background:#ff0000;border-radius:6px;margin-bottom:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:13px">
+                🔺 YouTube Video / Short Script Outline
+                <span style="font-size:10px;font-weight:400;color:rgba(255,255,255,.8);margin-top:4px">Visual storyboard outline generated by AI</span>
+              </div>
+              <div style="font-size:12px;color:#e2e8f0;line-height:1.6;white-space:pre-wrap" id="mock-yt-body">Click "Generate Preview" to see video storyboard details.</div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Recent Social Posts History Log -->
+        <div class="config-section" style="margin-bottom:0;flex:1;display:flex;flex-direction:column">
+          <h3 style="margin-bottom:12px;font-size:13px;text-transform:uppercase;letter-spacing:.03em;color:#94a3b8">📋 Social Posts History Log</h3>
+          <div style="overflow-y:auto;max-height:300px;flex:1;border:1px solid #2d3748;border-radius:8px;background:#0d111a">
+            <table style="width:100%;border-collapse:collapse;font-size:10px" id="soc-logs-table">
+              <thead>
+                <tr style="background:#1e293b">
+                  <th style="padding:6px 10px;color:#94a3b8">Time</th>
+                  <th style="padding:6px 10px;color:#94a3b8">Website / Topic</th>
+                  <th style="padding:6px 10px;color:#94a3b8">Channels</th>
+                  <th style="padding:6px 10px;color:#94a3b8">Status</th>
+                  <th style="padding:6px 10px;color:#94a3b8;text-align:center">Log</th>
+                </tr>
+              </thead>
+              <tbody id="soc-logs-body">
+                <tr><td colspan="5" class="empty" style="text-align:center;padding:20px;color:#64748b">No logs loaded.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- Modal to View Detailed Social Execution Log -->
+<div id="soc-log-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:99999;align-items:center;justify-content:center;padding:20px">
+  <div style="max-width:600px;width:100%;background:#0f172a;border:1px solid #2d3748;border-radius:12px;overflow:hidden;box-shadow:0 25px 60px rgba(0,0,0,.7)">
+    <div style="background:#1e293b;padding:14px 20px;border-bottom:1px solid #2d3748;display:flex;justify-content:space-between;align-items:center">
+      <span style="font-weight:700;color:#fff;font-size:13px">📄 Social Posting Execution Log</span>
+      <button onclick="closeSocialLogModal()" style="background:none;border:none;color:#94a3b8;font-size:20px;cursor:pointer">&times;</button>
+    </div>
+    <div style="padding:20px">
+      <pre id="soc-log-content" style="font-family:monospace;font-size:11px;color:#cbd5e1;background:#090d16;padding:12px;border-radius:6px;max-height:360px;overflow-y:auto;white-space:pre-wrap;margin:0"></pre>
+      <button onclick="closeSocialLogModal()" class="btn b-gray" style="width:100%;margin-top:14px;padding:8px">Close Log</button>
+    </div>
   </div>
 </div>
 

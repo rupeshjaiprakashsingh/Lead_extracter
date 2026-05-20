@@ -221,4 +221,332 @@ async function sendLocalWA(ids, isFollowup = false, options = {}) {
     }
 }
 
-module.exports = { sendLocalWA, registerSSE, removeSSE };
+// ── MANUAL SEND MODE ─────────────────────────────────────────
+// Opens WhatsApp Web with message pre-filled.
+// Waits for the USER to click Send, then automatically moves to next lead.
+async function sendLocalWA_Manual(ids, isFollowup = false, options = {}) {
+    const { skipWaSent = false } = options;
+    let finalSent = 0, finalFailed = 0;
+    try {
+        const Lead = getLeadModel();
+        const leads = await Lead.find({ _id: { $in: ids }, phone: { $exists: true, $ne: '' } });
+        if (!leads.length) {
+            emit({ type: 'done', sent: 0, failed: 0, total: 0 });
+            return;
+        }
+
+        const total = leads.length;
+        emit({ type: 'start', total });
+
+        if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
+
+        let browser;
+        try {
+            browser = await chromium.launchPersistentContext(SESSION_DIR, {
+                headless: false,
+                args: ['--no-sandbox', '--start-maximized', '--disable-blink-features=AutomationControlled'],
+                viewport: null,
+                slowMo: 80
+            });
+        } catch (err) {
+            if (err.message.includes('existing browser session') || err.message.includes('has been closed')) {
+                emit({ type: 'error', message: '❌ WhatsApp sender is already running in another window.' });
+                return { sent: 0, failed: 0, total: 0 };
+            }
+            throw err;
+        }
+
+        const page = await browser.newPage();
+        emit({ type: 'status', message: '🖥️ Opening WhatsApp Web in MANUAL mode — YOU click Send each time...' });
+
+        try {
+            await page.goto('https://web.whatsapp.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        } catch(e) {}
+        await sleep(5000);
+
+        if (!await isWALoggedIn(page)) {
+            emit({ type: 'status', message: '📱 Please scan the QR code in the new window. Waiting up to 2 minutes...' });
+            try {
+                await page.waitForSelector('#pane-side, [aria-label="Search or start a new chat"], header', { timeout: 120000 });
+                emit({ type: 'status', message: '✅ QR Scanned! Starting manual send mode...' });
+                await sleep(4000);
+            } catch(e) {
+                emit({ type: 'error', message: '❌ Login timeout. Please try again.' });
+                await browser.close();
+                return;
+            }
+        }
+
+        emit({ type: 'status', message: '✅ WhatsApp ready! Opening messages for manual sending...' });
+
+        let sent = 0, failed = 0;
+        const today = new Date().toISOString().slice(0,10);
+
+        for (let i = 0; i < leads.length; i++) {
+            const lead = leads[i];
+
+            if (!isFollowup && skipWaSent && lead.wa_sent) {
+                emit({ type: 'skipped', name: lead.name, reason: 'WA already sent (Skip ON)' });
+                continue;
+            }
+
+            let msg = '';
+            let followupNum = (lead.followup_count || 0) + 1;
+            if (isFollowup) {
+                msg = await buildFollowupWA(lead, followupNum);
+            } else {
+                msg = await buildInitialWA(lead);
+            }
+
+            emit({ type: 'sending', current: i + 1, total, name: lead.name, phone: lead.phone, sent, failed });
+            emit({ type: 'status', message: `⏳ [${i+1}/${total}] Opening chat for ${lead.name}... Please click SEND in WhatsApp.` });
+
+            try {
+                // Open WhatsApp with message pre-filled
+                const waUrl = `https://web.whatsapp.com/send?phone=${lead.phone}&text=${encodeURIComponent(msg)}`;
+                await page.goto(waUrl, { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
+
+                // Wait for the input box to confirm chat opened
+                await page.waitForSelector(
+                    '[data-testid="conversation-compose-box-input"], [aria-label="Type a message"], footer',
+                    { timeout: 15000 }
+                ).catch(() => {});
+                await sleep(1500);
+
+                // Check invalid number popup
+                const invalid = await page.locator('div[data-animate-modal-body="true"]').isVisible({ timeout: 2000 }).catch(() => false);
+                if (invalid) {
+                    await page.keyboard.press('Escape').catch(() => {});
+                    emit({ type: 'failed', name: lead.name, reason: 'Invalid WhatsApp Number', sent, failed: ++failed });
+                    finalFailed = failed;
+                    continue;
+                }
+
+                // 👆 Wait for USER to click send — we watch for the input box to become empty
+                // (WhatsApp clears the compose box immediately after sending)
+                emit({ type: 'status', message: `👆 [${i+1}/${total}] Click SEND for: ${lead.name} | ${lead.raw_phone || lead.phone}` });
+
+                let userSent = false;
+                // Poll for up to 5 minutes — waiting for user to send
+                const maxWait = 300000; // 5 minutes
+                const pollInterval = 1000; // check every 1s
+                const startTime = Date.now();
+
+                while (Date.now() - startTime < maxWait) {
+                    // If user navigated away or window closed, break
+                    try { await page.evaluate(() => true); } catch(e) { break; }
+
+                    // Check if the compose box is now empty (message was sent) or a new message appeared in chat
+                    const inputEmpty = await page.evaluate(() => {
+                        const el = document.querySelector('[data-testid="conversation-compose-box-input"], [contenteditable="true"][aria-label]');
+                        return el ? (el.textContent || '').trim() === '' : false;
+                    }).catch(() => false);
+
+                    if (inputEmpty) {
+                        userSent = true;
+                        break;
+                    }
+                    await sleep(pollInterval);
+                }
+
+                if (!userSent) {
+                    emit({ type: 'failed', name: lead.name, reason: 'Timeout — user did not send', sent, failed: ++failed });
+                    finalFailed = failed;
+                    continue;
+                }
+
+                // Mark as sent in MongoDB
+                const Lead2 = getLeadModel();
+                if (isFollowup) {
+                    await Lead2.findByIdAndUpdate(lead._id, {
+                        $inc:  { wa_count: 1, followup_count: 1 },
+                        $set:  { wa_last_date: today, next_followup: new Date(Date.now() + 7*24*60*60*1000), status: 'followup' },
+                        $push: { activity: { type: 'wa_sent', message: `Followup #${followupNum} WA sent manually`, date: new Date() } }
+                    });
+                } else {
+                    await Lead2.findByIdAndUpdate(lead._id, {
+                        $set:  { wa_sent: true, wa_sent_at: new Date(), wa_last_date: today, status: 'contacted' },
+                        $inc:  { wa_count: 1 },
+                        $push: { activity: { type: 'wa_sent', message: 'Initial WA sent manually (safe mode)', date: new Date() } }
+                    });
+                }
+
+                sent++;
+                finalSent = sent;
+                emit({ type: 'sent', name: lead.name, sent, failed, total });
+
+                // Small pause before next lead
+                await sleep(2000);
+
+            } catch(err) {
+                failed++;
+                finalFailed = failed;
+                emit({ type: 'failed', name: lead.name, reason: err.message.split('\n')[0], sent, failed });
+            }
+        }
+
+        await browser.close();
+        emit({ type: 'done', sent, failed, total });
+        return { sent, failed, total };
+
+    } catch(e) {
+        emit({ type: 'error', message: 'Internal error: ' + e.message });
+        return { sent: finalSent, failed: finalFailed, total: 0 };
+    }
+}
+
+// ── DRAFT MODE ────────────────────────────────────────────────
+// Opens each WhatsApp chat with message pre-filled, then moves on
+// WITHOUT clicking Send. WhatsApp saves the draft automatically.
+// When all are done, user goes through each chat and clicks Send.
+async function sendLocalWA_Draft(ids, isFollowup = false, options = {}) {
+    const { skipWaSent = false } = options;
+    let finalSent = 0, finalFailed = 0;
+    try {
+        const Lead = getLeadModel();
+        const leads = await Lead.find({ _id: { $in: ids }, phone: { $exists: true, $ne: '' } });
+        if (!leads.length) {
+            emit({ type: 'done', sent: 0, failed: 0, total: 0 });
+            return;
+        }
+
+        const total = leads.length;
+        emit({ type: 'start', total });
+
+        if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
+
+        let browser;
+        try {
+            browser = await chromium.launchPersistentContext(SESSION_DIR, {
+                headless: false,
+                args: ['--no-sandbox', '--start-maximized', '--disable-blink-features=AutomationControlled'],
+                viewport: null,
+                slowMo: 60
+            });
+        } catch (err) {
+            if (err.message.includes('existing browser session') || err.message.includes('has been closed')) {
+                emit({ type: 'error', message: '❌ WhatsApp sender is already running in another window.' });
+                return { sent: 0, failed: 0, total: 0 };
+            }
+            throw err;
+        }
+
+        const page = await browser.newPage();
+        emit({ type: 'status', message: '📝 DRAFT MODE — Pre-filling messages. Do NOT close the browser!' });
+
+        try {
+            await page.goto('https://web.whatsapp.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        } catch(e) {}
+        await sleep(5000);
+
+        if (!await isWALoggedIn(page)) {
+            emit({ type: 'status', message: '📱 Please scan the QR code in the new window...' });
+            try {
+                await page.waitForSelector('#pane-side, [aria-label="Search or start a new chat"], header', { timeout: 120000 });
+                emit({ type: 'status', message: '✅ QR Scanned! Starting draft mode...' });
+                await sleep(4000);
+            } catch(e) {
+                emit({ type: 'error', message: '❌ Login timeout. Please try again.' });
+                await browser.close();
+                return;
+            }
+        }
+
+        emit({ type: 'status', message: `✅ WhatsApp ready! Drafting ${total} messages — browser will stay open when done.` });
+
+        let drafted = 0, failed = 0;
+        const today = new Date().toISOString().slice(0,10);
+
+        for (let i = 0; i < leads.length; i++) {
+            const lead = leads[i];
+
+            if (!isFollowup && skipWaSent && lead.wa_sent) {
+                emit({ type: 'skipped', name: lead.name, reason: 'WA already sent (Skip ON)' });
+                continue;
+            }
+
+            let msg = '';
+            let followupNum = (lead.followup_count || 0) + 1;
+            if (isFollowup) {
+                msg = await buildFollowupWA(lead, followupNum);
+            } else {
+                msg = await buildInitialWA(lead);
+            }
+
+            emit({ type: 'sending', current: i + 1, total, name: lead.name, phone: lead.phone, sent: drafted, failed });
+            emit({ type: 'status', message: `📝 [${i+1}/${total}] Drafting for: ${lead.name}` });
+
+            try {
+                // Navigate to chat — WhatsApp URL auto-fills the text in compose box
+                const waUrl = `https://web.whatsapp.com/send?phone=${lead.phone}&text=${encodeURIComponent(msg)}`;
+                await page.goto(waUrl, { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
+
+                // Wait for compose box to load (ensures message is filled before moving on)
+                await page.waitForSelector(
+                    '[data-testid="conversation-compose-box-input"], [aria-label="Type a message"], footer',
+                    { timeout: 12000 }
+                ).catch(() => {});
+
+                // Small pause so WhatsApp has time to register the draft
+                await sleep(1800);
+
+                // Check for invalid number popup
+                const invalid = await page.locator('div[data-animate-modal-body="true"]').isVisible({ timeout: 1500 }).catch(() => false);
+                if (invalid) {
+                    await page.keyboard.press('Escape').catch(() => {});
+                    emit({ type: 'failed', name: lead.name, reason: 'Invalid WhatsApp Number', sent: drafted, failed: ++failed });
+                    finalFailed = failed;
+                    continue;
+                }
+
+                // Navigate away immediately — WhatsApp saves text as draft automatically
+                
+                const LeadDB = getLeadModel();
+                if (isFollowup) {
+                    await LeadDB.findByIdAndUpdate(lead._id, {
+                        $inc:  { wa_count: 1, followup_count: 1 },
+                        $set:  { wa_last_date: today, next_followup: new Date(Date.now() + 7*24*60*60*1000), status: 'followup' },
+                        $push: { activity: { type: 'wa_sent', message: `Followup #${followupNum} WA drafted`, date: new Date() } }
+                    });
+                } else {
+                    await LeadDB.findByIdAndUpdate(lead._id, {
+                        $set:  { wa_sent: true, wa_sent_at: new Date(), wa_last_date: today, status: 'contacted' },
+                        $inc:  { wa_count: 1 },
+                        $push: { activity: { type: 'wa_sent', message: 'Initial WA drafted', date: new Date() } }
+                    });
+                }
+
+                drafted++;
+                finalSent = drafted;
+                emit({ type: 'sent', name: `📝 ${lead.name} (drafted)`, sent: drafted, failed, total });
+
+            } catch(err) {
+                failed++;
+                finalFailed = failed;
+                emit({ type: 'failed', name: lead.name, reason: err.message.split('\n')[0], sent: drafted, failed });
+            }
+        }
+
+        // All drafted — stay on last chat, show completion
+        emit({ 
+            type: 'done', 
+            sent: drafted, 
+            failed, 
+            total,
+            message: `✅ ${drafted} messages drafted! Now go through each chat in WhatsApp and click Send.`
+        });
+        emit({ type: 'status', message: `🎉 All ${drafted} messages are ready as drafts. Click Send in each chat whenever you're ready!` });
+
+        // Keep browser open so user can send drafts
+        // (We do NOT call browser.close() in draft mode)
+
+        return { sent: drafted, failed, total };
+
+    } catch(e) {
+        emit({ type: 'error', message: 'Internal error: ' + e.message });
+        return { sent: finalSent, failed: finalFailed, total: 0 };
+    }
+}
+
+module.exports = { sendLocalWA, sendLocalWA_Manual, sendLocalWA_Draft, registerSSE, removeSSE };
+

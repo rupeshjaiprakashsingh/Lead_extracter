@@ -9,11 +9,14 @@ const mongoose = require('mongoose');
 let _morningJob = null;
 let _eveningJob = null;
 let _reportJob  = null;
+let _socialJob  = null;
 let _isSending  = false;  // prevent overlapping sends
 
 // ── Lazy model getters (avoids circular require) ──────────────
 const getSchedule = () => mongoose.model('Schedule');
 const getLead     = () => mongoose.model('Lead');
+const getSocialSettings = () => mongoose.model('SocialSettings');
+const getSocialPost     = () => mongoose.model('SocialPost');
 
 // ── Random human-like delay ───────────────────────────────────
 //   Base: 25–45 s, every 10 messages take a 1–2 min break
@@ -245,6 +248,69 @@ function stopScheduler() {
     if (_reportJob)  { _reportJob.stop();  _reportJob  = null; }
 }
 
+// ── Social Poster Scheduler ───────────────────────────────────
+async function runScheduledSocialPost() {
+    try {
+        const SocialSettings = getSocialSettings();
+        const SocialPost = getSocialPost();
+        
+        const settings = await SocialSettings.findOne({});
+        if (!settings || !settings.enabled) return;
+
+        const now = new Date();
+        const currentHour = parseInt(now.toLocaleTimeString('en-US', { hour12: false, hour: 'numeric', timeZone: 'Asia/Kolkata' }));
+        const todayStr = now.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata' });
+
+        if (settings.frequency === 'daily' && currentHour !== settings.time_hour) {
+            return; // Not the scheduled hour
+        }
+
+        // For daily postings, ensure we haven't already posted today
+        if (settings.frequency === 'daily') {
+            const lastPost = await SocialPost.findOne({}).sort({ createdAt: -1 });
+            if (lastPost && new Date(lastPost.createdAt).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata' }) === todayStr) {
+                console.log('⏰ Social Scheduler: Already posted today, skipping.');
+                return;
+            }
+        }
+
+        console.log(`⏰ Social Scheduler: Running scheduled social posting (${settings.frequency})...`);
+        const { scrapeWebsite, generateSocialPosts, postToSocial } = require('./social-poster');
+        const webData = await scrapeWebsite(settings.website_url);
+        const generated = await generateSocialPosts(webData, settings.topic, settings.title, settings.custom_content);
+        const postDoc = await postToSocial(generated, settings);
+        console.log(`✅ Social Scheduler: Posting completed. Post ID: ${postDoc._id}`);
+    } catch (err) {
+        console.error(`❌ Social Scheduler Error: ${err.message}`);
+    }
+}
+
+function startSocialScheduler() {
+    stopSocialScheduler();
+    // Check every hour at minute 0
+    _socialJob = cron.schedule('0 * * * *', () => {
+        console.log('\n⏰ Social scheduler check triggered...');
+        runScheduledSocialPost().catch(e => console.error('Social scheduler cron error:', e.message));
+    }, { timezone: 'Asia/Kolkata' });
+    console.log('  ⏰ Social Auto-Poster Scheduler ACTIVE (Checks hourly)');
+}
+
+function stopSocialScheduler() {
+    if (_socialJob) {
+        _socialJob.stop();
+        _socialJob = null;
+    }
+}
+
 function isRunning() { return _isSending; }
 
-module.exports = { startScheduler, stopScheduler, runScheduledSend, sendDailyReport, isRunning };
+module.exports = { 
+    startScheduler, 
+    stopScheduler, 
+    runScheduledSend, 
+    sendDailyReport, 
+    isRunning,
+    startSocialScheduler,
+    stopSocialScheduler,
+    runScheduledSocialPost
+};

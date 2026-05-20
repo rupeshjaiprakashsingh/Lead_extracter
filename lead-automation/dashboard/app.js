@@ -26,6 +26,7 @@ function switchTab(t){
   document.getElementById('tab-'+t).style.display='block';
   event.target.classList.add('active');
   if(t==='followup') loadFollowups();
+  if(t==='social') loadSocial();
   if(t==='settings') loadSettings();
 }
 
@@ -131,7 +132,7 @@ function renderTable(){
   if(!leads.length){w.innerHTML='<div class="empty">No leads found</div>';return;}
   let h=`<table><thead><tr>
     <th style="width:30px"><input type="checkbox" onchange="toggleAll(this.checked)"></th>
-    <th>#</th><th>Business</th><th>Category</th><th>Phone</th><th>Website</th>
+    <th>#</th><th>Business</th><th>Category</th><th>Phone</th><th>Emails</th><th>Website</th>
     <th>⭐</th><th>Rev</th><th>Status</th><th>WA</th><th>Email</th><th></th>
   </tr></thead><tbody>`;
   const perPage=parseInt(document.getElementById('f-limit').value)||25;
@@ -145,6 +146,7 @@ function renderTable(){
           <div style="font-size:9px;color:#64748b">${b.city||''}</div></td>
       <td>${catBadge(b.category)}</td>
       <td style="font-family:monospace;color:#34d399;font-size:11px">${b.raw_phone||b.phone||'—'}</td>
+      <td style="font-size:10px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#cbd5e1" title="${b.email||''}">${b.email||'—'}</td>
       <td>${siteBadge(b.website)}</td>
       <td style="color:#fbbf24;font-size:11px">${b.rating||'—'}</td>
       <td style="font-weight:600;font-size:11px">${b.reviews||'—'}</td>
@@ -238,21 +240,22 @@ async function startAutoSend(){
   const sel=getSelected();
   const skipWaSent=document.getElementById('f-skip-wa')?.checked||false;
   if(!sel.length) return alert('Please select at least one lead to send WhatsApp messages.');
-  const skipNote=skipWaSent?'\n\n✅ "Skip WA Sent" is ON — already-messaged leads will be skipped automatically.':'';
-  if(!confirm(`⚠️ Warning: You asked for automation.\n\nWe will now open a Chrome window and automatically click 'Send' for you. This will take ~15 seconds per lead to prevent WhatsApp from banning your account.\n\nSend WhatsApp to ${sel.length} selected leads?${skipNote}`))return;
+  const skipNote=skipWaSent?'\n\n✅ "Skip WA Sent" is ON — already-messaged leads will be skipped.':'';
+  if(!confirm(`📝 DRAFT MODE\n\nWhatsApp Web will open and automatically pre-fill messages for all ${sel.length} leads one by one.\n\nDo NOT close the browser while it works!\n\nOnce done, go through each chat and click Send yourself — no auto-clicking, 100% safe.${skipNote}`))return;
   sending=true;
   document.getElementById('btn-autosend').disabled=true;
-  
-  showProgress('Automating WhatsApp Web...');
+  document.getElementById('btn-autosend').textContent='⏳ Drafting...';
+  showProgress('📝 Drafting WhatsApp messages — browser will stay open when done...');
   connectSSE();
   
   try {
-      await fetch('/api/send/wa',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:sel,skipWaSent})});
-      plog('Send job started','in');
+      await fetch('/api/send/wa-draft',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:sel,skipWaSent})});
+      plog('📝 Draft mode started — WhatsApp Web is opening each chat and pre-filling messages...','in');
   } catch(err) {
       alert('Error: ' + err.message);
       sending=false;
       document.getElementById('btn-autosend').disabled=false;
+      document.getElementById('btn-autosend').textContent='📝 Draft WA Messages';
   }
 }
 
@@ -301,6 +304,36 @@ async function sendEmailToSelected() {
   }
 }
 
+// ── Email Extraction ─────────────────────────────────────────
+async function startEmailExtraction() {
+  if (sending) return alert('Already running a task');
+  if (!confirm('🌐 Extract emails for ALL leads that have a website but no email? This may take some time.')) return;
+  showProgress('Extracting Emails...');
+  connectSSE();
+  try {
+    await fetch('/api/leads/extract-emails', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+  } catch(e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+async function extractEmailsForSelected() {
+  if (sending) return alert('Already running a task');
+  const sel = getSelected();
+  if (!sel.length) return alert('Please select at least one lead.');
+  if (!confirm(`🌐 Extract emails for ${sel.length} selected leads?`)) return;
+  showProgress('Extracting Emails...');
+  connectSSE();
+  try {
+    await fetch('/api/leads/extract-emails', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: sel })
+    });
+  } catch(e) {
+    alert('Error: ' + e.message);
+  }
+}
 
 async function loadFollowups(){
   try{
@@ -920,4 +953,352 @@ async function testScheduleReport() {
     msg.textContent = '❌ ' + e.message;
     msg.style.color = '#f87171';
   }
+}
+
+// ── Social Poster Logic ──────────────────────────────────────
+let _socPreviewData = null;
+let _socSelectedLog = null;
+
+async function loadSocial() {
+  try {
+    const s = await (await fetch('/api/social/settings')).json();
+    
+    // Website and inputs
+    document.getElementById('soc-website').value = s.website_url || '';
+    document.getElementById('soc-topic').value = s.topic || '';
+    document.getElementById('soc-title').value = s.title || '';
+    document.getElementById('soc-custom').value = s.custom_content || '';
+    
+    // Scheduler
+    document.getElementById('soc-enabled').checked = !!s.enabled;
+    document.getElementById('soc-frequency').value = s.frequency || 'daily';
+    document.getElementById('soc-hour').value = s.time_hour !== undefined ? s.time_hour : 10;
+    
+    updateSocialEnabledVisual();
+    toggleSocialTimeSelect();
+    
+    // Channels
+    const channels = s.channels || {};
+    const list = ['linkedin', 'facebook', 'instagram', 'twitter', 'pinterest', 'threads', 'youtube'];
+    
+    list.forEach(ch => {
+      const conf = channels[ch] || {};
+      document.getElementById(`ch-${ch}-enabled`).checked = !!conf.enabled;
+      
+      const tokenInput = document.getElementById(`ch-${ch}-token`);
+      if (conf.token === '••••••••') {
+        tokenInput.value = '';
+        tokenInput.placeholder = 'Token saved ✓ (hidden)';
+      } else {
+        tokenInput.value = conf.token || '';
+        tokenInput.placeholder = 'Access Token';
+      }
+      
+      // Secondary fields
+      if (ch === 'linkedin' && document.getElementById('ch-linkedin-urn')) {
+        document.getElementById('ch-linkedin-urn').value = conf.urn || '';
+      }
+      if (ch === 'facebook' && document.getElementById('ch-facebook-pageId')) {
+        document.getElementById('ch-facebook-pageId').value = conf.pageId || '';
+      }
+      if (ch === 'instagram' && document.getElementById('ch-instagram-accountId')) {
+        document.getElementById('ch-instagram-accountId').value = conf.accountId || '';
+      }
+      if (ch === 'twitter' && document.getElementById('ch-twitter-apiKey')) {
+        document.getElementById('ch-twitter-apiKey').value = conf.apiKey || '';
+      }
+      if (ch === 'pinterest' && document.getElementById('ch-pinterest-boardId')) {
+        document.getElementById('ch-pinterest-boardId').value = conf.boardId || '';
+      }
+    });
+
+    await loadSocialLogs();
+  } catch(e) {
+    document.getElementById('soc-msg').textContent = '❌ Error loading settings: ' + e.message;
+    document.getElementById('soc-msg').style.color = '#f87171';
+  }
+}
+
+function updateSocialEnabledVisual() {
+  const on = document.getElementById('soc-enabled').checked;
+  const track = document.getElementById('soc-toggle-track');
+  const thumb = document.getElementById('soc-toggle-thumb');
+  const badge = document.getElementById('soc-scheduler-badge');
+  
+  if (track && thumb) {
+    track.style.background = on ? '#4f8ef7' : '#2d3748';
+    thumb.style.left = on ? '18px' : '2px';
+  }
+  if (badge) {
+    badge.textContent = on ? '🟢 ACTIVE' : '⚪ PAUSED';
+    badge.style.background = on ? '#14532d' : '#1e3a5f';
+    badge.style.color = on ? '#86efac' : '#60a5fa';
+  }
+}
+
+function toggleSocialTimeSelect() {
+  const freq = document.getElementById('soc-frequency').value;
+  const wrap = document.getElementById('soc-time-wrap');
+  if (wrap) {
+    wrap.style.display = freq === 'daily' ? 'flex' : 'none';
+  }
+}
+
+async function saveSocialSettings() {
+  const msg = document.getElementById('soc-msg');
+  msg.textContent = '⏳ Saving settings...';
+  msg.style.color = '#64748b';
+  
+  try {
+    const list = ['linkedin', 'facebook', 'instagram', 'twitter', 'pinterest', 'threads', 'youtube'];
+    const channels = {};
+    
+    list.forEach(ch => {
+      const enabled = document.getElementById(`ch-${ch}-enabled`).checked;
+      let token = document.getElementById(`ch-${ch}-token`).value;
+      
+      // If empty but has saved placeholder, keep existing
+      if (!token && document.getElementById(`ch-${ch}-token`).placeholder.includes('saved')) {
+        token = '••••••••';
+      }
+      
+      channels[ch] = { enabled, token };
+      
+      if (ch === 'linkedin') channels[ch].urn = document.getElementById('ch-linkedin-urn').value.trim();
+      if (ch === 'facebook') channels[ch].pageId = document.getElementById('ch-facebook-pageId').value.trim();
+      if (ch === 'instagram') channels[ch].accountId = document.getElementById('ch-instagram-accountId').value.trim();
+      if (ch === 'twitter') channels[ch].apiKey = document.getElementById('ch-twitter-apiKey').value.trim();
+      if (ch === 'pinterest') channels[ch].boardId = document.getElementById('ch-pinterest-boardId').value.trim();
+    });
+
+    const body = {
+      enabled: document.getElementById('soc-enabled').checked,
+      frequency: document.getElementById('soc-frequency').value,
+      time_hour: parseInt(document.getElementById('soc-hour').value),
+      website_url: document.getElementById('soc-website').value.trim(),
+      topic: document.getElementById('soc-topic').value.trim(),
+      title: document.getElementById('soc-title').value.trim(),
+      custom_content: document.getElementById('soc-custom').value.trim(),
+      channels
+    };
+
+    const res = await (await fetch('/api/social/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })).json();
+
+    if (res.success) {
+      msg.textContent = '✅ Social settings saved successfully!';
+      msg.style.color = '#34d399';
+      setTimeout(() => { msg.textContent = ''; }, 3000);
+      await loadSocial();
+    } else {
+      msg.textContent = '❌ Save failed: ' + (res.error || 'Unknown error');
+      msg.style.color = '#f87171';
+    }
+  } catch(e) {
+    msg.textContent = '❌ ' + e.message;
+    msg.style.color = '#f87171';
+  }
+}
+
+async function generateSocialPreview() {
+  const btn = document.getElementById('soc-preview-btn');
+  const msg = document.getElementById('soc-msg');
+  const website = document.getElementById('soc-website').value.trim();
+  
+  if (!website) {
+    msg.textContent = '⚠️ Website URL is required to generate preview.';
+    msg.style.color = '#fbbf24';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Scrape & Generate...';
+  msg.textContent = '🌐 Reading website and calling Gemini API...';
+  msg.style.color = '#60a5fa';
+
+  try {
+    const res = await (await fetch('/api/social/generate-preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        website_url: website,
+        topic: document.getElementById('soc-topic').value.trim(),
+        title: document.getElementById('soc-title').value.trim(),
+        custom_content: document.getElementById('soc-custom').value.trim()
+      })
+    })).json();
+
+    if (res.success) {
+      _socPreviewData = res.posts;
+      msg.textContent = '✅ Preview generated successfully!';
+      msg.style.color = '#34d399';
+      setTimeout(() => { msg.textContent = ''; }, 3000);
+      
+      renderPreviewMockups(res.posts, res.webData);
+    } else {
+      msg.textContent = '❌ Preview failed: ' + (res.error || 'Generation failed');
+      msg.style.color = '#f87171';
+    }
+  } catch(e) {
+    msg.textContent = '❌ Error: ' + e.message;
+    msg.style.color = '#f87171';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔍 Generate Preview';
+  }
+}
+
+function renderPreviewMockups(posts, webData) {
+  // Update mock contents
+  document.getElementById('mock-li-body').textContent = posts.linkedin || 'No post generated.';
+  document.getElementById('mock-fb-body').textContent = posts.facebook || 'No post generated.';
+  document.getElementById('mock-ig-body').textContent = posts.instagram || 'No post generated.';
+  document.getElementById('mock-tw-body').textContent = posts.twitter || 'No post generated.';
+  document.getElementById('mock-pin-body').textContent = posts.pinterest || 'No post generated.';
+  document.getElementById('mock-th-body').textContent = posts.threads || 'No post generated.';
+  document.getElementById('mock-yt-body').textContent = posts.youtube || 'No post generated.';
+  
+  // Custom titles
+  const customTitle = document.getElementById('soc-title').value.trim() || webData.title || 'Our Company';
+  document.getElementById('mock-li-title').textContent = customTitle;
+  document.getElementById('mock-fb-title').textContent = customTitle;
+  document.getElementById('mock-tw-title').textContent = customTitle;
+  document.getElementById('mock-pin-title').textContent = customTitle + ' Board Pin';
+  
+  const handle = '@' + customTitle.toLowerCase().replace(/[^a-z0-9]/g, '');
+  document.getElementById('mock-tw-handle').textContent = handle;
+  document.getElementById('mock-ig-title').textContent = handle.substring(1);
+  document.getElementById('mock-th-title').textContent = handle.substring(1);
+
+  // Src indicator
+  const indicator = document.getElementById('preview-src-indicator');
+  if (indicator) {
+    indicator.textContent = `Scraped: ${webData.title ? webData.title.substring(0, 20) + '...' : 'Website Ready'}`;
+    indicator.style.color = '#34d399';
+  }
+}
+
+function switchPreviewPlatform(platform) {
+  // Hide all mocks
+  document.querySelectorAll('.mock-content').forEach(el => el.style.display = 'none');
+  // Deactivate all tab buttons
+  const tabsContainer = document.getElementById('preview-tabs');
+  if (tabsContainer) {
+    tabsContainer.querySelectorAll('button').forEach(btn => btn.classList.remove('active'));
+  }
+  
+  // Show target mock
+  const targetMock = document.getElementById(`mock-${platform}`);
+  if (targetMock) targetMock.style.display = platform === 'pinterest' || platform === 'instagram' ? 'flex' : 'block';
+  
+  // Activate target tab button
+  const targetTabBtn = document.getElementById(`tab-p-${platform}`);
+  if (targetTabBtn) targetTabBtn.classList.add('active');
+}
+
+async function runSocialPostNow() {
+  const btn = document.getElementById('soc-run-btn');
+  const msg = document.getElementById('soc-msg');
+  
+  btn.disabled = true;
+  btn.textContent = '⏳ Executing...';
+  msg.textContent = '🌐 Starting scraping, AI post writing and simulation...';
+  msg.style.color = '#60a5fa';
+
+  try {
+    // Save first
+    await saveSocialSettings();
+    
+    const res = await (await fetch('/api/social/post-now', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        website_url: document.getElementById('soc-website').value.trim(),
+        topic: document.getElementById('soc-topic').value.trim(),
+        title: document.getElementById('soc-title').value.trim(),
+        custom_content: document.getElementById('soc-custom').value.trim()
+      })
+    })).json();
+
+    if (res.success) {
+      msg.textContent = '✅ Social posting simulated successfully!';
+      msg.style.color = '#34d399';
+      setTimeout(() => { msg.textContent = ''; }, 4000);
+      
+      if (res.post && res.post.content) {
+        renderPreviewMockups(res.post.content, { title: res.post.title });
+      }
+      
+      await loadSocialLogs();
+    } else {
+      msg.textContent = '❌ Simulation failed: ' + (res.error || 'Posting failed');
+      msg.style.color = '#f87171';
+    }
+  } catch(e) {
+    msg.textContent = '❌ Error: ' + e.message;
+    msg.style.color = '#f87171';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🚀 Post Now';
+  }
+}
+
+async function loadSocialLogs() {
+  const body = document.getElementById('soc-logs-body');
+  if (!body) return;
+  
+  try {
+    const logs = await (await fetch('/api/social/posts')).json();
+    if (!logs || logs.length === 0) {
+      body.innerHTML = '<tr><td colspan="5" class="empty" style="text-align:center;padding:20px;color:#64748b">No postings recorded yet.</td></tr>';
+      return;
+    }
+
+    body.innerHTML = logs.map(log => {
+      const date = new Date(log.createdAt || log.last_run_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'short', timeStyle: 'short' });
+      const site = log.website_url ? log.website_url.replace(/^https?:\/\/(www\.)?/i, '') : 'Manual';
+      const siteShort = site.length > 22 ? site.substring(0, 20) + '...' : site;
+      const topic = log.topic || 'Auto Post';
+      
+      const channels = (log.channels_posted || []).map(ch => {
+        const icons = { linkedin: '💼', facebook: '👤', instagram: '📸', twitter: '🐦', pinterest: '📌', threads: '🧵', youtube: '🎥' };
+        return `<span title="${ch}">${icons[ch] || ch}</span>`;
+      }).join(' ');
+
+      const statusBadgeClass = log.status === 'Success' ? 's-ok' : (log.status === 'Simulated' ? 's-warn' : 's-err');
+      const statusText = log.status || 'Simulated';
+      
+      // Store log in a global array or stringify directly
+      const escapedLogs = (log.logs || '').replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, '\\n');
+      
+      return `<tr style="border-bottom:1px solid #1e2433">
+        <td style="padding:6px 10px;color:#94a3b8;white-space:nowrap">${date}</td>
+        <td style="padding:6px 10px"><b style="color:#fff" title="${log.website_url}">${siteShort}</b><div style="font-size:9px;color:#64748b">${topic}</div></td>
+        <td style="padding:6px 10px;font-size:12px">${channels || 'None'}</td>
+        <td style="padding:6px 10px"><span class="badge-sm ${statusBadgeClass}" style="font-size:9px;padding:2px 6px;border-radius:4px">${statusText}</span></td>
+        <td style="padding:6px 10px;text-align:center">
+          <button class="btn b-gray" style="padding:2px 8px;font-size:10px;border-radius:4px" onclick="openSocialLog(\`${escapedLogs}\`)">👁️ View</button>
+        </td>
+      </tr>`;
+    }).join('');
+  } catch(e) {
+    body.innerHTML = `<tr><td colspan="5" class="empty" style="text-align:center;padding:20px;color:#f87171">Error loading logs: ${e.message}</td></tr>`;
+  }
+}
+
+function openSocialLog(logString) {
+  const modal = document.getElementById('soc-log-modal');
+  const content = document.getElementById('soc-log-content');
+  if (modal && content) {
+    content.textContent = logString || 'No execution logs recorded for this post.';
+    modal.style.display = 'flex';
+  }
+}
+
+function closeSocialLogModal() {
+  const modal = document.getElementById('soc-log-modal');
+  if (modal) modal.style.display = 'none';
 }
