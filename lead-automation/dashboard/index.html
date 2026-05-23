@@ -35,6 +35,7 @@
   <div class="ctrl">
     <div class="ig"><label>Keyword</label><input type="text" id="kw" value="clinic" style="width:170px"></div>
     <div class="ig"><label>City</label><input type="text" id="city" value="Mumbai" style="width:120px"></div>
+    <div class="ig"><label>Category</label><input type="text" id="scrape-category" placeholder="e.g. Health, Real Estate" style="width:160px"></div>
     <div class="ig"><label>Limit</label><input type="number" id="maxr" value="9999" min="5" style="width:80px"></div>
     <button class="btn b-blue" id="btn-scrape" onclick="doScrape()">🔍 Extract Leads</button>
   </div>
@@ -78,13 +79,46 @@
     .cat-count-chip:hover{background:#1e3a6e;border-color:#3b82f6}
     .cat-count-name{font-weight:600;max-width:120px;overflow:hidden;text-overflow:ellipsis}
     .cat-count-num{background:#1d4ed8;color:#fff;border-radius:10px;padding:1px 6px;font-size:9px;font-weight:700;min-width:18px;text-align:center}
+
+    /* ── Inline editable phone / email inputs ── */
+    .inline-edit-wrap{display:flex;align-items:center;gap:3px;min-width:110px}
+    .inline-edit-input{
+      background:transparent;
+      border:1px solid transparent;
+      border-radius:5px;
+      color:#34d399;
+      font-family:monospace;
+      font-size:11px;
+      padding:3px 5px;
+      width:100%;
+      min-width:100px;
+      transition:border-color .15s, background .15s, box-shadow .15s;
+      outline:none;
+      cursor:text;
+    }
+    .inline-edit-input.email-input{color:#93c5fd;font-family:inherit;font-size:10px}
+    .inline-edit-input::placeholder{color:#475569;font-style:italic}
+    .inline-edit-input:hover{border-color:#334155;background:#0f172a}
+    .inline-edit-input:focus{
+      border-color:#34d399;
+      background:#071a0e;
+      box-shadow:0 0 0 2px rgba(52,211,153,.18);
+      color:#86efac;
+    }
+    .inline-edit-input.email-input:focus{
+      border-color:#60a5fa;
+      background:#071222;
+      box-shadow:0 0 0 2px rgba(96,165,250,.18);
+      color:#bae6fd;
+    }
+    .inline-save-indicator{font-size:12px;flex-shrink:0;transition:opacity .2s;width:14px;text-align:center}
   </style>
   <div class="ctrl">
     <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
       <button class="btn b-auto" id="btn-autosend" onclick="startAutoSend()">📝 Draft WA Messages</button>
       <button class="btn b-green" onclick="startFollowup('wa')">🔄 Follow-Up WA</button>
       <button class="btn b-purple" id="btn-schedule" onclick="openSchedule()">⏰ Auto Schedule</button>
-      <a href="/api/leads/export" class="btn b-gray" style="text-decoration:none">📥 Export Excel</a>
+      <button class="btn b-gray" onclick="exportExcel()">📥 Export Excel</button>
       <button class="btn b-gray" onclick="openExcelImport()">📂 Import Excel</button>
       <button class="btn b-green" id="btn-sync-contacts" onclick="syncContacts()">📒 Sync Contacts</button>
       <button class="btn b-blue" onclick="startEmailExtraction()">🌐 Extract Emails</button>
@@ -161,6 +195,9 @@
     <button class="btn" style="background:#0ea5e9;color:#fff;border:none;padding:8px 16px;font-size:12px;font-weight:600" onclick="extractEmailsForSelected()">
       🌐 Find Emails
     </button>
+    <button class="btn" style="background:#ef4444;color:#fff;border:none;padding:8px 16px;font-size:12px;font-weight:600" onclick="bulkDeleteLeads()">
+      🗑 Delete Selected
+    </button>
     <button class="btn" style="background:rgba(255,255,255,.15);color:#fff;border:1px solid rgba(255,255,255,.3);padding:8px 14px;font-size:12px" onclick="clearAllSelections()">
       ✕ Clear
     </button>
@@ -173,17 +210,73 @@
 
 <!-- ═══════ FOLLOW-UP TAB ═══════ -->
 <div id="tab-followup" class="tab-body" style="display:none">
-  <div style="padding:20px 28px">
-    <h2 style="font-size:18px;margin-bottom:14px">🔄 AI Follow-Up Manager</h2>
-    <p style="color:#64748b;font-size:13px;margin-bottom:18px">Leads that have been contacted but need follow-up. AI generates personalized follow-up messages.</p>
-    <div style="display:flex;gap:8px;margin-bottom:18px">
-      <button class="btn b-green" onclick="startFollowup('wa')">📱 Follow-Up via WhatsApp</button>
-      <button class="btn b-blue" onclick="startFollowup('email')">📧 Follow-Up via Email</button>
-      <button class="btn b-auto" onclick="startFollowup('both')">🚀 Both WA + Email</button>
+
+  <!-- Header bar -->
+  <div style="padding:16px 20px;background:#080f1f;border-bottom:1px solid #1e293b;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <div>
+      <h2 style="font-size:16px;margin:0;color:#e2e8f0">🔔 Follow-Up Tracker</h2>
+      <div style="font-size:11px;color:#64748b;margin-top:2px">Interested leads you manually added for follow-up. Search from Leads tab → click 🔔 Add to Follow-Up.</div>
     </div>
-    <div id="followup-list"><div class="empty">Loading...</div></div>
+    <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <span id="fu-count-badge" style="background:#1e3a5f;color:#60a5fa;font-size:11px;padding:3px 10px;border-radius:20px;font-weight:700">0 leads</span>
+      <button class="btn b-green"  id="fu-btn-wa"    onclick="fuBulkSendWA()"    style="font-size:11px;padding:6px 12px">📱 Send WA (Selected)</button>
+      <button class="btn b-blue"   id="fu-btn-email" onclick="fuBulkSendEmail()" style="font-size:11px;padding:6px 12px">📧 Send Email (Selected)</button>
+      <button class="btn b-red"    id="fu-btn-rem"   onclick="fuBulkRemove()"    style="font-size:11px;padding:6px 12px">🗑 Remove Selected</button>
+      <button class="btn b-gray"   onclick="loadFollowups()"                      style="font-size:11px;padding:6px 12px">🔄 Refresh</button>
+    </div>
+  </div>
+
+  <!-- Search & Filter bar -->
+  <div style="padding:10px 20px;background:#0a1020;border-bottom:1px solid #1e293b;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+    <input type="text" id="fu-search" placeholder="🔍 Search name, phone, email..." style="flex:1;min-width:200px;padding:7px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:12px" oninput="debounceFuSearch()">
+    <select id="fu-status" onchange="loadFollowups()" style="padding:7px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:12px">
+      <option value="">All Status</option>
+      <option value="followup">🔄 Follow-Up</option>
+      <option value="interested">🔥 Interested</option>
+      <option value="contacted">📞 Contacted</option>
+      <option value="new">🆕 New</option>
+    </select>
+    <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#94a3b8;cursor:pointer">
+      <input type="checkbox" id="fu-select-all" onchange="fuToggleAll(this.checked)" style="width:14px;height:14px;accent-color:#7c3aed">
+      Select All
+    </label>
+  </div>
+
+  <!-- Table -->
+  <div id="fu-table-wrap" style="overflow-x:auto;padding:0 0 20px">
+    <div class="empty" style="padding:40px;text-align:center">⏳ Loading follow-up leads...</div>
+  </div>
+
+</div>
+
+<!-- ── Add to Follow-Up Modal ── -->
+<div id="fu-add-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:99999;align-items:center;justify-content:center;padding:20px">
+  <div style="max-width:440px;width:100%;background:#0f172a;border:1px solid #334155;border-radius:14px;overflow:hidden;box-shadow:0 25px 60px rgba(0,0,0,.7)">
+    <div style="background:linear-gradient(135deg,#1e3a5f,#0f2040);padding:16px 20px;border-bottom:1px solid #1e293b;display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <div style="font-weight:700;color:#fff;font-size:14px">🔔 Add to Follow-Up</div>
+        <div id="fu-modal-leadname" style="font-size:11px;color:#60a5fa;margin-top:2px"></div>
+      </div>
+      <button onclick="closeFuModal()" style="background:none;border:none;color:#94a3b8;font-size:20px;cursor:pointer">&times;</button>
+    </div>
+    <div style="padding:20px;display:flex;flex-direction:column;gap:14px">
+      <div class="ig">
+        <label style="font-size:11px;color:#94a3b8;margin-bottom:5px;display:block">📝 Note / Reason for Follow-Up</label>
+        <textarea id="fu-modal-note" rows="3" placeholder="e.g. Interested in web design, call back next week..." style="width:100%;padding:9px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px;font-family:inherit;resize:vertical"></textarea>
+      </div>
+      <div class="ig">
+        <label style="font-size:11px;color:#94a3b8;margin-bottom:5px;display:block">📅 Schedule Follow-Up Date (optional)</label>
+        <input type="datetime-local" id="fu-modal-date" style="width:100%;padding:9px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px">
+      </div>
+      <div style="display:flex;gap:8px">
+        <button onclick="closeFuModal()" class="btn b-gray" style="flex:1;padding:10px">Cancel</button>
+        <button onclick="confirmAddToFollowup()" class="btn b-green" style="flex:2;padding:10px;font-size:13px;font-weight:700" id="fu-modal-save-btn">🔔 Add to Follow-Up</button>
+      </div>
+      <div id="fu-modal-msg" style="font-size:11px;text-align:center;min-height:16px;color:#64748b"></div>
+    </div>
   </div>
 </div>
+
 
 <!-- ═══════ SETTINGS TAB ═══════ -->
 <div id="tab-settings" class="tab-body" style="display:none">
@@ -234,21 +327,35 @@
       <h3>📧 SMTP Email Configuration</h3>
       <div class="cfg-grid">
         <div class="ig"><label>SMTP Host</label><input type="text" id="s-smtp-host" value="smtp.gmail.com" style="width:200px"></div>
-        <div class="ig"><label>Port</label><input type="number" id="s-smtp-port" value="587" style="width:80px"></div>
-        <div class="ig"><label>Secure (SSL)</label><select id="s-smtp-secure" style="padding:8px;background:#1a2035;color:#e2e8f0;border:1px solid #2d3748;border-radius:7px"><option value="false">No (TLS)</option><option value="true">Yes (SSL)</option></select></div>
+        <div class="ig"><label>Port</label><input type="number" id="s-smtp-port" value="587" style="width:80px" onchange="smtpPortChanged(this.value)"></div>
+        <div class="ig"><label>Secure (SSL)</label><select id="s-smtp-secure" style="padding:8px;background:#1a2035;color:#e2e8f0;border:1px solid #2d3748;border-radius:7px" onchange="smtpSecureChanged(this.value)"><option value="false" selected>No (TLS / STARTTLS) ✓ Gmail 587</option><option value="true">Yes (SSL) — Port 465 only</option></select></div>
       </div>
       <div class="cfg-grid" style="margin-top:8px">
         <div class="ig"><label>Email/Username</label><input type="text" id="s-smtp-user" placeholder="your@gmail.com" style="width:240px"></div>
-        <div class="ig"><label>App Password</label><input type="password" id="s-smtp-pass" placeholder="App password" style="width:200px"></div>
+        <div class="ig"><label>App Password</label><input type="text" id="s-smtp-pass" placeholder="App password" style="width:200px; -webkit-text-security: disc;" autocomplete="off"></div>
         <button class="btn b-blue" onclick="testSmtp()">🔌 Test SMTP</button>
       </div>
       <div class="cfg-grid" style="margin-top:8px">
         <div class="ig"><label>From Name</label><input type="text" id="s-smtp-from" value="Digital Growth Team" style="width:240px"></div>
       </div>
       <div id="smtp-status" class="cfg-status"></div>
-      <div class="steps-mini">
-        <b>Gmail:</b> Enable 2FA → Create App Password at <a href="https://myaccount.google.com/apppasswords" target="_blank">myaccount.google.com/apppasswords</a>
+      <div class="steps-mini" style="line-height:1.8">
+        <b>Gmail (Recommended):</b> Port <b>587</b> + <b>No (TLS/STARTTLS)</b> — or Port <b>465</b> + <b>Yes (SSL)</b><br>
+        Create App Password: Enable 2FA → <a href="https://myaccount.google.com/apppasswords" target="_blank">myaccount.google.com/apppasswords</a><br>
+        <span style="color:#f87171">⚠️ Do NOT use your Gmail login password — use the 16-character App Password.</span>
       </div>
+    </div>
+
+    <!-- Email & System Logs -->
+    <div class="config-section" style="margin-top:24px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h3 style="margin:0">📋 System & Email Logs</h3>
+        <div style="display:flex;gap:8px">
+          <button class="btn b-blue" style="padding:4px 10px;font-size:11px" onclick="loadLogs()">🔄 Refresh Logs</button>
+          <button class="btn b-red" style="padding:4px 10px;font-size:11px;background:#ef4444" onclick="clearLogs()">🗑️ Clear Logs</button>
+        </div>
+      </div>
+      <div id="log-viewer" style="background:#0f172a;color:#38bdf8;font-family:monospace;font-size:11px;padding:12px;border-radius:8px;border:1px solid #1e293b;max-height:220px;overflow-y:auto;white-space:pre-wrap;line-height:1.5">No logs recorded yet.</div>
     </div>
 
     <!-- ── Message Templates ───────────────────────────────── -->
@@ -270,7 +377,10 @@
           <span style="font-size:16px">📱</span> WhatsApp Message Body
           <span style="font-size:10px;color:#64748b">(Gemini personalises this for each lead)</span>
         </label>
-        <textarea id="s-wa-template" rows="7" placeholder="Hi [Business Name]! 👋&#10;&#10;I came across your business on Google Maps and noticed [issue].&#10;&#10;We help local businesses like yours get more customers online. Would you be open to a quick 5-minute call?&#10;&#10;Thank you!" style="width:100%;padding:10px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px;font-family:inherit;resize:vertical;line-height:1.6"></textarea>
+        <textarea id="s-wa-template" rows="7" placeholder="Hi [Business Name]! 👋&#10;&#10;I came across your business on Google Maps and had a quick question — when someone searches for [Category] in [City] right now, does your business show up on Google?&#10;&#10;I work with Innvoque and we help local businesses get found online and get more customers. Would a quick 5-minute call work this week?&#10;&#10;Rupesh | Innvoque Solutions | +91 9136662022" style="width:100%;padding:10px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px;font-family:inherit;resize:vertical;line-height:1.6"></textarea>
+        <div style="margin-top:6px;padding:8px 10px;background:#0f172a;border:1px solid #1e3a5f;border-radius:6px;font-size:11px;color:#60a5fa;line-height:1.7">
+          💡 <b>Tip:</b> Gemini will take your template above and personalise it for each lead — using their actual business name, city, category, and Google rating. Just write your message naturally; Gemini handles the personalisation.
+        </div>
         <div style="display:flex;gap:8px;margin-top:6px">
           <button class="btn b-gray" style="font-size:11px;padding:4px 10px" onclick="previewWATemplate()">👁 Preview AI Message</button>
           <span id="wa-preview-status" style="font-size:11px;color:#64748b;align-self:center"></span>
@@ -285,15 +395,18 @@
         <label style="display:flex;align-items:center;gap:6px">
           <span style="font-size:16px">📧</span> Email Subject Line
         </label>
-        <input type="text" id="s-email-subject" placeholder="Digital Growth Opportunity for [Business Name]" style="width:100%;padding:9px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px">
+        <input type="text" id="s-email-subject" placeholder="Quick question about [Business Name]'s online presence" style="width:100%;padding:9px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px">
       </div>
 
       <div class="ig">
         <label style="display:flex;align-items:center;gap:6px">
           <span style="font-size:16px">✉️</span> Email Body
-          <span style="font-size:10px;color:#64748b">(AI personalises and wraps in branded HTML)</span>
+          <span style="font-size:10px;color:#64748b">(Gemini personalises this for each lead and wraps in branded HTML)</span>
         </label>
-        <textarea id="s-email-body" rows="9" placeholder="Dear [Business Name] Team,&#10;&#10;I came across your business on Google Maps and wanted to reach out regarding a digital growth opportunity.&#10;&#10;[Gemini will add specific insight about their website/ranking here]&#10;&#10;We specialize in helping local businesses generate more leads online. I'd love to offer a FREE 15-minute strategy call.&#10;&#10;Would that work for you?&#10;&#10;Best regards,&#10;Digital Growth Team" style="width:100%;padding:10px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px;font-family:inherit;resize:vertical;line-height:1.6"></textarea>
+        <textarea id="s-email-body" rows="12" placeholder="Hi [Business Name] team,&#10;&#10;I was searching for [Category] businesses in [City] on Google and came across your listing.&#10;&#10;I work with Innvoque — we help local businesses in [City] show up better on Google and get more enquiries through their website.&#10;&#10;A few things we typically help with:&#10;- Getting found by more local customers on Google&#10;- Making sure your website works well on mobile&#10;- Building trust through better reviews and profile&#10;&#10;Would you be open to a quick 10-minute call this week to see if there's a fit? No pressure at all — happy to share what we've seen working for similar businesses in your area.&#10;&#10;Thanks for your time,&#10;&#10;Rupesh&#10;Innvoque Solutions&#10;+91 9136662022&#10;info@innvoque.com" style="width:100%;padding:10px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px;font-family:inherit;resize:vertical;line-height:1.6"></textarea>
+        <div style="margin-top:6px;padding:8px 10px;background:#0f172a;border:1px solid #1e3a5f;border-radius:6px;font-size:11px;color:#60a5fa;line-height:1.7">
+          💡 <b>How it works:</b> Write your email template above using <code style="background:#1e293b;padding:1px 4px;border-radius:3px">[Business Name]</code>, <code style="background:#1e293b;padding:1px 4px;border-radius:3px">[City]</code>, <code style="background:#1e293b;padding:1px 4px;border-radius:3px">[Category]</code> placeholders. Gemini will rewrite it uniquely for each lead — inserting their actual Google rating, website status, and specific insight — so every email feels personally researched.
+        </div>
       </div>
 
       <!-- WA Preview Modal -->
@@ -928,6 +1041,76 @@
         ✅ 1–2 min break every 10 messages &nbsp;|&nbsp;
         ✅ Split into 2 daily batches &nbsp;|&nbsp;
         ✅ AI-personalised unique messages
+      </div>
+    </div>
+  </div>
+<!-- ═══════ EDIT LEAD MODAL ═══════ -->
+<div id="edit-lead-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:9999;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto">
+  <div style="max-width:500px;width:100%;background:#0f172a;border:1px solid #1e293b;border-radius:16px;overflow:hidden;box-shadow:0 25px 60px rgba(0,0,0,.8);margin:40px auto">
+    <!-- Header -->
+    <div style="background:linear-gradient(135deg,#0ea5e9,#2563eb);padding:18px 24px;display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <div style="font-size:18px;font-weight:700;color:#fff">✏️ Edit Lead Information</div>
+        <div style="font-size:11px;color:rgba(255,255,255,.7);margin-top:2px">Modify lead details, category, and pipeline status</div>
+      </div>
+      <button onclick="document.getElementById('edit-lead-modal').style.display='none'" style="background:none;border:none;color:#94a3b8;font-size:24px;cursor:pointer;line-height:1">&times;</button>
+    </div>
+    
+    <!-- Form Content -->
+    <div style="padding:24px;display:flex;flex-direction:column;gap:14px">
+      <input type="hidden" id="edit-lead-id">
+      
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <label style="color:#94a3b8;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Business Name</label>
+        <input type="text" id="edit-lead-name" style="width:100%;padding:10px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px;box-sizing:border-box">
+      </div>
+      
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <label style="color:#94a3b8;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Category</label>
+        <input type="text" id="edit-lead-category" style="width:100%;padding:10px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px;box-sizing:border-box">
+      </div>
+      
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <label style="color:#94a3b8;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Phone Number</label>
+        <input type="text" id="edit-lead-phone" style="width:100%;padding:10px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px;box-sizing:border-box">
+      </div>
+      
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <label style="color:#94a3b8;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Email Address</label>
+        <input type="text" id="edit-lead-email" style="width:100%;padding:10px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px;box-sizing:border-box">
+      </div>
+      
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <label style="color:#94a3b8;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Website Link</label>
+        <input type="text" id="edit-lead-website" style="width:100%;padding:10px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px;box-sizing:border-box">
+      </div>
+      
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div style="display:flex;flex-direction:column;gap:4px">
+          <label style="color:#94a3b8;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Rating ⭐</label>
+          <input type="text" id="edit-lead-rating" style="width:100%;padding:10px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px;box-sizing:border-box">
+        </div>
+        <div style="display:flex;flex-direction:column;gap:4px">
+          <label style="color:#94a3b8;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Reviews Count</label>
+          <input type="number" id="edit-lead-reviews" style="width:100%;padding:10px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px;box-sizing:border-box">
+        </div>
+      </div>
+      
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <label style="color:#94a3b8;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Pipeline Status</label>
+        <select id="edit-lead-status" style="width:100%;padding:10px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px;box-sizing:border-box">
+          <option value="new">🆕 New</option>
+          <option value="contacted">📞 Contacted</option>
+          <option value="followup">🔄 Follow-Up</option>
+          <option value="interested">🔥 Interested</option>
+          <option value="converted">✅ Converted</option>
+          <option value="not_interested">❌ Not Interested</option>
+        </select>
+      </div>
+      
+      <div style="margin-top:16px;display:flex;gap:12px">
+        <button class="btn b-green" onclick="saveLeadEdit()" style="flex:1;padding:12px;font-weight:600">Save Changes</button>
+        <button class="btn b-gray" onclick="document.getElementById('edit-lead-modal').style.display='none'" style="padding:12px;width:110px">Cancel</button>
       </div>
     </div>
   </div>

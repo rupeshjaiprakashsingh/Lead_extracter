@@ -15,6 +15,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'dashboard')));
 
 // ── Services & Models ─────────────────────────────────────────
+const logger = require('./services/logger');
 const { connectDB, isConnected }  = require('./services/mongodb');
 const { categorize, ALL_CATEGORIES } = require('./services/categories');
 const { exportLeads }             = require('./services/excel');
@@ -162,7 +163,7 @@ app.get('/api/cities', async (req, res) => {
 
 // ── POST Scrape ───────────────────────────────────────────────
 app.post('/api/scrape', async (req, res) => {
-    const { keyword, city, max } = req.body;
+    const { keyword, city, max, category } = req.body;
     if (!keyword || !city) return res.status(400).json({ error: 'keyword and city required' });
 
     res.json({ success: true, message: 'Scraping started...' });
@@ -174,14 +175,13 @@ app.post('/api/scrape', async (req, res) => {
             const raw = await scrapeGoogleMaps(keyword, city, max || 9999);
 
             let added = 0, dupes = 0;
-            const cat = categorize(keyword);
 
             for (const lead of raw) {
                 try {
                     const doc = {
                         ...lead,
                         keyword,
-                        category: categorize(keyword, lead.category || ''),
+                        category: category && category.trim() ? category.trim() : categorize(keyword, lead.category || ''),
                         source: 'google_maps'
                     };
                     await Lead.findOneAndUpdate(
@@ -216,6 +216,16 @@ app.delete('/api/leads/:id', async (req, res) => {
 app.delete('/api/leads', async (req, res) => {
     try { await Lead.deleteMany({}); res.json({ success: true }); }
     catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── POST bulk delete leads ────────────────────────────────────
+app.post('/api/leads/bulk-delete', async (req, res) => {
+    try {
+        const { ids } = req.body;
+        if (!ids || !ids.length) return res.status(400).json({ error: 'No IDs provided' });
+        await Lead.deleteMany({ _id: { $in: ids } });
+        res.json({ success: true });
+    } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── PUT Update lead ───────────────────────────────────────────
@@ -380,10 +390,13 @@ app.post('/api/leads/import-excel', upload.single('file'), async (req, res) => {
 // ── GET Export Excel ──────────────────────────────────────────
 app.get('/api/leads/export', async (req, res) => {
     try {
-        const leads = await Lead.find({}).lean();
+        const { category } = req.query;
+        const filter = {};
+        if (category) filter.category = category;
+        const leads = await Lead.find(filter).lean();
         const buffer = exportLeads(leads);
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        res.setHeader('Content-Disposition', `attachment; filename="leads_${todayStr()}.xlsx"`);
+        res.setHeader('Content-Disposition', `attachment; filename="leads_${category ? category + '_' : ''}${todayStr()}.xlsx"`);
         res.send(buffer);
     } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -391,8 +404,15 @@ app.get('/api/leads/export', async (req, res) => {
 // ── GET Contact Sync Stats ────────────────────────────────────
 app.get('/api/contacts/stats', async (req, res) => {
     try {
-        const total   = await Lead.countDocuments({ phone: { $exists: true, $ne: '' } });
-        const saved   = await Lead.countDocuments({ phone: { $exists: true, $ne: '' }, contact_saved: true });
+        const { category } = req.query;
+        const totalFilter = { phone: { $exists: true, $ne: '' } };
+        const savedFilter = { phone: { $exists: true, $ne: '' }, contact_saved: true };
+        if (category) {
+            totalFilter.category = category;
+            savedFilter.category = category;
+        }
+        const total   = await Lead.countDocuments(totalFilter);
+        const saved   = await Lead.countDocuments(savedFilter);
         const pending = total - saved;
         res.json({ total, saved, pending });
     } catch(e) { res.status(500).json({ error: e.message }); }
@@ -429,9 +449,12 @@ app.post('/api/contacts/mark-all-saved', async (req, res) => {
 // ── GET Export VCard — ALL leads (no dedup) ───────────────────
 app.get('/api/leads/export-vcf', async (req, res) => {
     try {
-        const leads = await Lead.find({ phone: { $exists: true, $ne: '' } }).lean();
+        const { category } = req.query;
+        const filter = { phone: { $exists: true, $ne: '' } };
+        if (category) filter.category = category;
+        const leads = await Lead.find(filter).lean();
         res.setHeader('Content-Type', 'text/vcard; charset=utf-8');
-        res.setHeader('Content-Disposition', `attachment; filename="all_contacts_${todayStr()}.vcf"`);
+        res.setHeader('Content-Disposition', `attachment; filename="all_contacts_${category ? category + '_' : ''}${todayStr()}.vcf"`);
         res.send(buildVcf(leads));
     } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -439,16 +462,15 @@ app.get('/api/leads/export-vcf', async (req, res) => {
 // ── POST Export VCard — SMART (new only, auto-marks as saved server-side) ─
 app.post('/api/leads/export-vcf', async (req, res) => {
     try {
-        const { ids, newOnly } = req.body;
+        const { ids, newOnly, category } = req.body;
 
         let filter;
         if (ids?.length) {
             filter = { _id: { $in: ids }, phone: { $exists: true, $ne: '' } };
-        } else if (newOnly) {
-            // Only leads NOT yet saved to contacts
-            filter = { contact_saved: { $ne: true }, phone: { $exists: true, $ne: '' } };
         } else {
             filter = { phone: { $exists: true, $ne: '' } };
+            if (newOnly) filter.contact_saved = { $ne: true };
+            if (category) filter.category = category;
         }
 
         const leads = await Lead.find(filter).lean();
@@ -588,39 +610,61 @@ app.post('/api/send/email', async (req, res) => {
     setImmediate(async () => {
         try {
             const leads = await Lead.find({ _id: { $in: ids } }).lean();
-            let sent = 0, failed = 0;
+            let sent = 0, failed = 0, skipped = 0;
             emit({ type: 'start', total: leads.length });
-            
+
             for (let i = 0; i < leads.length; i++) {
                 const lead = leads[i];
                 emit({ type: 'sending', current: i+1, total: leads.length, name: lead.name, sent, failed });
-                
-                let emailDone = false;
-                if (lead.email) {
-                    try {
-                        const { subject, html } = await buildInitialEmail(lead);
-                        await sendEmail(lead.email, subject, html);
-                        
-                        await Lead.findByIdAndUpdate(lead._id, {
-                            $inc:  { email_count: 1 },
-                            $set:  { email_sent: true, email_last_date: todayStr() },
-                            $push: { activity: { type: 'email_sent', message: 'Initial email sent', date: new Date() } }
-                        });
-                        emailDone = true;
-                    } catch(e) {
-                        console.error('Email send error:', e.message);
-                    }
+
+                // Skip leads with no email — don't count as failure
+                if (!lead.email || !lead.email.trim()) {
+                    skipped++;
+                    failed++;
+                    emit({ type: 'failed', name: lead.name,
+                        reason: '⚠️ No email address — use "Extract Emails" button first to find emails from their website',
+                        sent, failed });
+                    continue;
                 }
-                
-                if (emailDone) { sent++; emit({ type: 'sent', name: lead.name, sent, failed, total: leads.length }); }
-                else { failed++; emit({ type: 'failed', name: lead.name, reason: 'No valid email found or send error', sent, failed }); }
+
+                try {
+                    const { subject, html } = await buildInitialEmail(lead);
+                    await sendEmail(lead.email, subject, html);
+                    await Lead.findByIdAndUpdate(lead._id, {
+                        $inc:  { email_count: 1 },
+                        $set:  { email_sent: true, email_last_date: todayStr() },
+                        $push: { activity: { type: 'email_sent', message: 'Initial email sent', date: new Date() } }
+                    });
+                    sent++;
+                    emit({ type: 'sent', name: lead.name, sent, failed, total: leads.length });
+                } catch(e) {
+                    failed++;
+                    // Friendly error messages
+                    let reason = e.message || 'Unknown error';
+                    if (reason.includes('535') || reason.includes('Invalid login') || reason.includes('Username and Password')) {
+                        reason = '❌ SMTP Auth failed — wrong App Password. Go to Settings → Test SMTP to fix.';
+                    } else if (reason.includes('not configured') || reason.includes('SMTP')) {
+                        reason = '❌ SMTP not configured — go to Settings tab and save your Gmail + App Password, then click Test SMTP.';
+                    } else if (reason.includes('ECONNREFUSED') || reason.includes('ETIMEDOUT')) {
+                        reason = '❌ Cannot connect to SMTP server — check Host/Port in Settings.';
+                    } else if (reason.includes('ENOTFOUND')) {
+                        reason = '❌ SMTP host not found — check the SMTP Host in Settings.';
+                    }
+                    console.error('Email send error for', lead.name, ':', e.message);
+                    emit({ type: 'failed', name: lead.name, reason, sent, failed });
+                }
             }
-            emit({ type: 'done', sent, failed, total: leads.length });
+
+            const summary = skipped > 0
+                ? `Sent: ${sent}, Failed: ${failed - skipped} errors, ${skipped} had no email (use Extract Emails first)`
+                : `Sent: ${sent}, Failed: ${failed}`;
+            emit({ type: 'done', sent, failed, total: leads.length, message: summary });
         } catch(e) {
             emit({ type: 'error', message: 'Failed to send emails: ' + e.message });
         }
     });
 });
+
 
 // ── POST Send Follow-up (Email API + WA Local) ──────────────────────
 app.post('/api/send/followup', async (req, res) => {
@@ -716,18 +760,38 @@ app.get('/api/settings', async (req, res) => {
 app.post('/api/settings', async (req, res) => {
     try {
         const { ultramsg: um, ...smtpFields } = req.body;
+        logger.log(`Received POST settings updates: ${Object.keys(smtpFields).join(', ')}`, 'SETTINGS');
         for (const [key, value] of Object.entries(smtpFields)) {
-            if (value !== undefined && value !== '••••••••') {
+            if (value !== undefined) {
+                // Safeguard against browser autofill or UI mask overwriting valid password
+                if (key === 'smtp_pass') {
+                    if (value === '••••••••' || value.includes('•') || value.includes('●') || value.includes('*')) {
+                        logger.log(`Skipping saving smtp_pass because value looks like a masked placeholder: "${value}"`, 'SETTINGS');
+                        continue;
+                    }
+                    if (!value.trim()) {
+                        logger.log(`Skipping saving smtp_pass because value is empty`, 'SETTINGS');
+                        continue;
+                    }
+                }
+                
+                logger.log(`Saving setting: ${key}`, 'SETTINGS');
                 await Settings.findOneAndUpdate({ key }, { value }, { upsert: true });
             }
         }
-        if (um?.instanceId) ultraMsg.saveConfig(um);
+        if (um?.instanceId) {
+            logger.log(`Saving UltraMsg config`, 'SETTINGS');
+            ultraMsg.saveConfig(um);
+        }
         // ── Refresh message-templates cache ───────────────────────
         await loadTemplatesCache();
         // ── Refresh Google OAuth credentials if provided ─────────────
         await loadGoogleCredentials();
         res.json({ success: true });
-    } catch(e) { res.status(500).json({ error: e.message }); }
+    } catch(e) {
+        logger.error(`Error saving settings`, e);
+        res.status(500).json({ error: e.message });
+    }
 });
 
 // ── Test UltraMsg ─────────────────────────────────────────────
@@ -738,10 +802,62 @@ app.post('/api/test-ultramsg', async (req, res) => {
     res.json(result);
 });
 
-// ── Test SMTP ─────────────────────────────────────────────────
+// ── Test SMTP (accepts inline creds OR reads from DB) ─────────
 app.post('/api/test-smtp', async (req, res) => {
-    const result = await testSmtp();
-    res.json(result);
+    const { host, port, secure, user, pass } = req.body || {};
+    // If all credentials supplied inline, test them directly (no save needed)
+    if (host && user && pass) {
+        const { createTransportDirect } = require('./services/email-sender');
+        try {
+            logger.log(`Testing inline SMTP configuration for user: ${user}`, 'SMTP_TEST');
+            const t = createTransportDirect({ host, port, secure, user, pass });
+            await t.verify();
+            logger.log(`Inline SMTP verification successful for user: ${user}`, 'SMTP_TEST');
+            res.json({ success: true, message: '✅ SMTP Connected!' });
+        } catch(e) {
+            logger.error(`Inline SMTP verification failed for user: ${user}`, e);
+            let msg = e.message;
+            if (msg.includes('535') || msg.includes('Username and Password') || msg.includes('Invalid login')) {
+                msg = 'Wrong App Password. Go to myaccount.google.com/apppasswords and create a new 16-character App Password (NOT your Gmail login password).';
+            } else if (msg.includes('ECONNREFUSED') || msg.includes('ETIMEDOUT')) {
+                msg = 'Cannot connect to SMTP server — check Host and Port.';
+            } else if (msg.includes('SSL') || msg.includes('wrong version') || msg.includes('WRONG_VERSION')) {
+                msg = 'SSL/TLS mismatch. For port 587 use "No (TLS/STARTTLS)"; for port 465 use "Yes (SSL)".';
+            }
+            res.json({ success: false, error: msg });
+        }
+    } else {
+        const result = await testSmtp();
+        res.json(result);
+    }
+});
+
+// ── GET logs ──────────────────────────────────────────────────
+app.get('/api/logs', (req, res) => {
+    try {
+        const logPath = logger.logFilePath;
+        if (!fs.existsSync(logPath)) {
+            return res.send('No logs recorded yet.');
+        }
+        const logs = fs.readFileSync(logPath, 'utf8');
+        res.send(logs);
+    } catch(e) {
+        res.status(500).send('Failed to read logs: ' + e.message);
+    }
+});
+
+// ── DELETE logs ───────────────────────────────────────────────
+app.delete('/api/logs', (req, res) => {
+    try {
+        const logPath = logger.logFilePath;
+        if (fs.existsSync(logPath)) {
+            fs.writeFileSync(logPath, '', 'utf8'); // clear file
+        }
+        logger.log('Logs cleared by user request.', 'SYSTEM');
+        res.json({ success: true });
+    } catch(e) {
+        res.status(500).json({ error: 'Failed to clear logs: ' + e.message });
+    }
 });
 
 // ── Schedule: GET ───────────────────────────────────────────────
@@ -994,18 +1110,123 @@ app.post('/api/contacts/sync', async (req, res) => {
     });
 });
 
-// ── Get Follow-ups due ────────────────────────────────────────
+// ── Get Follow-up leads (from followup_queue) ────────────────
 app.get('/api/followups', async (req, res) => {
     try {
-        const due = await Lead.find({
-            wa_sent: true,
-            $or: [
-                { next_followup: { $lte: new Date() } },
-                { next_followup: { $exists: false } }
-            ]
-        }).sort({ next_followup: 1 }).limit(100).lean();
-        res.json(due);
+        const search   = req.query.search   || '';
+        const status   = req.query.status   || '';
+        const filter   = { followup_queued: true };
+        if (search) {
+            const re = new RegExp(search, 'i');
+            filter.$or = [{ name: re }, { phone: re }, { raw_phone: re }, { email: re }, { city: re }];
+        }
+        if (status) filter.status = status;
+        const leads = await Lead.find(filter)
+            .sort({ followup_scheduled_at: 1, createdAt: -1 })
+            .limit(200).lean();
+        res.json(leads);
     } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── POST Add lead to follow-up queue ──────────────────────────
+app.post('/api/leads/:id/add-followup', async (req, res) => {
+    try {
+        const { note, scheduled_at } = req.body;
+        const update = {
+            followup_queued: true,
+            followup_note: note || '',
+            followup_scheduled_at: scheduled_at ? new Date(scheduled_at) : new Date(),
+            status: 'followup'
+        };
+        const lead = await Lead.findByIdAndUpdate(req.params.id,
+            { $set: update, $push: { activity: { type: 'followup', message: note || 'Added to follow-up queue', date: new Date() } } },
+            { new: true }
+        );
+        if (!lead) return res.status(404).json({ error: 'Lead not found' });
+        res.json({ success: true, lead });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── DELETE Remove lead from follow-up queue ───────────────────
+app.delete('/api/leads/:id/remove-followup', async (req, res) => {
+    try {
+        await Lead.findByIdAndUpdate(req.params.id, {
+            $set: { followup_queued: false, followup_note: '', followup_scheduled_at: null },
+            $push: { activity: { type: 'followup', message: 'Removed from follow-up queue', date: new Date() } }
+        });
+        res.json({ success: true });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── POST Send follow-up WA (draft) from follow-up queue ───────
+app.post('/api/leads/:id/followup-send-wa', async (req, res) => {
+    try {
+        const lead = await Lead.findById(req.params.id).lean();
+        if (!lead) return res.status(404).json({ error: 'Lead not found' });
+        res.json({ success: true, message: 'Follow-up WA draft started!' });
+        setImmediate(async () => {
+            const { sendLocalWA_Draft } = require('./playwright-sender');
+            await sendLocalWA_Draft([req.params.id], true, { skipWaSent: false });
+        });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── POST Send follow-up Email from follow-up queue ────────────
+app.post('/api/leads/:id/followup-send-email', async (req, res) => {
+    try {
+        const lead = await Lead.findById(req.params.id).lean();
+        if (!lead) return res.status(404).json({ error: 'Lead not found' });
+        if (!lead.email) return res.status(400).json({ error: 'No email address for this lead' });
+        const followupNum = (lead.followup_count || 0) + 1;
+        const { subject, html } = buildFollowupEmail(lead, followupNum);
+        await sendEmail(lead.email, subject, html);
+        await Lead.findByIdAndUpdate(lead._id, {
+            $inc:  { email_count: 1, followup_count: 1 },
+            $set:  { email_sent: true, email_last_date: todayStr() },
+            $push: { activity: { type: 'email_sent', message: `Follow-up #${followupNum} email sent`, date: new Date() } }
+        });
+        res.json({ success: true });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── POST Bulk send follow-up WA (draft) ───────────────────────
+app.post('/api/followups/send-wa', async (req, res) => {
+    const { ids } = req.body;
+    if (!ids || !ids.length) return res.status(400).json({ error: 'No IDs provided' });
+    res.json({ success: true, message: 'Follow-up WA draft started for selected leads!' });
+    setImmediate(async () => {
+        const { sendLocalWA_Draft } = require('./playwright-sender');
+        await sendLocalWA_Draft(ids, true, { skipWaSent: false });
+    });
+});
+
+// ── POST Bulk send follow-up Emails ───────────────────────────
+app.post('/api/followups/send-email', async (req, res) => {
+    const { ids } = req.body;
+    if (!ids || !ids.length) return res.status(400).json({ error: 'No IDs provided' });
+    res.json({ success: true, message: 'Follow-up emails started!' });
+    setImmediate(async () => {
+        const leads = await Lead.find({ _id: { $in: ids } }).lean();
+        let sent = 0, failed = 0;
+        emit({ type: 'start', total: leads.length });
+        for (let i = 0; i < leads.length; i++) {
+            const lead = leads[i];
+            emit({ type: 'sending', current: i+1, total: leads.length, name: lead.name, sent, failed });
+            if (!lead.email) { failed++; emit({ type: 'failed', name: lead.name, reason: 'No email', sent, failed }); continue; }
+            try {
+                const followupNum = (lead.followup_count || 0) + 1;
+                const { subject, html } = buildFollowupEmail(lead, followupNum);
+                await sendEmail(lead.email, subject, html);
+                await Lead.findByIdAndUpdate(lead._id, {
+                    $inc: { email_count: 1, followup_count: 1 },
+                    $set: { email_sent: true, email_last_date: todayStr() },
+                    $push: { activity: { type: 'email_sent', message: `Follow-up #${followupNum} email sent`, date: new Date() } }
+                });
+                sent++; emit({ type: 'sent', name: lead.name, sent, failed, total: leads.length });
+            } catch(e) { failed++; emit({ type: 'failed', name: lead.name, reason: e.message, sent, failed }); }
+        }
+        emit({ type: 'done', sent, failed, total: leads.length });
+    });
 });
 
 // ── Migrate leads.json → MongoDB ──────────────────────────────

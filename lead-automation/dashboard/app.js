@@ -6,12 +6,37 @@ setInterval(()=>document.getElementById('clock').textContent=new Date().toLocale
   s.textContent='.b-purple{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;border:none;} .b-purple:hover{opacity:.9}';
   document.head.appendChild(s); })();
 
-// ── Quick keyword chip setter ────────────────────────────────
+const kwCategoryMap = {
+  'clinic': 'Health & Medicine',
+  'doctor': 'Health & Medicine',
+  'hospital': 'Health & Medicine',
+  'coaching center': 'Education & Coaching',
+  'tuition classes': 'Education & Coaching',
+  'real estate agent': 'Real Estate',
+  'property dealer': 'Real Estate',
+  'beauty salon': 'Beauty & Wellness',
+  'gym fitness': 'Fitness & Sports',
+  'hotel': 'Hospitality & Hotels',
+  'restaurant': 'Restaurants & Cafes',
+  'car dealer': 'Automotive',
+  'ca firm chartered accountant': 'Finance & Accounting',
+  'law firm advocate': 'Legal Services',
+  'travel agency': 'Travel & Tourism',
+  'interior designer': 'Interior Design'
+};
+
 function setKw(keyword) {
   document.getElementById('kw').value = keyword;
   // Highlight active chip
   document.querySelectorAll('.kw-chip').forEach(c => c.classList.remove('active'));
-  event.target.classList.add('active');
+  if (window.event && window.event.target) {
+    window.event.target.classList.add('active');
+  }
+  // Auto-fill category
+  const catInput = document.getElementById('scrape-category');
+  if (catInput) {
+    catInput.value = kwCategoryMap[keyword.toLowerCase().trim()] || '';
+  }
   // Auto-focus city field so user can change city
   document.getElementById('city').focus();
   document.getElementById('city').select();
@@ -27,7 +52,10 @@ function switchTab(t){
   event.target.classList.add('active');
   if(t==='followup') loadFollowups();
   if(t==='social') loadSocial();
-  if(t==='settings') loadSettings();
+  if(t==='settings') {
+    loadSettings();
+    loadLogs();
+  }
 }
 
 // ── Stats ───────────────────────────────────────────────────
@@ -139,21 +167,47 @@ function renderTable(){
   leads.forEach((b,i)=>{
     const num=((curPage-1)*perPage)+i+1;
     const isChecked = selectedIds.has(b._id) ? 'checked' : '';
+    const phoneVal = (b.raw_phone||b.phone||'').replace(/'/g,"&#39;");
+    const emailVal = (b.email||'').replace(/'/g,"&#39;");
     h+=`<tr ${isChecked ? 'style="background:rgba(124,58,237,.12);outline:1px solid rgba(124,58,237,.3)"' : ''}>
       <td><input type="checkbox" data-id="${b._id}" ${isChecked} onchange="onCheckChange(this)"></td>
       <td style="color:#64748b;font-size:10px">${num}</td>
       <td><div style="font-weight:600;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${b.name||''}">${b.name||'—'}</div>
           <div style="font-size:9px;color:#64748b">${b.city||''}</div></td>
       <td>${catBadge(b.category)}</td>
-      <td style="font-family:monospace;color:#34d399;font-size:11px">${b.raw_phone||b.phone||'—'}</td>
-      <td style="font-size:10px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#cbd5e1" title="${b.email||''}">${b.email||'—'}</td>
+      <td style="padding:2px 4px">
+        <div class="inline-edit-wrap" id="wrap-phone-${b._id}">
+          <input type="text" class="inline-edit-input phone-input"
+            data-id="${b._id}" data-field="phone"
+            value="${phoneVal}"
+            placeholder="Add phone..."
+            onblur="inlineUpdateLead(this)"
+            onkeydown="if(event.key==='Enter')this.blur()"
+            title="Click to edit phone"
+          >
+          <span class="inline-save-indicator" id="ind-phone-${b._id}"></span>
+        </div>
+      </td>
+      <td style="padding:2px 4px">
+        <div class="inline-edit-wrap" id="wrap-email-${b._id}">
+          <input type="email" class="inline-edit-input email-input"
+            data-id="${b._id}" data-field="email"
+            value="${emailVal}"
+            placeholder="Add email..."
+            onblur="inlineUpdateLead(this)"
+            onkeydown="if(event.key==='Enter')this.blur()"
+            title="Click to edit email"
+          >
+          <span class="inline-save-indicator" id="ind-email-${b._id}"></span>
+        </div>
+      </td>
       <td>${siteBadge(b.website)}</td>
       <td style="color:#fbbf24;font-size:11px">${b.rating||'—'}</td>
       <td style="font-weight:600;font-size:11px">${b.reviews||'—'}</td>
       <td>${statusBadge(b.status)}</td>
       <td>${b.wa_sent?`<span class="badge bg">✅${b.wa_count>1?' ×'+b.wa_count:''}</span>`:'<span class="badge bgr">—</span>'}</td>
       <td>${b.email_sent?'<span class="badge bg">✅</span>':'<span class="badge bgr">—</span>'}</td>
-      <td><button class="btn b-red" style="padding:2px 6px;font-size:9px" onclick="deleteLead('${b._id}')">🗑</button></td>
+      <td><button class="btn" style="background:#1e3a5f;color:#60a5fa;border:1px solid #1e3a5f;padding:2px 6px;font-size:9px;border-radius:5px;margin-bottom:2px;display:block;width:100%" onclick="openFuModal('${b._id}','${(b.name||'').replace(/'/g,"\\'")}')">🔔 Follow-Up</button><button class="btn" style="background:#047857;color:#a7f3d0;border:1px solid #047857;padding:2px 6px;font-size:9px;border-radius:5px;margin-bottom:2px;display:block;width:100%" onclick="editLead('${b._id}')">✏️ Edit</button><button class="btn b-red" style="padding:2px 6px;font-size:9px;display:block;width:100%" onclick="deleteLead('${b._id}')">🗑</button></td>
     </tr>`;
   });
   h+='</tbody></table>';
@@ -161,6 +215,59 @@ function renderTable(){
   updateSelectionBar();
 }
 
+// ── Inline field save (phone / email) ────────────────────────
+async function inlineUpdateLead(input) {
+  const id    = input.dataset.id;
+  const field = input.dataset.field;  // 'phone' or 'email'
+  const val   = input.value.trim();
+
+  // Find the lead in our local cache to check if value actually changed
+  const lead  = leads.find(function(l){ return l._id === id; });
+  const oldVal = field === 'phone'
+    ? (lead ? (lead.raw_phone || lead.phone || '') : '')
+    : (lead ? (lead.email || '') : '');
+
+  if (val === oldVal) return; // no change — skip API call
+
+  const indId = 'ind-' + field + '-' + id;
+  const indEl = document.getElementById(indId);
+  if (indEl) { indEl.textContent = '\u23f3'; indEl.style.color = '#60a5fa'; }
+
+  const body = field === 'phone'
+    ? { phone: val, raw_phone: val }
+    : { email: val };
+
+  try {
+    const res = await fetch('/api/leads/' + id, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (res.ok) {
+      // Update local cache so repeated edits compare correctly
+      if (lead) {
+        if (field === 'phone') { lead.phone = val; lead.raw_phone = val; }
+        else { lead.email = val; }
+      }
+      if (indEl) {
+        indEl.textContent = '\u2705';
+        indEl.style.color = '#34d399';
+        input.style.borderColor = '#34d399';
+        setTimeout(function(){
+          if (indEl) indEl.textContent = '';
+          input.style.borderColor = '';
+        }, 1800);
+      }
+      loadStats(); // refresh stats bar counts
+    } else {
+      if (indEl) { indEl.textContent = '\u274c'; indEl.style.color = '#f87171'; }
+      input.style.borderColor = '#f87171';
+      setTimeout(function(){ if (indEl) indEl.textContent = ''; input.style.borderColor = ''; }, 2500);
+    }
+  } catch(e) {
+    if (indEl) { indEl.textContent = '\u274c'; indEl.style.color = '#f87171'; }
+  }
+}
 
 // ── Pagination ──────────────────────────────────────────────
 function renderPager(total){
@@ -224,12 +331,17 @@ async function doScrape(){
   const kw=document.getElementById('kw').value.trim();
   const city=document.getElementById('city').value.trim();
   const max=parseInt(document.getElementById('maxr').value)||9999;
+  const category=document.getElementById('scrape-category')?.value.trim()||'';
   if(!kw||!city){alert('Enter keyword and city');return;}
   const btn=document.getElementById('btn-scrape');
   btn.disabled=true; btn.textContent='⏳ Scraping...';
   showProgress('Scraping Google Maps...');
   connectSSE();
-  await fetch('/api/scrape',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keyword:kw,city,max})});
+  await fetch('/api/scrape',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({keyword:kw,city,max,category})
+  });
   plog('Scrape started...','in');
   btn.disabled=false; btn.textContent='🔍 Extract';
 }
@@ -335,21 +447,272 @@ async function extractEmailsForSelected() {
   }
 }
 
-async function loadFollowups(){
-  try{
-    const list=await(await fetch('/api/followups')).json();
-    const el=document.getElementById('followup-list');
-    if(!list.length){el.innerHTML='<div class="empty">No follow-ups due right now 🎉</div>';return;}
-    let h='<table><thead><tr><th>#</th><th>Business</th><th>Phone</th><th>WA Sent</th><th>Follow-ups</th><th>Last Contact</th></tr></thead><tbody>';
-    list.forEach((l,i)=>{
-      h+=`<tr><td>${i+1}</td><td>${l.name}</td><td>${l.raw_phone||l.phone||'—'}</td>
-        <td>${l.wa_count||0}×</td><td>${l.followup_count||0}</td>
-        <td style="color:#64748b;font-size:11px">${l.wa_sent_at?new Date(l.wa_sent_at).toLocaleDateString('en-IN'):'—'}</td></tr>`;
-    });
-    h+='</tbody></table>';
-    el.innerHTML=h;
-  }catch(e){ document.getElementById('followup-list').innerHTML='<div class="empty">Error</div>'; }
+// ── Follow-Up Manager ─────────────────────────────────────────
+let fuSelectedIds = new Set();
+let fuDebounceTimer = null;
+
+function debounceFuSearch() {
+  clearTimeout(fuDebounceTimer);
+  fuDebounceTimer = setTimeout(() => loadFollowups(), 350);
 }
+
+async function loadFollowups() {
+  const search = document.getElementById('fu-search')?.value || '';
+  const status = document.getElementById('fu-status')?.value || '';
+  const q = new URLSearchParams({ search, status });
+  try {
+    const list = await (await fetch('/api/followups?' + q)).json();
+    const badge = document.getElementById('fu-count-badge');
+    if (badge) badge.textContent = list.length + ' lead' + (list.length !== 1 ? 's' : '');
+    renderFollowupTable(list);
+  } catch(e) {
+    const wrap = document.getElementById('fu-table-wrap');
+    if (wrap) wrap.innerHTML = '<div class="empty" style="padding:40px;text-align:center;color:#f87171">❌ Error loading follow-ups</div>';
+  }
+}
+
+function renderFollowupTable(list) {
+  const wrap = document.getElementById('fu-table-wrap');
+  if (!wrap) return;
+
+  if (!list.length) {
+    wrap.innerHTML = `
+      <div style="text-align:center;padding:60px 20px;color:#64748b">
+        <div style="font-size:48px;margin-bottom:16px">🔔</div>
+        <div style="font-size:16px;font-weight:600;color:#94a3b8;margin-bottom:8px">No Follow-Up Leads Yet</div>
+        <div style="font-size:12px;line-height:1.8">Go to the <b style="color:#60a5fa">Leads</b> tab → find an interested lead<br>→ click the <b style="color:#60a5fa">🔔 Follow-Up</b> button to add them here.</div>
+      </div>`;
+    return;
+  }
+
+  const statusColors = { new:'#94a3b8', contacted:'#60a5fa', followup:'#fbbf24', interested:'#a78bfa', converted:'#34d399', not_interested:'#f87171', lost:'#f87171' };
+
+  let h = `<table style="width:100%;border-collapse:collapse;font-size:12px">
+    <thead>
+      <tr style="background:#0d1526;border-bottom:2px solid #1e293b;position:sticky;top:0;z-index:10">
+        <th style="padding:10px 12px;text-align:left;width:32px"><input type="checkbox" id="fu-hdr-cb" onchange="fuToggleAll(this.checked)" style="accent-color:#7c3aed"></th>
+        <th style="padding:10px 12px;text-align:left;color:#94a3b8;font-weight:600">#</th>
+        <th style="padding:10px 12px;text-align:left;color:#94a3b8;font-weight:600">Business</th>
+        <th style="padding:10px 12px;text-align:left;color:#94a3b8;font-weight:600">Phone</th>
+        <th style="padding:10px 12px;text-align:left;color:#94a3b8;font-weight:600">Email</th>
+        <th style="padding:10px 12px;text-align:left;color:#94a3b8;font-weight:600">Status</th>
+        <th style="padding:10px 12px;text-align:left;color:#94a3b8;font-weight:600">Note</th>
+        <th style="padding:10px 12px;text-align:left;color:#94a3b8;font-weight:600">Scheduled</th>
+        <th style="padding:10px 12px;text-align:left;color:#94a3b8;font-weight:600">WA/Email</th>
+        <th style="padding:10px 12px;text-align:center;color:#94a3b8;font-weight:600">Actions</th>
+      </tr>
+    </thead>
+    <tbody>`;
+
+  list.forEach((l, i) => {
+    const isChecked = fuSelectedIds.has(l._id);
+    const sColor = statusColors[l.status] || '#94a3b8';
+    const schedDate = l.followup_scheduled_at
+      ? new Date(l.followup_scheduled_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'short', timeStyle: 'short' })
+      : '—';
+    const isOverdue = l.followup_scheduled_at && new Date(l.followup_scheduled_at) < new Date();
+    const rowBg = isChecked ? 'background:rgba(124,58,237,.1);outline:1px solid rgba(124,58,237,.3)' : (isOverdue ? 'background:rgba(239,68,68,.05)' : '');
+
+    h += `<tr style="border-bottom:1px solid #1a2233;${rowBg}" id="fu-row-${l._id}">
+      <td style="padding:10px 12px">
+        <input type="checkbox" data-fu-id="${l._id}" ${isChecked ? 'checked' : ''} onchange="fuOnCheck(this)" style="accent-color:#7c3aed;width:14px;height:14px">
+      </td>
+      <td style="padding:10px 12px;color:#64748b;font-size:10px">${i+1}</td>
+      <td style="padding:10px 12px">
+        <div style="font-weight:600;color:#e2e8f0;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(l.name)}">${esc(l.name)}</div>
+        <div style="font-size:10px;color:#64748b">${esc(l.city || '')}</div>
+        ${l.category ? `<div style="font-size:9px;color:#a78bfa;margin-top:2px">${esc(l.category)}</div>` : ''}
+      </td>
+      <td style="padding:10px 12px;font-family:monospace;color:#34d399;font-size:11px">${l.raw_phone || l.phone || '—'}</td>
+      <td style="padding:10px 12px;font-size:10px;color:#94a3b8;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(l.email || '')}">${l.email || '<span style="color:#475569">—</span>'}</td>
+      <td style="padding:10px 12px">
+        <span style="background:${sColor}22;color:${sColor};border:1px solid ${sColor}44;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600">${l.status || 'new'}</span>
+      </td>
+      <td style="padding:10px 12px;color:#cbd5e1;font-size:11px;max-width:180px">
+        ${l.followup_note
+          ? `<div style="background:#1e293b;border-left:2px solid #7c3aed;padding:4px 8px;border-radius:0 4px 4px 0;font-size:10px;line-height:1.5;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(l.followup_note)}">${esc(l.followup_note)}</div>`
+          : '<span style="color:#475569;font-size:10px">No note</span>'}
+      </td>
+      <td style="padding:10px 12px;font-size:10px;white-space:nowrap;${isOverdue ? 'color:#f87171;font-weight:700' : 'color:#94a3b8'}">${schedDate}${isOverdue ? ' ⚠️' : ''}</td>
+      <td style="padding:10px 12px;font-size:10px;color:#64748b">
+        <div>WA: ${l.wa_count > 0 ? `<span style="color:#34d399">${l.wa_count}×</span>` : '<span>—</span>'}</div>
+        <div>Email: ${l.followup_count > 0 ? `<span style="color:#60a5fa">${l.followup_count}×</span>` : '<span>—</span>'}</div>
+      </td>
+      <td style="padding:10px 12px;text-align:center">
+        <div style="display:flex;flex-direction:column;gap:4px;align-items:center">
+          <button class="btn b-green" style="padding:3px 8px;font-size:9px;width:80px" onclick="fuSendWA('${l._id}')">📱 WA</button>
+          <button class="btn b-blue" style="padding:3px 8px;font-size:9px;width:80px;${l.email ? '' : 'opacity:.4;cursor:not-allowed'}" onclick="fuSendEmail('${l._id}','${esc(l.email || '')}')" ${!l.email ? 'disabled' : ''}>📧 Email</button>
+          <button class="btn" style="padding:3px 8px;font-size:9px;width:80px;background:#1e293b;color:#94a3b8;border:1px solid #334155" onclick="fuRemove('${l._id}','${esc(l.name)}')">🗑 Remove</button>
+        </div>
+      </td>
+    </tr>`;
+  });
+
+  h += '</tbody></table>';
+  wrap.innerHTML = h;
+
+  // Sync select-all checkbox
+  const hdrCb = document.getElementById('fu-hdr-cb');
+  const allCb = document.getElementById('fu-select-all');
+  const allChecked = list.length > 0 && list.every(l => fuSelectedIds.has(l._id));
+  if (hdrCb) hdrCb.checked = allChecked;
+  if (allCb) allCb.checked = allChecked;
+}
+
+function fuOnCheck(cb) {
+  const id = cb.dataset.fuId;
+  if (cb.checked) fuSelectedIds.add(id);
+  else fuSelectedIds.delete(id);
+}
+
+function fuToggleAll(checked) {
+  document.querySelectorAll('input[data-fu-id]').forEach(cb => {
+    cb.checked = checked;
+    if (checked) fuSelectedIds.add(cb.dataset.fuId);
+    else fuSelectedIds.delete(cb.dataset.fuId);
+  });
+  const hdrCb = document.getElementById('fu-hdr-cb');
+  const allCb = document.getElementById('fu-select-all');
+  if (hdrCb) hdrCb.checked = checked;
+  if (allCb) allCb.checked = checked;
+}
+
+function fuGetSelected() {
+  return [...fuSelectedIds];
+}
+
+// ── Per-row: Send WA ─────────────────────────────────────────
+async function fuSendWA(id) {
+  if (!confirm('📱 Open WhatsApp Web and pre-fill follow-up message for this lead?')) return;
+  showProgress('Drafting follow-up WA...');
+  connectSSE();
+  try {
+    const r = await fetch(`/api/leads/${id}/followup-send-wa`, { method: 'POST', headers: {'Content-Type':'application/json'} });
+    const d = await r.json();
+    if (d.success) plog('📱 Follow-up WA draft started', 'ok');
+    else plog('❌ ' + (d.error || 'Failed'), 'er');
+  } catch(e) { plog('❌ ' + e.message, 'er'); }
+}
+
+// ── Per-row: Send Email ───────────────────────────────────────
+async function fuSendEmail(id, email) {
+  if (!email) return alert('This lead has no email address.');
+  if (!confirm(`📧 Send follow-up email to ${email}?`)) return;
+  try {
+    const r = await fetch(`/api/leads/${id}/followup-send-email`, { method: 'POST', headers: {'Content-Type':'application/json'} });
+    const d = await r.json();
+    if (d.success) { alert('✅ Follow-up email sent!'); loadFollowups(); }
+    else alert('❌ ' + (d.error || 'Failed'));
+  } catch(e) { alert('❌ ' + e.message); }
+}
+
+// ── Per-row: Remove from queue ────────────────────────────────
+async function fuRemove(id, name) {
+  if (!confirm(`Remove "${name}" from follow-up list?`)) return;
+  try {
+    await fetch(`/api/leads/${id}/remove-followup`, { method: 'DELETE' });
+    fuSelectedIds.delete(id);
+    loadFollowups();
+  } catch(e) { alert('❌ ' + e.message); }
+}
+
+// ── Bulk: Send WA ─────────────────────────────────────────────
+async function fuBulkSendWA() {
+  const sel = fuGetSelected();
+  if (!sel.length) return alert('Please select at least one lead first.');
+  if (!confirm(`📱 Open WhatsApp Web and draft follow-up messages for ${sel.length} selected leads?`)) return;
+  showProgress('Drafting follow-up WA messages...');
+  connectSSE();
+  // Switch to leads tab so progress panel is visible
+  try {
+    const r = await fetch('/api/followups/send-wa', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ ids: sel }) });
+    const d = await r.json();
+    plog(d.success ? '📱 Follow-up WA drafts started' : '❌ ' + d.error, d.success ? 'ok' : 'er');
+  } catch(e) { plog('❌ ' + e.message, 'er'); }
+}
+
+// ── Bulk: Send Email ──────────────────────────────────────────
+async function fuBulkSendEmail() {
+  const sel = fuGetSelected();
+  if (!sel.length) return alert('Please select at least one lead first.');
+  if (!confirm(`📧 Send follow-up emails to ${sel.length} selected leads?`)) return;
+  showProgress('Sending follow-up emails...');
+  connectSSE();
+  try {
+    await fetch('/api/followups/send-email', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ ids: sel }) });
+    plog('📧 Follow-up email batch started', 'ok');
+  } catch(e) { plog('❌ ' + e.message, 'er'); }
+}
+
+// ── Bulk: Remove ──────────────────────────────────────────────
+async function fuBulkRemove() {
+  const sel = fuGetSelected();
+  if (!sel.length) return alert('Please select at least one lead first.');
+  if (!confirm(`Remove ${sel.length} selected leads from follow-up list?`)) return;
+  try {
+    await Promise.all(sel.map(id => fetch(`/api/leads/${id}/remove-followup`, { method: 'DELETE' })));
+    fuSelectedIds.clear();
+    loadFollowups();
+  } catch(e) { alert('❌ ' + e.message); }
+}
+
+// ── Add to Follow-Up Modal ────────────────────────────────────
+let _fuModalLeadId = null;
+
+function openFuModal(id, name) {
+  _fuModalLeadId = id;
+  document.getElementById('fu-modal-leadname').textContent = name;
+  document.getElementById('fu-modal-note').value = '';
+  document.getElementById('fu-modal-msg').textContent = '';
+  // Default scheduled date = now + 2 days
+  const d = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000);
+  document.getElementById('fu-modal-date').value = d.toISOString().slice(0, 16);
+  document.getElementById('fu-add-modal').style.display = 'flex';
+}
+
+function closeFuModal() {
+  document.getElementById('fu-add-modal').style.display = 'none';
+  _fuModalLeadId = null;
+}
+
+async function confirmAddToFollowup() {
+  if (!_fuModalLeadId) return;
+  const note = document.getElementById('fu-modal-note').value.trim();
+  const scheduled_at = document.getElementById('fu-modal-date').value;
+  const msg = document.getElementById('fu-modal-msg');
+  const btn = document.getElementById('fu-modal-save-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Adding...';
+  msg.textContent = '';
+  try {
+    const r = await fetch(`/api/leads/${_fuModalLeadId}/add-followup`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ note, scheduled_at })
+    });
+    const d = await r.json();
+    if (d.success) {
+      msg.style.color = '#34d399';
+      msg.textContent = '✅ Added to follow-up list!';
+      setTimeout(() => { closeFuModal(); fetchLeads(); }, 800);
+    } else {
+      msg.style.color = '#f87171';
+      msg.textContent = '❌ ' + (d.error || 'Failed');
+    }
+  } catch(e) {
+    msg.style.color = '#f87171';
+    msg.textContent = '❌ ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔔 Add to Follow-Up';
+  }
+}
+
+// Close modal on backdrop click
+document.getElementById('fu-add-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeFuModal();
+});
+
 
 // ── Progress / SSE ──────────────────────────────────────────
 function plog(msg,cls=''){
@@ -425,44 +788,73 @@ async function loadSettings(){
     }
     if(s.smtp_host) document.getElementById('s-smtp-host').value=s.smtp_host;
     if(s.smtp_port) document.getElementById('s-smtp-port').value=s.smtp_port;
-    if(s.smtp_secure) document.getElementById('s-smtp-secure').value=s.smtp_secure;
+    // Restore secure: stored as 'true'/'false' string or boolean
+    if(s.smtp_secure !== undefined) {
+      document.getElementById('s-smtp-secure').value = (s.smtp_secure === true || s.smtp_secure === 'true') ? 'true' : 'false';
+    } else {
+      // Default: port 587 → false, port 465 → true
+      const port = parseInt(s.smtp_port) || 587;
+      document.getElementById('s-smtp-secure').value = port === 465 ? 'true' : 'false';
+    }
     if(s.smtp_user) document.getElementById('s-smtp-user').value=s.smtp_user;
     if(s.smtp_from) document.getElementById('s-smtp-from').value=s.smtp_from;
-    if(s.smtp_pass) document.getElementById('s-smtp-pass').placeholder='Password saved ✓ (hidden)';
+    if(s.smtp_pass) {
+      const passEl = document.getElementById('s-smtp-pass');
+      passEl.value = '';
+      passEl.placeholder = 'Password saved ✓ (hidden)';
+      smtpPassChanged = false;
+    }
     // Load message templates
     if(s.wa_template)    document.getElementById('s-wa-template').value   = s.wa_template;
     if(s.email_subject)  document.getElementById('s-email-subject').value = s.email_subject;
     if(s.email_body)     document.getElementById('s-email-body').value    = s.email_body;
     // Google Contacts credentials
-    if(s.google_client_id)     document.getElementById('s-google-client-id').value     = s.google_client_id;
-    if(s.google_client_secret) document.getElementById('s-google-client-secret').placeholder = 'Secret saved ✓';
+    const gcId = document.getElementById('s-google-client-id');
+    const gcSec = document.getElementById('s-google-client-secret');
+    if(gcId && s.google_client_id)     gcId.value = s.google_client_id;
+    if(gcSec && s.google_client_secret) gcSec.placeholder = 'Secret saved ✓';
   }catch(e){}
 }
 
 async function saveSettings(){
-  const body={
-    smtp_host: document.getElementById('s-smtp-host').value,
-    smtp_port: document.getElementById('s-smtp-port').value,
-    smtp_secure: document.getElementById('s-smtp-secure').value,
-    smtp_user: document.getElementById('s-smtp-user').value,
-    smtp_from: document.getElementById('s-smtp-from').value,
-    // Message templates
-    wa_template:   document.getElementById('s-wa-template').value,
-    email_subject: document.getElementById('s-email-subject').value,
-    email_body:    document.getElementById('s-email-body').value,
-    // Google OAuth credentials
-    google_client_id:     document.getElementById('s-google-client-id').value.trim(),
-    google_client_secret: document.getElementById('s-google-client-secret').value.trim() || undefined,
-  };
-  const pass=document.getElementById('s-smtp-pass').value;
-  if(pass && pass!=='••••••••') body.smtp_pass=pass;
-  const umId=document.getElementById('s-um-id').value.trim();
-  const umTk=document.getElementById('s-um-token').value.trim();
-  if(umId) body.ultramsg={instanceId:umId,token:umTk||undefined};
-  await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  document.getElementById('save-status').textContent='✅ Saved!';
-  setTimeout(()=>document.getElementById('save-status').textContent='',3000);
-  checkConnections();
+  try {
+    const body={
+      smtp_host: document.getElementById('s-smtp-host').value,
+      smtp_port: document.getElementById('s-smtp-port').value,
+      smtp_secure: document.getElementById('s-smtp-secure').value,
+      smtp_user: document.getElementById('s-smtp-user').value,
+      smtp_from: document.getElementById('s-smtp-from').value,
+      // Message templates
+      wa_template:   document.getElementById('s-wa-template').value,
+      email_subject: document.getElementById('s-email-subject').value,
+      email_body:    document.getElementById('s-email-body').value,
+      // Google OAuth credentials
+      google_client_id:     document.getElementById('s-google-client-id')?.value.trim() || undefined,
+      google_client_secret: document.getElementById('s-google-client-secret')?.value.trim() || undefined,
+    };
+    const pass=document.getElementById('s-smtp-pass').value;
+    if(pass && pass!=='••••••••') body.smtp_pass=pass;
+    const umId=document.getElementById('s-um-id').value.trim();
+    const umTk=document.getElementById('s-um-token').value.trim();
+    if(umId) body.ultramsg={instanceId:umId,token:umTk||undefined};
+
+    const res = await fetch('/api/settings',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(body)
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || 'Server error saving settings');
+    }
+    
+    document.getElementById('save-status').textContent='✅ Saved!';
+    setTimeout(()=>document.getElementById('save-status').textContent='',3000);
+    checkConnections();
+  } catch(e) {
+    console.error("Error saving settings:", e);
+    document.getElementById('save-status').innerHTML = `<span style="color:#f87171">❌ Error: ${e.message}</span>`;
+  }
 }
 
 async function testUltraMsg(){
@@ -475,18 +867,96 @@ async function testUltraMsg(){
 }
 
 async function testSmtp(){
-  document.getElementById('smtp-status').innerHTML='<span style="color:#60a5fa">Testing...</span>';
-  const r=await(await fetch('/api/test-smtp',{method:'POST'})).json();
-  document.getElementById('smtp-status').innerHTML=r.success
-    ?'<span style="color:#34d399">✅ SMTP Connected!</span>'
-    :`<span style="color:#f87171">❌ ${r.error}</span>`;
+  const statusEl = document.getElementById('smtp-status');
+  statusEl.innerHTML = '<span style="color:#60a5fa">⏳ Testing connection...</span>';
+
+  const host   = document.getElementById('s-smtp-host').value.trim();
+  const port   = document.getElementById('s-smtp-port').value.trim();
+  const secure = document.getElementById('s-smtp-secure').value;
+  const user   = document.getElementById('s-smtp-user').value.trim();
+  const passEl = document.getElementById('s-smtp-pass');
+  const pass   = passEl.value.trim();
+
+  // Validate required fields first
+  if (!user) {
+    statusEl.innerHTML = '<span style="color:#f87171">❌ Enter your Gmail address first.</span>';
+    return;
+  }
+
+  const isSaved = passEl.placeholder.includes('saved');
+
+  if (!pass) {
+    if (!isSaved) {
+      statusEl.innerHTML = '<span style="color:#f87171">❌ Please enter your 16-character App Password first.</span>';
+      return;
+    }
+    // No new password typed — test with existing DB password
+    statusEl.innerHTML = '<span style="color:#60a5fa">⏳ Testing with saved password...</span>';
+    const r = await (await fetch('/api/test-smtp', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({}) })).json();
+    statusEl.innerHTML = r.success
+      ? '<span style="color:#34d399">✅ SMTP Connected! Email is working.</span>'
+      : `<span style="color:#f87171">❌ ${r.error}</span>`;
+    return;
+  }
+
+  // Pass all credentials inline — no need to save first
+  const r = await (await fetch('/api/test-smtp', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ host, port: parseInt(port), secure, user, pass })
+  })).json();
+
+  if (r.success) {
+    statusEl.innerHTML = '<span style="color:#34d399">✅ SMTP Connected! Saving settings...</span>';
+    // Auto-save now that we know it works
+    await saveSettings();
+    statusEl.innerHTML = '<span style="color:#34d399">✅ SMTP Connected & Saved! Emails will work.</span>';
+    
+    // Immediate UI feedback for saved password
+    passEl.value = '';
+    passEl.placeholder = 'Password saved ✓ (hidden)';
+    smtpPassChanged = false; // Reset dirty flag
+  } else {
+    statusEl.innerHTML = `<span style="color:#f87171">❌ ${r.error}</span>`;
+  }
+}
+
+// ── SMTP port ↔ secure auto-sync ──────────────────────────────
+function smtpPortChanged(port) {
+  const sel = document.getElementById('s-smtp-secure');
+  if (!sel) return;
+  port = parseInt(port);
+  if (port === 465) {
+    sel.value = 'true';  // SSL
+  } else if (port === 587 || port === 25 || port === 2525) {
+    sel.value = 'false'; // TLS/STARTTLS
+  }
+}
+
+function smtpSecureChanged(val) {
+  const portEl = document.getElementById('s-smtp-port');
+  if (!portEl) return;
+  const curPort = parseInt(portEl.value);
+  if (val === 'true' && curPort !== 465) {
+    portEl.value = '465'; // Switch to SSL port
+  } else if (val === 'false' && curPort === 465) {
+    portEl.value = '587'; // Switch to STARTTLS port
+  }
+}
+
+function exportExcel() {
+  const cat = document.getElementById('f-cat')?.value || '';
+  const q = cat ? '?category=' + encodeURIComponent(cat) : '';
+  window.location.href = '/api/leads/export' + q;
 }
 
 async function syncContacts(){
   document.getElementById('vcf-modal').style.display='flex';
   document.getElementById('vcf-step2').style.display='none';
   try {
-    const s = await (await fetch('/api/contacts/stats')).json();
+    const cat = document.getElementById('f-cat')?.value || '';
+    const q = cat ? '?category=' + encodeURIComponent(cat) : '';
+    const s = await (await fetch('/api/contacts/stats' + q)).json();
     document.getElementById('vcf-stat-pending').textContent = s.pending;
     document.getElementById('vcf-stat-saved').textContent   = s.saved;
     document.getElementById('vcf-stat-total').textContent   = s.total;
@@ -549,6 +1019,7 @@ async function markAllAsSaved() {
 // ── Smart VCF downloader ─────────────────────────────────────
 async function downloadVcf(newOnly = true) {
   const sel = getSelected();
+  const cat = document.getElementById('f-cat')?.value || '';
   const btn = newOnly ? document.getElementById('vcf-btn-new') : null;
   const orig = btn ? btn.innerHTML : '';
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Generating...'; }
@@ -560,7 +1031,8 @@ async function downloadVcf(newOnly = true) {
       // If user selected specific leads → export those; else use newOnly flag
       body: JSON.stringify({
         ids:     sel.length ? sel : undefined,
-        newOnly: sel.length ? false : newOnly
+        newOnly: sel.length ? false : newOnly,
+        category: cat || undefined
       })
     });
 
@@ -632,7 +1104,79 @@ async function checkConnections(){
 async function deleteLead(id){
   if(!confirm('Delete?'))return;
   await fetch('/api/leads/'+id,{method:'DELETE'});
+  selectedIds.delete(id);
   fetchLeads();
+}
+
+async function bulkDeleteLeads() {
+  const ids = getSelected();
+  if (!ids.length) return alert('Please select at least one lead.');
+  if (!confirm(`Are you sure you want to delete ${ids.length} selected leads?`)) return;
+  try {
+    const res = await fetch('/api/leads/bulk-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids })
+    });
+    if (res.ok) {
+      clearAllSelections();
+      fetchLeads();
+    } else {
+      const err = await res.json();
+      alert('Delete failed: ' + (err.error || 'Unknown error'));
+    }
+  } catch(e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+function editLead(id) {
+  const lead = leads.find(l => l._id === id);
+  if (!lead) return;
+  
+  document.getElementById('edit-lead-id').value = id;
+  document.getElementById('edit-lead-name').value = lead.name || '';
+  document.getElementById('edit-lead-category').value = lead.category || '';
+  document.getElementById('edit-lead-phone').value = lead.raw_phone || lead.phone || '';
+  document.getElementById('edit-lead-email').value = lead.email || '';
+  document.getElementById('edit-lead-website').value = lead.website || '';
+  document.getElementById('edit-lead-rating').value = lead.rating || '';
+  document.getElementById('edit-lead-reviews').value = lead.reviews || 0;
+  document.getElementById('edit-lead-status').value = lead.status || 'new';
+  
+  document.getElementById('edit-lead-modal').style.display = 'flex';
+}
+
+async function saveLeadEdit() {
+  const id = document.getElementById('edit-lead-id').value;
+  const body = {
+    name: document.getElementById('edit-lead-name').value.trim(),
+    category: document.getElementById('edit-lead-category').value.trim(),
+    phone: document.getElementById('edit-lead-phone').value.trim(),
+    raw_phone: document.getElementById('edit-lead-phone').value.trim(),
+    email: document.getElementById('edit-lead-email').value.trim(),
+    website: document.getElementById('edit-lead-website').value.trim(),
+    rating: document.getElementById('edit-lead-rating').value.trim(),
+    reviews: parseInt(document.getElementById('edit-lead-reviews').value) || 0,
+    status: document.getElementById('edit-lead-status').value
+  };
+  
+  try {
+    const res = await fetch('/api/leads/' + id, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (res.ok) {
+      document.getElementById('edit-lead-modal').style.display = 'none';
+      fetchLeads();
+    } else {
+      const err = await res.json();
+      alert('Error updating: ' + (err.error || 'Unknown error'));
+    }
+  } catch(e) {
+    alert('Error: ' + e.message);
+  }
 }
 
 async function clearAll(){
@@ -1302,3 +1846,34 @@ function closeSocialLogModal() {
   const modal = document.getElementById('soc-log-modal');
   if (modal) modal.style.display = 'none';
 }
+
+// ── Email & System Log Viewer ──────────────────────────────────
+async function loadLogs() {
+  const viewer = document.getElementById('log-viewer');
+  if (!viewer) return;
+  viewer.textContent = '⏳ Loading logs...';
+  try {
+    const r = await fetch('/api/logs');
+    const text = await r.text();
+    viewer.textContent = text || 'No logs recorded yet.';
+    viewer.scrollTop = viewer.scrollHeight;
+  } catch(e) {
+    viewer.textContent = '❌ Failed to load logs: ' + e.message;
+  }
+}
+
+async function clearLogs() {
+  if (!confirm('Are you sure you want to clear the logs file?')) return;
+  try {
+    const r = await fetch('/api/logs', { method: 'DELETE' });
+    const d = await r.json();
+    if (d.success) {
+      document.getElementById('log-viewer').textContent = 'No logs recorded yet.';
+    } else {
+      alert('Failed to clear logs: ' + (d.error || 'Unknown error'));
+    }
+  } catch(e) {
+    alert('Error clearing logs: ' + e.message);
+  }
+}
+

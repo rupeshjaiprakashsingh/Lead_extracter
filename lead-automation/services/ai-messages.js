@@ -18,12 +18,42 @@ function daysSince(date) {
 function cleanName(rawName) {
     if (!rawName) return '';
     let cleaned = rawName.split(/\||-|,/)[0].trim();
-    if (cleaned.split(' ').length > 4) cleaned = cleaned.split(' ').slice(0, 4).join(' ');
-    return cleaned;
+    cleaned = cleaned.replace(/\b(pvt\.?|ltd\.?|llp|inc\.?|co\.?|corp\.?|corporation|associates|group|solutions|innovations|services|systems|infotech|technologies|private|limited|chartered\s+accountants?|advocates?|clinics?|hospitals?|schools?|colleges?|academies|academy|and\s+company|&\s+co|&\s+sons)\b/gi, '').trim();
+    cleaned = cleaned.replace(/[^a-zA-Z0-9\s]+$/, '').trim();
+    if (cleaned.split(/\s+/).length > 4) {
+        cleaned = cleaned.split(/\s+/).slice(0, 4).join(' ');
+    }
+    cleaned = cleaned.replace(/[^a-zA-Z0-9\s]+$/, '').trim();
+    return cleaned || 'your business';
 }
 
 function getRandom(arr) {
     return arr[Math.floor(Math.random() * arr.length)];
+}
+
+// ── Clean any AI-instruction placeholders from user templates ──
+function cleanTemplate(template, name, city, category, specificInsight) {
+    if (!template) return '';
+    return template
+        .replace(/\[Gemini will add specific insight[^\]]*\]/gi, specificInsight)
+        .replace(/\[AI[^\]]*\]/gi, specificInsight)
+        .replace(/\[Business Name\]|\[Name\]/gi, name)
+        .replace(/\[City\]/gi, city || 'your area')
+        .replace(/\[Category\]/gi, category);
+}
+
+// ── Build a real, specific insight line from lead data ─────────
+function buildSpecificInsight(name, hasWeb, city, category, rating, reviews) {
+    if (!hasWeb) {
+        return `Since ${name} doesn't have a website yet, customers searching "${category} in ${city || 'your area'}" on Google are going directly to your competitors.`;
+    }
+    if (rating && parseFloat(rating) >= 4.0) {
+        return `I noticed ${name} has a ${rating}⭐ rating on Google Maps — that's a strong reputation. With better SEO, you could convert even more of those searchers into actual customers.`;
+    }
+    if (rating) {
+        return `I found ${name} on Google Maps with a ${rating}⭐ rating. A few profile and SEO improvements could significantly increase the number of customers who find and contact you.`;
+    }
+    return `I found ${name} on Google Maps — with some targeted local SEO improvements, you could attract significantly more customers in ${city || 'your area'} who are already searching for ${category} services.`;
 }
 
 // ── 5 Message Styles for maximum variation ────────────────────
@@ -64,6 +94,8 @@ async function buildInitialWA(lead) {
     const category = lead.category || lead.keyword || 'business';
     const rating   = lead.rating ? `${lead.rating}⭐ (${lead.reviews || 0} reviews)` : null;
 
+    const specificInsight = buildSpecificInsight(name, hasWeb, city, category, lead.rating, lead.reviews);
+
     // ── Pick a random style for this message ──────────────────
     const style = getRandom(WA_STYLES);
 
@@ -72,12 +104,13 @@ async function buildInitialWA(lead) {
             let prompt;
 
             if (wa_template && wa_template.trim()) {
-                // ── USER HAS A TEMPLATE → Gemini personalises it in the chosen style ──
+                const cleanedWa = cleanTemplate(wa_template, name, city, category, specificInsight);
+
                 prompt = `You are an expert WhatsApp sales copywriter for Indian businesses. Personalise this template using the "${style.name}" style.
 
 USER'S TEMPLATE:
 """
-${wa_template}
+${cleanedWa}
 """
 
 STYLE TO USE — ${style.name}:
@@ -89,19 +122,19 @@ BUSINESS DETAILS:
 - City: ${city}
 - Has Own Website: ${hasWeb ? 'Yes' : 'No — losing online customers daily'}
 - Google Rating: ${rating || 'Not listed'}
+- Key Insight: ${specificInsight}
 
 STRICT RULES:
-1. Replace ALL placeholders ([Business Name], [City], etc.) with real values.
+1. Replace ALL remaining placeholders with real values from the business details above.
 2. Apply the ${style.name} style naturally — don't just copy the template word-for-word.
 3. Keep it SHORT — max 4 lines. WhatsApp messages must be readable in 10 seconds.
 4. End with ONE easy yes/no question CTA.
 5. Use *bold* for 1-2 key phrases only.
 6. Sound like a REAL PERSON texting, not a marketing robot.
-7. NO generic openers like "Hope this finds you well" or "I am a digital marketing expert".
+7. NO generic openers like "Hope this finds you well".
 8. Output ONLY the final message. No explanation, no quotes.`;
 
             } else {
-                // ── NO TEMPLATE → Gemini writes fresh using chosen style ──
                 const problemLine = !hasWeb
                     ? `no website — customers searching "${category} in ${city}" on Google can't find them`
                     : `website exists but Google ranking is low — missing local search traffic`;
@@ -126,13 +159,12 @@ WRITE THE MESSAGE:
 1. Use the ${style.name} style naturally and conversationally.
 2. Mention "${name}" by name specifically — NOT "your business" or "Sir/Ma'am".
 3. Reference a SPECIFIC detail: their city, their category, their rating if available.
-4. Keep it VERY SHORT — max 4 lines total. No essays. People don't read long WhatsApp messages.
+4. Keep it VERY SHORT — max 4 lines total. No essays.
 5. End with ONE simple question that needs just a "Yes" or "Interested" reply.
-   Good CTAs: "Want me to check?" / "Should I share more?" / "Would a quick 5-min call work?"
 6. Use *bold* on 1-2 words maximum.
 7. Max 1 emoji — or zero.
-8. Sound human, curious, helpful — NOT sales-y, desperate, or corporate.
-9. Language: English (natural, conversational — not formal).
+8. Sound human, curious, helpful — NOT sales-y or corporate.
+9. Language: English (natural, conversational).
 10. Output ONLY the WhatsApp message. No subject, no notes, no prefix.`;
             }
 
@@ -217,17 +249,23 @@ async function buildInitialEmail(lead) {
     const city     = lead.city || '';
     const category = lead.category || lead.keyword || 'business';
 
+    // Build a real, specific insight based on actual lead data (no placeholder needed)
+    const specificInsight = buildSpecificInsight(name, hasWeb, city, category, lead.rating, lead.reviews);
+
     // ── Personalise Subject ───────────────────────────────────
     let subject = email_subject && email_subject.trim()
         ? email_subject
             .replace(/\[Business Name\]|\[Name\]/gi, name)
             .replace(/\[City\]/gi, city || 'your city')
         : getRandom([
-            `Quick question for ${name}`,
-            `I noticed something about ${name}`,
-            `${name} — are you missing these customers?`,
-            `Found something interesting about ${name}'s online presence`,
+            `Quick question about ${name}'s online presence`,
+            `${name} — are you getting enough customers from Google?`,
+            `Found something about ${name} worth sharing`,
+            `How ${name} can get more enquiries from ${city || 'your area'}`,
         ]);
+
+    // ── Clean user template — strip any AI-instruction placeholders ───
+    const cleanedTemplate = cleanTemplate(email_body || '', name, city, category, specificInsight);
 
     // ── Build Body via Gemini ──────────────────────────────────
     let bodyText = '';
@@ -237,43 +275,52 @@ async function buildInitialEmail(lead) {
         try {
             let prompt;
 
-            if (email_body && email_body.trim()) {
-                prompt = `You are an email copywriter. Personalise this email body template for a specific business. Use a "${emailStyle}" style — make it feel personal and handwritten, not a mass email.
+            if (cleanedTemplate) {
+                prompt = `You are a professional sales copywriter. Write a highly personalized cold outreach email for a local business.
+Use the sample email below as your structure and tone, but rewrite it so it feels personal and specific for this exact business.
 
-EMAIL TEMPLATE:
+SAMPLE EMAIL BODY (match the tone, offer, and CTA structure):
 """
-${email_body}
+${cleanedTemplate}
 """
 
 BUSINESS DETAILS:
 - Business Name: "${name}"
-- Has Website: ${hasWeb ? 'Yes' : 'No — no website, losing customers'}
+- Has Website: ${hasWeb ? 'Yes' : 'No (a major missed opportunity)'}
 - City: ${city || 'India'}
 - Business Category: ${category}
-- Google Rating: ${lead.rating ? lead.rating + ' ⭐ (' + lead.reviews + ' reviews)' : 'Not listed'}
-
-INSTRUCTIONS:
-1. Replace ALL placeholders with actual values.
-2. Add ONE specific insight (no website = missing customers; has website = ranking opportunity).
-3. Keep tone warm and personal — like a colleague reaching out, not a marketer.
-4. Output ONLY the email body text. No subject line.`;
-
-            } else {
-                prompt = `Write a short, personalised cold email to "${name}", a ${category} business${city ? ' in ' + city : ''}.
-
-Context: They ${hasWeb ? 'have a website but could rank higher on Google' : 'do NOT have a website — losing online customers daily'}.
-${lead.rating ? `Google Rating: ${lead.rating}⭐ (${lead.reviews} reviews)` : ''}
-
-Style: "${emailStyle}" — ${emailStyle === 'curious' ? 'open with a genuine question about their online presence' : emailStyle === 'insight-led' ? 'open with a specific data point or insight that grabs attention' : 'be direct about the opportunity and your solution'}
+- Google Maps Rating: ${lead.rating ? lead.rating + ' ⭐ (' + (lead.reviews || 0) + ' reviews)' : 'Not listed'}
+- Key Insight to weave in naturally: ${specificInsight}
 
 RULES:
-1. Open with their SPECIFIC business name — not "Dear Business Owner".
-2. Identify ONE specific problem or opportunity in 1-2 sentences.
-3. State what you do and the core benefit briefly (1 sentence).
-4. CTA: ask for a free 15-min call or just a reply.
-5. Keep it SHORT — 3 paragraphs max.
-6. Sign off: "Best regards,\nRupesh Singh\nInnvoque | Digital Growth"
-7. Output ONLY the body text. No subject line. No HTML.`;
+1. Open with "Hi ${name} team," or "Hi ${name},"
+2. Naturally weave in the Key Insight in the first 1-2 sentences — make it feel researched, not templated.
+3. Keep the same core offer and CTA as the sample, but rephrase so it doesn't look copy-pasted.
+4. Be concise — max 5 short paragraphs. Nobody reads long cold emails.
+5. End with a clear, low-pressure CTA (free call / free audit / just reply).
+6. Do NOT add any HTML, links, or URLs. Clean text only.
+7. Sign off: "Best regards,\nRupesh\nInnvoque Solutions\n+91 9136662022\ninfo@innvoque.com"
+8. Output ONLY the email body. No subject line.`;
+
+            } else {
+                prompt = `Write a short, persuasive cold email to "${name}", a ${category} business${city ? ' in ' + city : ''}.
+
+KEY INSIGHT (lead with this): ${specificInsight}
+${lead.rating ? `Google Rating: ${lead.rating}⭐ (${lead.reviews || 0} reviews)` : ''}
+
+Style: "${emailStyle}" — ${emailStyle === 'curious' ? 'open with a genuine question about their online presence' : emailStyle === 'insight-led' ? 'lead with the key insight above to grab attention immediately' : 'be direct about the opportunity and your specific solution'}
+
+GOAL: Get them to reply or book a free call. This must feel personal, not like a mass email.
+
+RULES:
+1. Open with "${name}" by name — never "Dear Business Owner" or "Sir/Madam".
+2. Lead with the key insight above — it should feel like you actually looked them up.
+3. Mention Innvoque (Indian IT & digital marketing company) and what you specifically do for ${category} businesses.
+4. Offer a free 10-min discovery call or a free Google/website audit.
+5. Keep it SHORT — 3-4 paragraphs max. People skim cold emails.
+6. Do NOT add any HTML, links, or URLs. Clean text only.
+7. Sign off: "Best regards,\nRupesh\nInnvoque Solutions\n+91 9136662022\ninfo@innvoque.com"
+8. Output ONLY the body text. No subject line. No HTML.`;
             }
 
             const result = await aiModel.generateContent(prompt);
@@ -285,42 +332,24 @@ RULES:
 
     // ── Fallback body ─────────────────────────────────────────
     if (!bodyText) {
-        bodyText = email_body && email_body.trim()
-            ? email_body
-                .replace(/\[Business Name\]|\[Name\]/gi, name)
-                .replace(/\[City\]/gi, city || 'your city')
-                .replace(/\[Category\]/gi, category)
-            : `Hi ${name},\n\nI came across your business on Google Maps and wanted to reach out directly.\n\n${!hasWeb
-                ? `I noticed ${name} doesn't have a website yet — which means customers searching for "${category} in ${city || 'your area'}" online are going to your competitors instead of you.`
-                : `I noticed ${name}'s Google ranking has room to improve — meaning you're missing customers who are actively searching for your services right now.`
-            }\n\nAt Innvoque, we help local businesses like yours get more customers online — through websites, SEO, and Google ranking. I'd love to share a free 15-minute insights call specific to ${name}.\n\nWould that work for you?\n\nBest regards,\nRupesh Singh\nInnvoque | Digital Growth\ncontact@innvoque.com`;
+        if (cleanedTemplate) {
+            bodyText = cleanedTemplate;
+        } else {
+            bodyText = `Hi ${name},\n\nI was searching for ${category} businesses in ${city || 'your area'} on Google and came across your listing.\n\n${specificInsight}\n\nI work with Innvoque — we help local businesses in ${city || 'India'} show up better on Google and get more enquiries through their website.\n\nA few things we typically help with:\n- Getting found by more local customers on Google\n- Making sure your website works well on mobile\n- Building trust through better reviews and profile\n\nWould you be open to a quick 10-minute call this week to see if there's a fit? No pressure at all — happy to share what we've seen working for similar businesses in your area.\n\nThanks for your time,\n\nRupesh\nInnvoque Solutions\n+91 9136662022\ninfo@innvoque.com`;
+        }
     }
 
-    // ── Wrap body in HTML email template ──────────────────────
+    // ── Wrap body in HTML email template (plain, text-style, spam-resistant) ──
     const htmlBody = bodyText
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/\n\n/g, '</p><p style="color:#374151;font-size:14px;line-height:1.8;margin:0 0 16px">')
+        .replace(/\n\n/g, '</p><p style="margin:0 0 16px">')
         .replace(/\n/g, '<br>');
 
     return {
         subject,
         html: `
-<div style="font-family:'Segoe UI',Arial,sans-serif;max-width:600px;margin:0 auto;background:#fff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden">
-  <div style="background:linear-gradient(135deg,#1e3a5f 0%,#4f8ef7 100%);padding:28px;text-align:center">
-    <h1 style="color:#fff;margin:0;font-size:20px;font-weight:700">${subject}</h1>
-    <p style="color:rgba(255,255,255,.7);margin:6px 0 0;font-size:12px">Personalised for ${name}</p>
-  </div>
-  <div style="padding:28px 28px 20px">
-    <p style="color:#374151;font-size:14px;line-height:1.8;margin:0 0 16px">${htmlBody}</p>
-    <div style="background:#f0fdf4;border:1px solid #86efac;padding:16px 20px;border-radius:8px;margin:24px 0;text-align:center">
-      <strong style="color:#166534;font-size:14px">🎁 Free 15-Minute Strategy Call — No Commitment</strong>
-      <p style="color:#166534;margin:4px 0 0;font-size:12px">Just reply to this email to book your slot.</p>
-    </div>
-  </div>
-  <div style="background:#f9fafb;padding:12px 28px;text-align:center;font-size:11px;color:#9ca3af;border-top:1px solid #f3f4f6">
-    You're receiving this because your business is listed on Google Maps. &nbsp;
-    <a href="mailto:unsubscribe@innvoque.com" style="color:#6b7280">Unsubscribe</a>
-  </div>
+<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;max-width:600px;margin:0 auto;color:#333333;line-height:1.6;font-size:15px">
+  <p style="margin:0 0 16px">${htmlBody}</p>
 </div>`
     };
 }
@@ -328,26 +357,24 @@ RULES:
 // ── Build Follow-Up Email ─────────────────────────────────────
 function buildFollowupEmail(lead, followupNum) {
     const name = cleanName(lead.name) || 'there';
+    const subject = followupNum === 1
+        ? `Quick follow-up — ${name}`
+        : `Last note — ${name}`;
+
+    const body = followupNum === 1
+        ? `Hi ${name},\n\nJust following up on my earlier email. I know your inbox gets busy — so I'll keep this very short.\n\nI genuinely believe there's a real opportunity for ${name} to get more customers online. Would a quick 15-min call this week work?\n\nBest regards,\nRupesh\nInnvoque Solutions\n+91 9136662022\ninfo@innvoque.com`
+        : `Hi ${name},\n\nThis is my final note — I won't reach out again after this, I promise.\n\nIf ${name} ever needs help with your digital presence — website, Google ranking, or getting more leads — I'm just one reply away. Wishing you and your business all the best!\n\nBest regards,\nRupesh\nInnvoque Solutions\n+91 9136662022\ninfo@innvoque.com`;
+
+    const htmlBody = body
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/\n\n/g, '</p><p style="margin:0 0 16px">')
+        .replace(/\n/g, '<br>');
+
     return {
-        subject: followupNum === 1
-            ? `Quick follow-up — ${name}`
-            : `Last note — ${name}`,
+        subject,
         html: `
-<div style="font-family:'Segoe UI',Arial,sans-serif;max-width:600px;margin:0 auto;background:#fff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden">
-  <div style="background:linear-gradient(135deg,#1e3a5f,#4f8ef7);padding:24px;text-align:center">
-    <h1 style="color:#fff;margin:0;font-size:18px">${followupNum === 1 ? '👋 Quick Follow-Up' : '🙏 One Last Note'}</h1>
-  </div>
-  <div style="padding:28px">
-    <p style="color:#374151;font-size:14px;line-height:1.8">Hi <strong>${name}</strong>,</p>
-    <p style="color:#374151;font-size:14px;line-height:1.8">${followupNum === 1
-        ? `Just following up on my earlier email. I know your inbox gets busy — so I'll keep this very short.<br><br>I genuinely believe there's a real opportunity for <strong>${name}</strong> to get more customers online. Would a quick 15-min call this week work?`
-        : `This is my final note — I won't reach out again after this, I promise.<br><br>If <strong>${name}</strong> ever needs help with your digital presence — website, Google ranking, or getting more leads — I'm just one reply away. Wishing you and your business all the best!`
-    }</p>
-    <p style="color:#374151;font-size:14px">Best regards,<br><strong>Rupesh Singh</strong><br>Innvoque | Digital Growth<br>contact@innvoque.com</p>
-  </div>
-  <div style="background:#f9fafb;padding:12px 28px;text-align:center;font-size:11px;color:#9ca3af;border-top:1px solid #f3f4f6">
-    <a href="mailto:unsubscribe@innvoque.com" style="color:#6b7280">Unsubscribe</a>
-  </div>
+<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;max-width:600px;margin:0 auto;color:#333333;line-height:1.6;font-size:15px">
+  <p style="margin:0 0 16px">${htmlBody}</p>
 </div>`
     };
 }

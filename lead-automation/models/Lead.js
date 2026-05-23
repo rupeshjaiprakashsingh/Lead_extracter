@@ -39,9 +39,12 @@ const leadSchema = new mongoose.Schema({
     email_count:     { type: Number, default: 0 },
     email_last_date: { type: String },
 
-    // ── Follow-up ─────────────────────────────────────────
-    next_followup:   { type: Date },
-    followup_count:  { type: Number, default: 0 },
+    // ── Follow-up ─────────────────────────────────────────────
+    next_followup:        { type: Date },
+    followup_count:       { type: Number, default: 0 },
+    followup_queued:      { type: Boolean, default: false },   // manually added to follow-up tab
+    followup_note:        { type: String },                    // user's note for this lead
+    followup_scheduled_at:{ type: Date },                      // when to send follow-up
 
     // ── Activity log ──────────────────────────────────────
     activity: [activitySchema],
