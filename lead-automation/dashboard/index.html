@@ -12,9 +12,18 @@
   <div style="font-size:24px">🤖</div>
   <div><h1>Lead Automation CRM</h1><div class="sub">Google Maps → WhatsApp + Email Outreach</div></div>
   <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
+    <a href="/admin.html" id="hdr-admin-btn" class="admin-badge-btn" style="display:none">⚙️ Admin Panel</a>
+    <div id="hdr-user-badge" class="user-profile-badge" style="display:none">
+      <div id="hdr-user-avatar" class="user-avatar">U</div>
+      <div class="user-info">
+        <span id="hdr-user-name" class="user-name">Username</span>
+        <span id="hdr-user-company" class="user-company">Company Name</span>
+      </div>
+    </div>
     <span id="db-badge" class="badge-sm s-warn">⏳ DB</span>
     <span id="wa-badge" class="badge-sm s-err">⚪ WA</span>
     <span id="clock" style="font-size:11px;color:#64748b"></span>
+    <a href="/auth/logout" class="logout-btn">🚪 Logout</a>
   </div>
 </div>
 
@@ -115,9 +124,10 @@
   </style>
   <div class="ctrl">
     <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-      <button class="btn b-auto" id="btn-autosend" onclick="startAutoSend()">📝 Draft WA Messages</button>
+      <button class="btn b-auto" id="btn-autosend" onclick="startAutoSend()">🚀 Auto-Send WA</button>
       <button class="btn b-green" onclick="startFollowup('wa')">🔄 Follow-Up WA</button>
       <button class="btn b-purple" id="btn-schedule" onclick="openSchedule()">⏰ Auto Schedule</button>
+      <button class="btn b-blue" id="btn-email-schedule" onclick="openEmailSchedule()">📧 Email Schedule</button>
       <button class="btn b-gray" onclick="exportExcel()">📥 Export Excel</button>
       <button class="btn b-gray" onclick="openExcelImport()">📂 Import Excel</button>
       <button class="btn b-green" id="btn-sync-contacts" onclick="syncContacts()">📒 Sync Contacts</button>
@@ -322,28 +332,67 @@
       </div>
     </div>
 
-    <!-- SMTP -->
-    <div class="config-section">
-      <h3>📧 SMTP Email Configuration</h3>
-      <div class="cfg-grid">
-        <div class="ig"><label>SMTP Host</label><input type="text" id="s-smtp-host" value="smtp.gmail.com" style="width:200px"></div>
-        <div class="ig"><label>Port</label><input type="number" id="s-smtp-port" value="587" style="width:80px" onchange="smtpPortChanged(this.value)"></div>
-        <div class="ig"><label>Secure (SSL)</label><select id="s-smtp-secure" style="padding:8px;background:#1a2035;color:#e2e8f0;border:1px solid #2d3748;border-radius:7px" onchange="smtpSecureChanged(this.value)"><option value="false" selected>No (TLS / STARTTLS) ✓ Gmail 587</option><option value="true">Yes (SSL) — Port 465 only</option></select></div>
+    <!-- Multi-Account Email Load Balancer -->
+    <div class="config-section" id="smtp-lb-section">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+        <div>
+          <h3 style="margin:0 0 4px">📧 Email Accounts <span style="font-size:11px;background:#1e3a5f;color:#60a5fa;padding:2px 8px;border-radius:20px;font-weight:600;margin-left:6px">LOAD BALANCER</span></h3>
+          <div style="font-size:11px;color:#64748b">Add multiple Gmail accounts — emails are distributed automatically to avoid Gmail blocking</div>
+        </div>
+        <button class="btn b-green" onclick="openAddSmtpModal()" style="padding:8px 16px;font-size:12px;white-space:nowrap">➕ Add Email Account</button>
       </div>
-      <div class="cfg-grid" style="margin-top:8px">
-        <div class="ig"><label>Email/Username</label><input type="text" id="s-smtp-user" placeholder="your@gmail.com" style="width:240px"></div>
-        <div class="ig"><label>App Password</label><input type="text" id="s-smtp-pass" placeholder="App password" style="width:200px; -webkit-text-security: disc;" autocomplete="off"></div>
-        <button class="btn b-blue" onclick="testSmtp()">🔌 Test SMTP</button>
+
+      <!-- Load Balancer Status Bar -->
+      <div id="lb-status-bar" style="background:linear-gradient(135deg,#0f2040,#1a3060);border:1px solid #1e3a6e;border-radius:10px;padding:12px 16px;margin-bottom:16px;display:flex;gap:20px;flex-wrap:wrap;align-items:center">
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="width:10px;height:10px;border-radius:50%;background:#34d399;box-shadow:0 0 8px #34d399;flex-shrink:0" id="lb-dot"></div>
+          <span style="font-size:11px;color:#94a3b8;font-weight:600" id="lb-status-txt">Loading...</span>
+        </div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-left:auto">
+          <div style="text-align:center">
+            <div style="font-size:18px;font-weight:800;color:#60a5fa" id="lb-active-count">—</div>
+            <div style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:.05em">Active Accounts</div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:18px;font-weight:800;color:#34d399" id="lb-capacity">—</div>
+            <div style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:.05em">Daily Capacity</div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:18px;font-weight:800;color:#fbbf24" id="lb-sent-today">—</div>
+            <div style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:.05em">Sent Today</div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:18px;font-weight:800;color:#a78bfa" id="lb-remaining">—</div>
+            <div style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:.05em">Remaining</div>
+          </div>
+        </div>
       </div>
-      <div class="cfg-grid" style="margin-top:8px">
-        <div class="ig"><label>From Name</label><input type="text" id="s-smtp-from" value="Digital Growth Team" style="width:240px"></div>
+
+      <!-- Account Cards -->
+      <div id="smtp-accounts-list" style="display:flex;flex-direction:column;gap:10px">
+        <div style="text-align:center;padding:24px;color:#64748b;font-size:13px">
+          ⏳ Loading email accounts...
+        </div>
       </div>
-      <div id="smtp-status" class="cfg-status"></div>
-      <div class="steps-mini" style="line-height:1.8">
-        <b>Gmail (Recommended):</b> Port <b>587</b> + <b>No (TLS/STARTTLS)</b> — or Port <b>465</b> + <b>Yes (SSL)</b><br>
+
+      <!-- Gmail guidelines -->
+      <div class="steps-mini" style="line-height:1.8;margin-top:14px">
+        <b>Gmail (Recommended):</b> Port <b>587</b> + <b>No (STARTTLS)</b> — or Port <b>465</b> + <b>Yes (SSL)</b><br>
         Create App Password: Enable 2FA → <a href="https://myaccount.google.com/apppasswords" target="_blank">myaccount.google.com/apppasswords</a><br>
+        <span style="color:#fbbf24">⚡ Load Balancer: picks the account with lowest daily usage. Each account: max 400 emails/day. Delays 3–8s between sends.</span><br>
         <span style="color:#f87171">⚠️ Do NOT use your Gmail login password — use the 16-character App Password.</span>
       </div>
+    </div>
+
+    <!-- Hidden legacy SMTP fields (for backward compat / save-settings) -->
+    <div style="display:none">
+      <input type="text" id="s-smtp-host" value="smtp.gmail.com">
+      <input type="number" id="s-smtp-port" value="587">
+      <select id="s-smtp-secure"><option value="false" selected></option><option value="true"></option></select>
+      <input type="text" id="s-smtp-user">
+      <input type="text" id="s-smtp-pass">
+      <input type="text" id="s-smtp-from" value="Digital Growth Team">
+      <div id="smtp-status"></div>
     </div>
 
     <!-- Email & System Logs -->
@@ -377,7 +426,7 @@
           <span style="font-size:16px">📱</span> WhatsApp Message Body
           <span style="font-size:10px;color:#64748b">(Gemini personalises this for each lead)</span>
         </label>
-        <textarea id="s-wa-template" rows="7" placeholder="Hi [Business Name]! 👋&#10;&#10;I came across your business on Google Maps and had a quick question — when someone searches for [Category] in [City] right now, does your business show up on Google?&#10;&#10;I work with Innvoque and we help local businesses get found online and get more customers. Would a quick 5-minute call work this week?&#10;&#10;Rupesh | Innvoque Solutions | +91 9136662022" style="width:100%;padding:10px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px;font-family:inherit;resize:vertical;line-height:1.6"></textarea>
+        <textarea id="s-wa-template" rows="7" placeholder="Hi [Business Name]! 👋&#10;&#10;I came across your business on Google Maps and had a quick question — when someone searches for [Category] in [City] right now, does your business show up on Google?&#10;&#10;I work with Innvoque and we help local businesses get found online and get more customers. Would a quick 5-minute call work this week?&#10;&#10;Rupesh | Innvoque Solutions | +91 7208461727 | innvoque.com" style="width:100%;padding:10px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px;font-family:inherit;resize:vertical;line-height:1.6"></textarea>
         <div style="margin-top:6px;padding:8px 10px;background:#0f172a;border:1px solid #1e3a5f;border-radius:6px;font-size:11px;color:#60a5fa;line-height:1.7">
           💡 <b>Tip:</b> Gemini will take your template above and personalise it for each lead — using their actual business name, city, category, and Google rating. Just write your message naturally; Gemini handles the personalisation.
         </div>
@@ -403,7 +452,7 @@
           <span style="font-size:16px">✉️</span> Email Body
           <span style="font-size:10px;color:#64748b">(Gemini personalises this for each lead and wraps in branded HTML)</span>
         </label>
-        <textarea id="s-email-body" rows="12" placeholder="Hi [Business Name] team,&#10;&#10;I was searching for [Category] businesses in [City] on Google and came across your listing.&#10;&#10;I work with Innvoque — we help local businesses in [City] show up better on Google and get more enquiries through their website.&#10;&#10;A few things we typically help with:&#10;- Getting found by more local customers on Google&#10;- Making sure your website works well on mobile&#10;- Building trust through better reviews and profile&#10;&#10;Would you be open to a quick 10-minute call this week to see if there's a fit? No pressure at all — happy to share what we've seen working for similar businesses in your area.&#10;&#10;Thanks for your time,&#10;&#10;Rupesh&#10;Innvoque Solutions&#10;+91 9136662022&#10;info@innvoque.com" style="width:100%;padding:10px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px;font-family:inherit;resize:vertical;line-height:1.6"></textarea>
+        <textarea id="s-email-body" rows="12" placeholder="Hi [Business Name] team,&#10;&#10;I was searching for [Category] businesses in [City] on Google and came across your listing.&#10;&#10;I work with Innvoque — we help local businesses in [City] show up better on Google and get more enquiries through their website.&#10;&#10;A few things we typically help with:&#10;- Getting found by more local customers on Google&#10;- Making sure your website works well on mobile&#10;- Building trust through better reviews and profile&#10;&#10;Would you be open to a quick 10-minute call this week to see if there's a fit? No pressure at all — happy to share what we've seen working for similar businesses in your area.&#10;&#10;Thanks for your time,&#10;&#10;Rupesh&#10;Innvoque Solutions&#10;+91 7208461727&#10;innvoque.com" style="width:100%;padding:10px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px;font-family:inherit;resize:vertical;line-height:1.6"></textarea>
         <div style="margin-top:6px;padding:8px 10px;background:#0f172a;border:1px solid #1e3a5f;border-radius:6px;font-size:11px;color:#60a5fa;line-height:1.7">
           💡 <b>How it works:</b> Write your email template above using <code style="background:#1e293b;padding:1px 4px;border-radius:3px">[Business Name]</code>, <code style="background:#1e293b;padding:1px 4px;border-radius:3px">[City]</code>, <code style="background:#1e293b;padding:1px 4px;border-radius:3px">[Category]</code> placeholders. Gemini will rewrite it uniquely for each lead — inserting their actual Google rating, website status, and specific insight — so every email feels personally researched.
         </div>
@@ -899,151 +948,381 @@
   </div>
 </div>
 
-
-
 <!-- ═══════ AUTO SCHEDULE MODAL ═══════ -->
 <div id="schedule-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:9999;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto">
-  <div style="max-width:620px;width:100%;background:#0f172a;border:1px solid #2d3748;border-radius:16px;overflow:hidden;box-shadow:0 25px 60px rgba(0,0,0,.6);margin:20px auto">
+  <div style="max-width:680px;width:100%;background:#0f172a;border:1px solid #2d3748;border-radius:16px;overflow:hidden;box-shadow:0 25px 60px rgba(0,0,0,.6);margin:20px auto">
 
     <!-- Header -->
     <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);padding:20px 24px;display:flex;justify-content:space-between;align-items:center">
       <div>
         <div style="font-size:20px;font-weight:700;color:#fff">⏰ WhatsApp Auto-Scheduler</div>
-        <div style="font-size:12px;color:rgba(255,255,255,.6);margin-top:2px">Sends automatically &bull; Follows anti-ban rules &bull; Daily email report</div>
+        <div style="font-size:12px;color:rgba(255,255,255,.6);margin-top:2px">Dynamic schedules &bull; Anti-ban safety &bull; Queue previews</div>
       </div>
       <button onclick="closeSchedule()" style="background:none;border:none;color:#94a3b8;font-size:24px;cursor:pointer">&times;</button>
     </div>
 
+    <!-- Modal Content -->
     <div style="padding:24px">
 
-      <!-- Status Panel -->
-      <div id="sch-status-panel" style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:20px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <span style="font-weight:600;font-size:13px;color:#e2e8f0">📊 Today's Progress</span>
-          <span id="sch-enabled-badge" style="font-size:11px;padding:2px 10px;border-radius:20px;background:#1e3a5f;color:#60a5fa">Loading...</span>
+      <!-- LIST VIEW -->
+      <div id="sch-list-view">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+          <span style="font-weight:700;color:#e2e8f0;font-size:15px">📅 Configured Schedule Rules</span>
+          <button class="btn b-purple" onclick="openNewScheduleForm()">➕ Add Schedule Rule</button>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
-          <div style="text-align:center">
-            <div id="sch-today-sent" style="font-size:28px;font-weight:700;color:#34d399">0</div>
-            <div style="font-size:10px;color:#64748b">SENT TODAY</div>
+
+        <!-- Progress Summary -->
+        <div id="sch-status-panel" style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:20px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <span style="font-weight:600;font-size:13px;color:#e2e8f0">📊 Today's Cumulative Progress</span>
+            <span id="sch-enabled-badge" style="font-size:11px;padding:2px 10px;border-radius:20px;background:#1e3a5f;color:#60a5fa">ACTIVE</span>
           </div>
-          <div style="text-align:center">
-            <div id="sch-today-limit" style="font-size:28px;font-weight:700;color:#60a5fa">60</div>
-            <div style="font-size:10px;color:#64748b">DAILY LIMIT</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+            <div style="text-align:center">
+              <div id="sch-today-sent" style="font-size:28px;font-weight:700;color:#34d399">0</div>
+              <div style="font-size:10px;color:#64748b">SENT TODAY</div>
+            </div>
+            <div style="text-align:center">
+              <div id="sch-today-limit" style="font-size:28px;font-weight:700;color:#60a5fa">60</div>
+              <div style="font-size:10px;color:#64748b">TOTAL LIMIT</div>
+            </div>
+            <div style="text-align:center">
+              <div id="sch-total-sent" style="font-size:28px;font-weight:700;color:#a78bfa">0</div>
+              <div style="font-size:10px;color:#64748b">ALL TIME SENT</div>
+            </div>
           </div>
-          <div style="text-align:center">
-            <div id="sch-total-sent" style="font-size:28px;font-weight:700;color:#a78bfa">0</div>
-            <div style="font-size:10px;color:#64748b">ALL TIME</div>
-          </div>
+          <div id="sch-last-run" style="font-size:11px;color:#64748b;margin-top:8px;text-align:center"></div>
         </div>
-        <div id="sch-last-run" style="font-size:11px;color:#64748b;margin-top:8px;text-align:center"></div>
-      </div>
 
-      <!-- Enable Toggle -->
-      <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between">
-        <div>
-          <div style="font-weight:600;color:#e2e8f0;font-size:13px">🟢 Enable Auto-Scheduler</div>
-          <div style="font-size:11px;color:#64748b;margin-top:2px">Sends messages automatically at scheduled times</div>
+        <!-- Rules List Container -->
+        <div id="sch-rules-container" style="display:flex;flex-direction:column;gap:12px;margin-bottom:20px">
+          <div style="text-align:center;padding:20px;color:#64748b">Loading schedules...</div>
         </div>
-        <label style="position:relative;display:inline-block;width:48px;height:26px;cursor:pointer">
-          <input type="checkbox" id="sch-enabled" style="opacity:0;width:0;height:0" onchange="updateEnableVisual()">
-          <span id="sch-toggle-bg" style="position:absolute;inset:0;background:#334155;border-radius:13px;transition:.3s"></span>
-          <span id="sch-toggle-knob" style="position:absolute;left:3px;top:3px;width:20px;height:20px;background:#fff;border-radius:50%;transition:.3s"></span>
-        </label>
-      </div>
 
-      <!-- Category Select -->
-      <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:14px">
-        <label style="font-weight:600;color:#e2e8f0;font-size:13px;display:block;margin-bottom:8px">🏷️ Target Categories <span style="font-size:10px;color:#64748b;font-weight:400">(leave empty = ALL)</span></label>
-        <div id="sch-cat-list" style="display:flex;flex-wrap:wrap;gap:6px;max-height:120px;overflow-y:auto"></div>
-      </div>
-
-      <!-- Daily Limit -->
-      <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:14px">
-        <label style="font-weight:600;color:#e2e8f0;font-size:13px;display:block;margin-bottom:8px">📊 Daily Message Limit</label>
-        <div style="display:flex;align-items:center;gap:12px">
-          <input type="range" id="sch-limit-slider" min="20" max="150" step="5" value="60"
-            oninput="document.getElementById('sch-limit-num').textContent=this.value"
-            style="flex:1;accent-color:#7c3aed">
-          <span id="sch-limit-num" style="font-size:22px;font-weight:700;color:#a78bfa;min-width:40px">60</span>
-          <span style="font-size:11px;color:#64748b">per day</span>
+        <div style="text-align:right">
+          <button class="btn b-gray" onclick="closeSchedule()">Close</button>
         </div>
-        <div style="font-size:10px;color:#64748b;margin-top:6px">Split: ~50% at morning time, rest in evening &bull; Random 25-45s delays between messages</div>
       </div>
 
-      <!-- Skip / Resend Options -->
-      <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:14px;display:flex;flex-direction:column;gap:10px">
-        <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
-          <input type="checkbox" id="sch-skip-sent" checked style="width:16px;height:16px;accent-color:#7c3aed">
+      <!-- FORM VIEW (Add/Edit) -->
+      <div id="sch-form-view" style="display:none">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;border-bottom:1px solid #1e293b;padding-bottom:10px">
+          <button class="btn b-gray" onclick="showScheduleList()" style="padding:4px 10px;font-size:11px">&larr; Back to List</button>
+          <span id="sch-form-title" style="font-weight:700;color:#e2e8f0;font-size:15px">Edit Schedule Rule</span>
+        </div>
+
+        <input type="hidden" id="sch-edit-id">
+
+        <!-- Rule Name -->
+        <div class="ig" style="margin-bottom:14px">
+          <label style="font-weight:600;color:#e2e8f0;font-size:11px">Rule Name</label>
+          <input type="text" id="sch-name" placeholder="e.g. Morning Healthcare Batch" style="width:100%">
+        </div>
+
+        <!-- Active Toggle -->
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between">
           <div>
-            <div style="font-size:13px;color:#e2e8f0;font-weight:600">⏭ Skip Already Sent</div>
-            <div style="font-size:11px;color:#64748b">Don't re-send to leads that already got a WhatsApp message</div>
+            <div style="font-weight:600;color:#e2e8f0;font-size:13px">🟢 Enable Rule</div>
+            <div style="font-size:11px;color:#64748b;margin-top:2px">Sends messages automatically on the designated hours</div>
           </div>
-        </label>
-        <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
-          <input type="checkbox" id="sch-allow-resend" style="width:16px;height:16px;accent-color:#7c3aed">
-          <div>
-            <div style="font-size:13px;color:#e2e8f0;font-weight:600">🔄 Allow Re-send</div>
-            <div style="font-size:11px;color:#64748b">Send follow-up to contacts who already received a message</div>
-          </div>
-        </label>
-      </div>
+          <label style="position:relative;display:inline-block;width:48px;height:26px;cursor:pointer">
+            <input type="checkbox" id="sch-enabled" style="opacity:0;width:0;height:0" onchange="updateEnableVisual()">
+            <span id="sch-toggle-bg" style="position:absolute;inset:0;background:#334155;border-radius:13px;transition:.3s"></span>
+            <span id="sch-toggle-knob" style="position:absolute;left:3px;top:3px;width:20px;height:20px;background:#fff;border-radius:50%;transition:.3s"></span>
+          </label>
+        </div>
 
-      <!-- Schedule Times -->
-      <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:14px">
-        <label style="font-weight:600;color:#e2e8f0;font-size:13px;display:block;margin-bottom:10px">🕐 Send Times (IST)</label>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div>
-            <div style="font-size:11px;color:#64748b;margin-bottom:4px">☀️ Morning Batch (~50%)</div>
-            <select id="sch-morning-hour" style="width:100%;padding:8px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;font-size:13px">
-              <option value="8">8:00 AM</option>
-              <option value="9">9:00 AM</option>
-              <option value="10" selected>10:00 AM</option>
-              <option value="11">11:00 AM</option>
-              <option value="12">12:00 PM</option>
-            </select>
-          </div>
-          <div>
-            <div style="font-size:11px;color:#64748b;margin-bottom:4px">🌆 Evening Batch (~50%)</div>
-            <select id="sch-evening-hour" style="width:100%;padding:8px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;font-size:13px">
-              <option value="14">2:00 PM</option>
-              <option value="15">3:00 PM</option>
-              <option value="16" selected>4:00 PM</option>
-              <option value="17">5:00 PM</option>
-              <option value="18">6:00 PM</option>
-            </select>
+        <!-- Target Categories -->
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:14px">
+          <label style="font-weight:600;color:#e2e8f0;font-size:13px;display:block;margin-bottom:8px">🏷️ Target Categories <span style="font-size:10px;color:#64748b;font-weight:400">(leave empty = ALL)</span></label>
+          <div id="sch-cat-list" style="display:flex;flex-wrap:wrap;gap:6px;max-height:120px;overflow-y:auto"></div>
+        </div>
+
+        <!-- Target Cities -->
+        <div class="ig" style="margin-bottom:14px;background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px">
+          <label style="font-weight:600;color:#e2e8f0;font-size:13px;display:block;margin-bottom:6px">🌆 Target Cities <span style="font-size:10px;color:#64748b;font-weight:400">(comma separated, leave empty = ALL)</span></label>
+          <input type="text" id="sch-cities" placeholder="e.g. Mumbai, Lucknow, Delhi" style="width:100%" oninput="triggerSchedulePreview()">
+        </div>
+
+        <!-- Daily Limit -->
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:14px">
+          <label style="font-weight:600;color:#e2e8f0;font-size:13px;display:block;margin-bottom:8px">📊 Daily Message Limit</label>
+          <div style="display:flex;align-items:center;gap:12px">
+            <input type="range" id="sch-limit-slider" min="5" max="200" step="5" value="60"
+              oninput="document.getElementById('sch-limit-num').textContent=this.value;triggerSchedulePreview();"
+              style="flex:1;accent-color:#7c3aed">
+            <span id="sch-limit-num" style="font-size:22px;font-weight:700;color:#a78bfa;min-width:40px">60</span>
+            <span style="font-size:11px;color:#64748b">per day</span>
           </div>
         </div>
-      </div>
 
-      <!-- Report Email -->
-      <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:20px">
-        <label style="font-weight:600;color:#e2e8f0;font-size:13px;display:block;margin-bottom:6px">📧 Daily Report Email <span style="font-size:10px;color:#64748b;font-weight:400">(sent at 8 PM every day)</span></label>
-        <input type="email" id="sch-report-email" placeholder="rupeshwork72@gmail.com"
-          style="width:100%;padding:9px 12px;background:#0f172a;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:13px;box-sizing:border-box">
-      </div>
+        <!-- Send Hours selection (IST) -->
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:14px">
+          <label style="font-weight:600;color:#e2e8f0;font-size:13px;display:block;margin-bottom:10px">🕐 Send Times (IST) <span style="font-size:10px;color:#64748b;font-weight:400">(checks hourly)</span></label>
+          <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:8px" id="sch-hours-list">
+            <!-- Programmatically or statically generated checkboxes -->
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="sch-hour" value="9" onchange="triggerSchedulePreview()"> 9:00 AM</label>
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="sch-hour" value="10" onchange="triggerSchedulePreview()"> 10:00 AM</label>
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="sch-hour" value="11" onchange="triggerSchedulePreview()"> 11:00 AM</label>
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="sch-hour" value="12" onchange="triggerSchedulePreview()"> 12:00 PM</label>
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="sch-hour" value="13" onchange="triggerSchedulePreview()"> 1:00 PM</label>
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="sch-hour" value="14" onchange="triggerSchedulePreview()"> 2:00 PM</label>
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="sch-hour" value="15" onchange="triggerSchedulePreview()"> 3:00 PM</label>
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="sch-hour" value="16" onchange="triggerSchedulePreview()"> 4:00 PM</label>
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="sch-hour" value="17" onchange="triggerSchedulePreview()"> 5:00 PM</label>
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="sch-hour" value="18" onchange="triggerSchedulePreview()"> 6:00 PM</label>
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="sch-hour" value="19" onchange="triggerSchedulePreview()"> 7:00 PM</label>
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="sch-hour" value="20" onchange="triggerSchedulePreview()"> 8:00 PM</label>
+          </div>
+        </div>
 
-      <!-- Action Buttons -->
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <button class="btn b-purple" style="flex:1;padding:12px" onclick="saveSchedule()">💾 Save Schedule</button>
-        <button class="btn b-green" style="flex:1;padding:12px" onclick="runScheduleNow()" id="sch-run-btn">▶️ Run Now</button>
+        <!-- Skip / Resend Options -->
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:14px;display:flex;flex-direction:column;gap:10px">
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+            <input type="checkbox" id="sch-skip-sent" checked style="width:16px;height:16px;accent-color:#7c3aed" onchange="triggerSchedulePreview()">
+            <div>
+              <div style="font-size:13px;color:#e2e8f0;font-weight:600">⏭ Skip Already Sent</div>
+              <div style="font-size:11px;color:#64748b">Don't re-send to leads that already got a WhatsApp message</div>
+            </div>
+          </label>
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+            <input type="checkbox" id="sch-allow-resend" style="width:16px;height:16px;accent-color:#7c3aed" onchange="triggerSchedulePreview()">
+            <div>
+              <div style="font-size:13px;color:#e2e8f0;font-weight:600">🔄 Allow Re-send</div>
+              <div style="font-size:11px;color:#64748b">Send follow-up to contacts who already received a message</div>
+            </div>
+          </label>
+        </div>
+
+        <!-- Report Email -->
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:14px">
+          <label style="font-weight:600;color:#e2e8f0;font-size:13px;display:block;margin-bottom:6px">📧 Daily Report Email <span style="font-size:10px;color:#64748b;font-weight:400">(sent at 8 PM daily)</span></label>
+          <input type="email" id="sch-report-email" placeholder="e.g. report@domain.com" style="width:100%">
+        </div>
+
+        <!-- Queue Preview Section -->
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:20px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <span style="font-weight:700;font-size:13px;color:#a78bfa">📋 Queue Preview (Leads to send WA to next)</span>
+            <span id="sch-preview-count" style="font-size:10px;background:#0f172a;padding:2px 8px;border-radius:10px;color:#60a5fa">0 matching</span>
+          </div>
+          <div id="sch-preview-list" style="max-height:160px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding:4px;background:#0f172a;border-radius:6px;border:1px solid #2d3748">
+            <div style="color:#64748b;font-size:11px;text-align:center;padding:10px">No matching leads. Adjust filters to load preview.</div>
+          </div>
+        </div>
+
+        <!-- Form Action Buttons -->
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn b-purple" style="flex:1;padding:12px" onclick="saveScheduleRule()">💾 Save Rule</button>
+          <button class="btn b-green" style="flex:1;padding:12px" onclick="runScheduleRuleNow()" id="sch-run-btn">🚀 Run Now</button>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px">
+          <button class="btn b-blue" style="flex:1.2;padding:10px;font-size:12px" onclick="testScheduleRuleReport()">📧 Test Report Email</button>
+          <button class="btn b-red" style="flex:0.8;padding:10px;font-size:12px;display:none" id="sch-delete-btn" onclick="deleteScheduleRule()">🗑️ Delete Rule</button>
+          <button class="btn b-gray" style="flex:1;padding:10px;font-size:12px" onclick="showScheduleList()">Cancel</button>
+        </div>
+        <div id="sch-msg" style="font-size:12px;margin-top:10px;text-align:center;color:#34d399;font-weight:600"></div>
       </div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px">
-        <button class="btn b-blue" style="flex:1;padding:10px;font-size:12px" onclick="testScheduleReport()">📧 Send Test Report Email</button>
-        <button class="btn b-gray" style="flex:1;padding:10px;font-size:12px" onclick="closeSchedule()">Close</button>
-      </div>
-      <div id="sch-msg" style="font-size:12px;margin-top:10px;text-align:center;color:#64748b"></div>
 
       <!-- Anti-ban note -->
       <div style="background:#0f2027;border:1px solid #1e3a5f;border-radius:8px;padding:12px;margin-top:14px;font-size:11px;color:#64748b;line-height:1.7">
         🛡️ <b style="color:#94a3b8">Anti-ban rules applied automatically:</b><br>
         ✅ Random 25–45s delay between messages &nbsp;|&nbsp;
         ✅ 1–2 min break every 10 messages &nbsp;|&nbsp;
-        ✅ Split into 2 daily batches &nbsp;|&nbsp;
         ✅ AI-personalised unique messages
       </div>
+
     </div>
   </div>
+</div>
+
+<!-- ═══════ EMAIL AUTO SCHEDULE MODAL ═══════ -->
+<div id="email-schedule-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:9999;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto">
+  <div style="max-width:680px;width:100%;background:#0f172a;border:1px solid #2d3748;border-radius:16px;overflow:hidden;box-shadow:0 25px 60px rgba(0,0,0,.6);margin:20px auto">
+
+    <!-- Header -->
+    <div style="background:linear-gradient(135deg,#0ea5e9,#2563eb);padding:20px 24px;display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <div style="font-size:20px;font-weight:700;color:#fff">📧 Email Auto-Scheduler</div>
+        <div style="font-size:12px;color:rgba(255,255,255,.6);margin-top:2px">Dynamic schedules &bull; Anti-spam delay &bull; Queue previews</div>
+      </div>
+      <button onclick="closeEmailSchedule()" style="background:none;border:none;color:#94a3b8;font-size:24px;cursor:pointer">&times;</button>
+    </div>
+
+    <!-- Modal Content -->
+    <div style="padding:24px">
+
+      <!-- LIST VIEW -->
+      <div id="esch-list-view">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+          <span style="font-weight:700;color:#e2e8f0;font-size:15px">📅 Configured Email Schedule Rules</span>
+          <button class="btn b-blue" onclick="openNewEmailScheduleForm()">➕ Add Schedule Rule</button>
+        </div>
+
+        <!-- Progress Summary -->
+        <div id="esch-status-panel" style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:20px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <span style="font-weight:600;font-size:13px;color:#e2e8f0">📊 Today's Cumulative Progress</span>
+            <span id="esch-enabled-badge" style="font-size:11px;padding:2px 10px;border-radius:20px;background:#1e3a5f;color:#60a5fa">ACTIVE</span>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+            <div style="text-align:center">
+              <div id="esch-today-sent" style="font-size:28px;font-weight:700;color:#34d399">0</div>
+              <div style="font-size:10px;color:#64748b">SENT TODAY</div>
+            </div>
+            <div style="text-align:center">
+              <div id="esch-today-limit" style="font-size:28px;font-weight:700;color:#60a5fa">60</div>
+              <div style="font-size:10px;color:#64748b">TOTAL LIMIT</div>
+            </div>
+            <div style="text-align:center">
+              <div id="esch-total-sent" style="font-size:28px;font-weight:700;color:#a78bfa">0</div>
+              <div style="font-size:10px;color:#64748b">ALL TIME SENT</div>
+            </div>
+          </div>
+          <div id="esch-last-run" style="font-size:11px;color:#64748b;margin-top:8px;text-align:center"></div>
+        </div>
+
+        <!-- Rules List Container -->
+        <div id="esch-rules-container" style="display:flex;flex-direction:column;gap:12px;margin-bottom:20px">
+          <div style="text-align:center;padding:20px;color:#64748b">Loading schedules...</div>
+        </div>
+
+        <div style="text-align:right">
+          <button class="btn b-gray" onclick="closeEmailSchedule()">Close</button>
+        </div>
+      </div>
+
+      <!-- FORM VIEW (Add/Edit) -->
+      <div id="esch-form-view" style="display:none">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;border-bottom:1px solid #1e293b;padding-bottom:10px">
+          <button class="btn b-gray" onclick="showEmailScheduleList()" style="padding:4px 10px;font-size:11px">&larr; Back to List</button>
+          <span id="esch-form-title" style="font-weight:700;color:#e2e8f0;font-size:15px">Edit Email Schedule Rule</span>
+        </div>
+
+        <input type="hidden" id="esch-edit-id">
+
+        <!-- Rule Name -->
+        <div class="ig" style="margin-bottom:14px">
+          <label style="font-weight:600;color:#e2e8f0;font-size:11px">Rule Name</label>
+          <input type="text" id="esch-name" placeholder="e.g. Morning Clinic Outreach" style="width:100%">
+        </div>
+
+        <!-- Active Toggle -->
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <div style="font-weight:600;color:#e2e8f0;font-size:13px">🟢 Enable Rule</div>
+            <div style="font-size:11px;color:#64748b;margin-top:2px">Sends emails automatically on the designated hours</div>
+          </div>
+          <label style="position:relative;display:inline-block;width:48px;height:26px;cursor:pointer">
+            <input type="checkbox" id="esch-enabled" style="opacity:0;width:0;height:0" onchange="updateEmailEnableVisual()">
+            <span id="esch-toggle-bg" style="position:absolute;inset:0;background:#334155;border-radius:13px;transition:.3s"></span>
+            <span id="esch-toggle-knob" style="position:absolute;left:3px;top:3px;width:20px;height:20px;background:#fff;border-radius:50%;transition:.3s"></span>
+          </label>
+        </div>
+
+        <!-- Target Categories -->
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:14px">
+          <label style="font-weight:600;color:#e2e8f0;font-size:13px;display:block;margin-bottom:8px">🏷️ Target Categories <span style="font-size:10px;color:#64748b;font-weight:400">(leave empty = ALL)</span></label>
+          <div id="esch-cat-list" style="display:flex;flex-wrap:wrap;gap:6px;max-height:120px;overflow-y:auto"></div>
+        </div>
+
+        <!-- Target Cities -->
+        <div class="ig" style="margin-bottom:14px;background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px">
+          <label style="font-weight:600;color:#e2e8f0;font-size:13px;display:block;margin-bottom:6px">🌆 Target Cities <span style="font-size:10px;color:#64748b;font-weight:400">(comma separated, leave empty = ALL)</span></label>
+          <input type="text" id="esch-cities" placeholder="e.g. Mumbai, Lucknow, Delhi" style="width:100%" oninput="triggerEmailSchedulePreview()">
+        </div>
+
+        <!-- Daily Limit -->
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:14px">
+          <label style="font-weight:600;color:#e2e8f0;font-size:13px;display:block;margin-bottom:8px">📊 Daily Email Limit</label>
+          <div style="display:flex;align-items:center;gap:12px">
+            <input type="range" id="esch-limit-slider" min="5" max="200" step="5" value="60"
+              oninput="document.getElementById('esch-limit-num').textContent=this.value;triggerEmailSchedulePreview();"
+              style="flex:1;accent-color:#2563eb">
+            <span id="esch-limit-num" style="font-size:22px;font-weight:700;color:#60a5fa;min-width:40px">60</span>
+            <span style="font-size:11px;color:#64748b">per day</span>
+          </div>
+        </div>
+
+        <!-- Send Hours selection (IST) -->
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:14px">
+          <label style="font-weight:600;color:#e2e8f0;font-size:13px;display:block;margin-bottom:10px">🕐 Send Times (IST) <span style="font-size:10px;color:#64748b;font-weight:400">(checks hourly)</span></label>
+          <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:8px" id="esch-hours-list">
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="esch-hour" value="9" onchange="triggerEmailSchedulePreview()"> 9:00 AM</label>
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="esch-hour" value="10" onchange="triggerEmailSchedulePreview()"> 10:00 AM</label>
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="esch-hour" value="11" onchange="triggerEmailSchedulePreview()"> 11:00 AM</label>
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="esch-hour" value="12" onchange="triggerEmailSchedulePreview()"> 12:00 PM</label>
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="esch-hour" value="13" onchange="triggerEmailSchedulePreview()"> 1:00 PM</label>
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="esch-hour" value="14" onchange="triggerEmailSchedulePreview()"> 2:00 PM</label>
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="esch-hour" value="15" onchange="triggerEmailSchedulePreview()"> 3:00 PM</label>
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="esch-hour" value="16" onchange="triggerEmailSchedulePreview()"> 4:00 PM</label>
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="esch-hour" value="17" onchange="triggerEmailSchedulePreview()"> 5:00 PM</label>
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="esch-hour" value="18" onchange="triggerEmailSchedulePreview()"> 6:00 PM</label>
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="esch-hour" value="19" onchange="triggerEmailSchedulePreview()"> 7:00 PM</label>
+            <label style="font-size:11px;cursor:pointer"><input type="checkbox" name="esch-hour" value="20" onchange="triggerEmailSchedulePreview()"> 8:00 PM</label>
+          </div>
+        </div>
+
+        <!-- Skip / Resend Options -->
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:14px;display:flex;flex-direction:column;gap:10px">
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+            <input type="checkbox" id="esch-skip-sent" checked style="width:16px;height:16px;accent-color:#2563eb" onchange="triggerEmailSchedulePreview()">
+            <div>
+              <div style="font-size:13px;color:#e2e8f0;font-weight:600">⏭ Skip Already Sent</div>
+              <div style="font-size:11px;color:#64748b">Don't re-send to leads that already got an email</div>
+            </div>
+          </label>
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+            <input type="checkbox" id="esch-allow-resend" style="width:16px;height:16px;accent-color:#2563eb" onchange="triggerEmailSchedulePreview()">
+            <div>
+              <div style="font-size:13px;color:#e2e8f0;font-weight:600">🔄 Allow Re-send</div>
+              <div style="font-size:11px;color:#64748b">Send follow-up to contacts who already received an email</div>
+            </div>
+          </label>
+        </div>
+
+        <!-- Report Email -->
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:14px">
+          <label style="font-weight:600;color:#e2e8f0;font-size:13px;display:block;margin-bottom:6px">📧 Daily Report Email <span style="font-size:10px;color:#64748b;font-weight:400">(sent at 8 PM daily)</span></label>
+          <input type="email" id="esch-report-email" placeholder="e.g. report@domain.com" style="width:100%">
+        </div>
+
+        <!-- Queue Preview Section -->
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:20px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <span style="font-weight:700;font-size:13px;color:#60a5fa">📋 Queue Preview (Leads to send email to next)</span>
+            <span id="esch-preview-count" style="font-size:10px;background:#0f172a;padding:2px 8px;border-radius:10px;color:#60a5fa">0 matching</span>
+          </div>
+          <div id="esch-preview-list" style="max-height:160px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding:4px;background:#0f172a;border-radius:6px;border:1px solid #2d3748">
+            <div style="color:#64748b;font-size:11px;text-align:center;padding:10px">No matching leads. Adjust filters to load preview.</div>
+          </div>
+        </div>
+
+        <!-- Form Action Buttons -->
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn b-blue" style="flex:1;padding:12px" onclick="saveEmailScheduleRule()">💾 Save Rule</button>
+          <button class="btn b-green" style="flex:1;padding:12px" onclick="runEmailScheduleRuleNow()" id="esch-run-btn">🚀 Run Now</button>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px">
+          <button class="btn b-blue" style="flex:1.2;padding:10px;font-size:12px" onclick="testEmailScheduleRuleReport()">📧 Test Report Email</button>
+          <button class="btn b-red" style="flex:0.8;padding:10px;font-size:12px;display:none" id="esch-delete-btn" onclick="deleteEmailScheduleRule()">🗑️ Delete Rule</button>
+          <button class="btn b-gray" style="flex:1;padding:10px;font-size:12px" onclick="showEmailScheduleList()">Cancel</button>
+        </div>
+        <div id="esch-msg" style="font-size:12px;margin-top:10px;text-align:center;color:#34d399;font-weight:600"></div>
+      </div>
+
+      <!-- Anti-spam note -->
+      <div style="background:#0f2027;border:1px solid #1e3a5f;border-radius:8px;padding:12px;margin-top:14px;font-size:11px;color:#64748b;line-height:1.7">
+        🛡️ <b style="color:#94a3b8">Anti-spam rules applied automatically:</b><br>
+        ✅ Random 2–5s delay between emails &nbsp;|&nbsp;
+        ✅ Human-like pacing &nbsp;|&nbsp;
+        ✅ AI-personalized email content
+      </div>
+
+    </div>
+  </div>
+</div>
+
 <!-- ═══════ EDIT LEAD MODAL ═══════ -->
 <div id="edit-lead-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:9999;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto">
   <div style="max-width:500px;width:100%;background:#0f172a;border:1px solid #1e293b;border-radius:16px;overflow:hidden;box-shadow:0 25px 60px rgba(0,0,0,.8);margin:40px auto">
@@ -1115,6 +1394,122 @@
     </div>
   </div>
 </div>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<!-- Add Email Account Modal                                    -->
+<!-- ══════════════════════════════════════════════════════════ -->
+<div id="add-smtp-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:99999;align-items:center;justify-content:center;padding:20px">
+  <div style="max-width:520px;width:100%;background:#0f172a;border:1px solid #334155;border-radius:16px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.8)">
+    <!-- Header -->
+    <div style="background:linear-gradient(135deg,#1e3a5f,#0f2040);padding:18px 22px;border-bottom:1px solid #1e293b;display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <div style="font-weight:700;color:#fff;font-size:15px">📧 Add Gmail Account</div>
+        <div style="font-size:11px;color:#60a5fa;margin-top:3px">This account will join the email load balancer</div>
+      </div>
+      <button onclick="closeAddSmtpModal()" style="background:none;border:none;color:#94a3b8;font-size:22px;cursor:pointer;line-height:1">×</button>
+    </div>
+
+    <!-- Body -->
+    <div style="padding:22px;display:flex;flex-direction:column;gap:14px">
+
+      <!-- Row: Label + From Name -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div style="display:flex;flex-direction:column;gap:5px">
+          <label style="font-size:11px;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.04em">Account Label</label>
+          <input type="text" id="add-smtp-label" placeholder="e.g. Main Account, Backup 1" style="padding:9px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px">
+        </div>
+        <div style="display:flex;flex-direction:column;gap:5px">
+          <label style="font-size:11px;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.04em">From Name</label>
+          <input type="text" id="add-smtp-from" placeholder="Digital Growth Team" value="Digital Growth Team" style="padding:9px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px">
+        </div>
+      </div>
+
+      <!-- Gmail address -->
+      <div style="display:flex;flex-direction:column;gap:5px">
+        <label style="font-size:11px;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.04em">Gmail Address</label>
+        <input type="email" id="add-smtp-user" placeholder="yourname@gmail.com" style="padding:9px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px">
+      </div>
+
+      <!-- App Password -->
+      <div style="display:flex;flex-direction:column;gap:5px">
+        <label style="font-size:11px;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.04em">App Password <span style="color:#f87171;font-weight:400">(16-char, NOT your Gmail password)</span></label>
+        <input type="text" id="add-smtp-pass" placeholder="xxxx xxxx xxxx xxxx" style="padding:9px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px;-webkit-text-security:disc;font-family:monospace" autocomplete="off">
+        <div style="font-size:10px;color:#64748b">Get yours: <a href="https://myaccount.google.com/apppasswords" target="_blank" style="color:#60a5fa">myaccount.google.com/apppasswords</a> (enable 2FA first)</div>
+      </div>
+
+      <!-- SMTP settings (collapsed row) -->
+      <div style="display:grid;grid-template-columns:1fr 80px 1fr;gap:10px">
+        <div style="display:flex;flex-direction:column;gap:5px">
+          <label style="font-size:11px;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.04em">SMTP Host</label>
+          <input type="text" id="add-smtp-host" value="smtp.gmail.com" style="padding:9px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:12px">
+        </div>
+        <div style="display:flex;flex-direction:column;gap:5px">
+          <label style="font-size:11px;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.04em">Port</label>
+          <input type="number" id="add-smtp-port" value="587" style="padding:9px 10px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:12px">
+        </div>
+        <div style="display:flex;flex-direction:column;gap:5px">
+          <label style="font-size:11px;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.04em">SSL/TLS</label>
+          <select id="add-smtp-secure" style="padding:9px 10px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:12px">
+            <option value="false" selected>No (STARTTLS) ✓ 587</option>
+            <option value="true">Yes (SSL) — 465</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Daily limit -->
+      <div style="display:flex;flex-direction:column;gap:5px">
+        <label style="font-size:11px;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.04em">Daily Limit <span style="color:#64748b;font-weight:400">(emails per day, max ~500 for Gmail free)</span></label>
+        <input type="number" id="add-smtp-limit" value="400" min="10" max="500" style="padding:9px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px;width:160px">
+      </div>
+
+      <!-- Status message -->
+      <div id="add-smtp-status" style="font-size:12px;min-height:18px;text-align:center"></div>
+
+      <!-- Action buttons -->
+      <div style="display:flex;gap:10px;margin-top:4px">
+        <button onclick="closeAddSmtpModal()" class="btn b-gray" style="flex:1;padding:11px">Cancel</button>
+        <button id="add-smtp-test-btn" onclick="testNewSmtpAccount()" class="btn b-blue" style="flex:1.2;padding:11px;font-size:13px">🔌 Test Connection</button>
+        <button id="add-smtp-save-btn" onclick="saveNewSmtpAccount()" class="btn b-green" style="flex:1.8;padding:11px;font-size:13px;font-weight:700">💾 Save Account</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+/* ── SMTP Account Cards ──────────────────────────────────────── */
+.smtp-acct-card {
+  background: #0d1526;
+  border: 1px solid #1e293b;
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  transition: border-color .2s, box-shadow .2s;
+  position: relative;
+  overflow: hidden;
+}
+.smtp-acct-card:hover { border-color: #334155; box-shadow: 0 4px 20px rgba(0,0,0,.4); }
+.smtp-acct-card.active-card { border-left: 3px solid #34d399; }
+.smtp-acct-card.inactive-card { border-left: 3px solid #334155; opacity: .7; }
+.smtp-acct-avatar {
+  width: 40px; height: 40px; border-radius: 10px;
+  background: linear-gradient(135deg, #1d4ed8, #7c3aed);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; flex-shrink: 0;
+}
+.smtp-acct-info { flex: 1; min-width: 0; }
+.smtp-acct-label { font-weight: 700; color: #e2e8f0; font-size: 13px; }
+.smtp-acct-email { font-size: 11px; color: #60a5fa; font-family: monospace; margin-top: 2px; }
+.smtp-acct-meta  { font-size: 10px; color: #64748b; margin-top: 3px; }
+.smtp-usage-bar-wrap { width: 140px; flex-shrink: 0; }
+.smtp-usage-label { font-size: 10px; color: #94a3b8; display: flex; justify-content: space-between; margin-bottom: 4px; }
+.smtp-usage-track { height: 6px; background: #1e293b; border-radius: 3px; overflow: hidden; }
+.smtp-usage-fill  { height: 100%; border-radius: 3px; transition: width .4s; }
+.smtp-acct-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; flex-wrap: wrap; }
+.smtp-toggle-label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 11px; color: #94a3b8; }
+</style>
 
 <script src="/app.js"></script>
 </body>

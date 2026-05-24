@@ -7,13 +7,17 @@
     "start": "node index.js",
     "scrape": "node scraper.js",
     "send-wa": "node whatsapp-sender.js",
-    "send-email": "node email-sender.js"
+    "send-email": "node email-sender.js",
+    "run-scheduler": "node run-scheduler.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "bcryptjs": "^3.0.3",
+    "connect-mongo": "^6.0.0",
     "dotenv": "^17.4.2",
     "express": "^4.22.1",
+    "express-session": "^1.19.0",
     "googleapis": "^171.4.0",
     "mongoose": "^9.6.1",
     "multer": "^2.1.1",

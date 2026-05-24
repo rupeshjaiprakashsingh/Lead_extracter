@@ -1,22 +1,33 @@
 // ============================================================
 //  services/templates-cache.js
-//  Shared in-memory store for user-defined message templates
+//  Per-user template retrieval from MongoDB
 // ============================================================
+const Settings = require('../models/Settings');
 
-let _cache = {
-    wa_template:          '',   // User's WA body template
-    email_subject:        '',   // User's email subject template
-    email_body:           '',   // User's email body template
-};
-
-function setTemplates(obj) {
-    if (obj.wa_template    !== undefined) _cache.wa_template    = String(obj.wa_template    || '');
-    if (obj.email_subject  !== undefined) _cache.email_subject  = String(obj.email_subject  || '');
-    if (obj.email_body     !== undefined) _cache.email_body     = String(obj.email_body     || '');
+async function getTemplates(userId) {
+    const templates = {
+        wa_template:          '',
+        email_subject:        '',
+        email_body:           '',
+    };
+    if (!userId) return templates;
+    try {
+        const rows = await Settings.find({
+            userId,
+            key: { $in: ['wa_template', 'email_subject', 'email_body'] }
+        });
+        rows.forEach(r => {
+            if (r.key === 'wa_template') templates.wa_template = String(r.value || '');
+            if (r.key === 'email_subject') templates.email_subject = String(r.value || '');
+            if (r.key === 'email_body') templates.email_body = String(r.value || '');
+        });
+    } catch (e) {
+        console.error('Error fetching templates from DB:', e.message);
+    }
+    return templates;
 }
 
-function getTemplates() {
-    return { ..._cache };
-}
+// Kept for backward compatibility but no-op since Settings.findOneAndUpdate handles it in index.js
+function setTemplates(obj) {}
 
 module.exports = { setTemplates, getTemplates };

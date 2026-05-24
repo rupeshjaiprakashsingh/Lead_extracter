@@ -55,6 +55,7 @@ function switchTab(t){
   if(t==='settings') {
     loadSettings();
     loadLogs();
+    loadSmtpAccounts();
   }
 }
 
@@ -353,21 +354,21 @@ async function startAutoSend(){
   const skipWaSent=document.getElementById('f-skip-wa')?.checked||false;
   if(!sel.length) return alert('Please select at least one lead to send WhatsApp messages.');
   const skipNote=skipWaSent?'\n\n✅ "Skip WA Sent" is ON — already-messaged leads will be skipped.':'';
-  if(!confirm(`📝 DRAFT MODE\n\nWhatsApp Web will open and automatically pre-fill messages for all ${sel.length} leads one by one.\n\nDo NOT close the browser while it works!\n\nOnce done, go through each chat and click Send yourself — no auto-clicking, 100% safe.${skipNote}`))return;
+  if(!confirm(`📱 AUTO-SEND MODE\n\nWhatsApp Web will open and automatically SEND messages to all ${sel.length} selected leads one by one.\n\nDo NOT close the browser while it works!${skipNote}`))return;
   sending=true;
   document.getElementById('btn-autosend').disabled=true;
-  document.getElementById('btn-autosend').textContent='⏳ Drafting...';
-  showProgress('📝 Drafting WhatsApp messages — browser will stay open when done...');
+  document.getElementById('btn-autosend').textContent='⏳ Sending...';
+  showProgress('🚀 Auto-sending WhatsApp messages...');
   connectSSE();
   
   try {
-      await fetch('/api/send/wa-draft',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:sel,skipWaSent})});
-      plog('📝 Draft mode started — WhatsApp Web is opening each chat and pre-filling messages...','in');
+      await fetch('/api/send/wa',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:sel,skipWaSent})});
+      plog('🚀 Auto-send started — WhatsApp Web is opening each chat and sending messages...','in');
   } catch(err) {
       alert('Error: ' + err.message);
       sending=false;
       document.getElementById('btn-autosend').disabled=false;
-      document.getElementById('btn-autosend').textContent='📝 Draft WA Messages';
+      document.getElementById('btn-autosend').textContent='🚀 Auto-Send WA';
   }
 }
 
@@ -1347,7 +1348,34 @@ async function previewWATemplate(){
   }
 }
 
+async function loadUserSession() {
+  try {
+    const res = await fetch('/auth/status');
+    const data = await res.json();
+    if (data.isAuthenticated) {
+      document.getElementById('hdr-user-name').textContent = data.username || 'User';
+      document.getElementById('hdr-user-company').textContent = data.company || 'My Company';
+      
+      const firstLetter = (data.username || 'U').charAt(0).toUpperCase();
+      document.getElementById('hdr-user-avatar').textContent = firstLetter;
+      
+      document.getElementById('hdr-user-badge').style.display = 'flex';
+      
+      if (data.role === 'admin') {
+        document.getElementById('hdr-admin-btn').style.display = 'inline-flex';
+      } else {
+        document.getElementById('hdr-admin-btn').style.display = 'none';
+      }
+    } else {
+      window.location.href = '/login';
+    }
+  } catch (e) {
+    console.error('Error loading user session:', e);
+  }
+}
+
 // ── Init ────────────────────────────────────────────────────
+loadUserSession();
 fetchLeads(1);
 loadFilters();
 loadStats();
@@ -1355,11 +1383,14 @@ loadSettings();
 checkConnections();
 
 // ── Auto Schedule Modal ─────────────────────────────────────
-let _schedCats = [];
+let _schedules = [];
+let _categoriesList = [];
+let _selectedCategories = [];
 
 async function openSchedule() {
   document.getElementById('schedule-modal').style.display = 'flex';
   await loadScheduleData();
+  showScheduleList();
 }
 
 function closeSchedule() {
@@ -1367,54 +1398,243 @@ function closeSchedule() {
 }
 
 async function loadScheduleData() {
+  const container = document.getElementById('sch-rules-container');
+  container.innerHTML = '<div style="text-align:center;padding:20px;color:#64748b">Loading schedules...</div>';
   try {
-    const s = await (await fetch('/api/schedule')).json();
-    // Status panel
-    document.getElementById('sch-today-sent').textContent  = s.today_sent  || 0;
-    document.getElementById('sch-today-limit').textContent = s.daily_limit || 60;
-    document.getElementById('sch-total-sent').textContent  = s.total_sent  || 0;
-    document.getElementById('sch-last-run').textContent    = s.last_run
-      ? '⏰ Last run: ' + new Date(s.last_run).toLocaleString('en-IN', {timeZone:'Asia/Kolkata'})
-      : 'Not run yet';
-    // Badge
-    const badge = document.getElementById('sch-enabled-badge');
-    badge.textContent = s.enabled ? '🟢 ACTIVE' : '⚪ PAUSED';
-    badge.style.background = s.enabled ? '#14532d' : '#1e3a5f';
-    badge.style.color      = s.enabled ? '#86efac' : '#60a5fa';
-    // Toggle
-    document.getElementById('sch-enabled').checked = !!s.enabled;
-    updateEnableVisual();
-    // Limit slider
-    document.getElementById('sch-limit-slider').value   = s.daily_limit || 60;
-    document.getElementById('sch-limit-num').textContent = s.daily_limit || 60;
-    // Options
-    document.getElementById('sch-skip-sent').checked    = s.skip_sent    !== false;
-    document.getElementById('sch-allow-resend').checked = !!s.allow_resend;
-    // Time selectors
-    if (s.morning_hour) document.getElementById('sch-morning-hour').value = s.morning_hour;
-    if (s.evening_hour) document.getElementById('sch-evening-hour').value = s.evening_hour;
-    // Report email
-    document.getElementById('sch-report-email').value = s.report_email || '';
-    // Categories
-    const cats = s.categories_list || [];
-    _schedCats = s.categories || [];
-    const container = document.getElementById('sch-cat-list');
-    container.innerHTML = '';
-    cats.forEach(cat => {
-      const selected = _schedCats.includes(cat);
-      const chip = document.createElement('span');
-      chip.textContent = cat;
-      chip.style.cssText = `cursor:pointer;padding:4px 10px;border-radius:20px;font-size:11px;border:1px solid ${selected?'#7c3aed':'#334155'};background:${selected?'#4f46e5':'transparent'};color:${selected?'#fff':'#94a3b8'};transition:.2s`;
-      chip.onclick = () => {
-        const idx = _schedCats.indexOf(cat);
-        if (idx === -1) { _schedCats.push(cat); chip.style.background='#4f46e5'; chip.style.color='#fff'; chip.style.borderColor='#7c3aed'; }
-        else { _schedCats.splice(idx,1); chip.style.background='transparent'; chip.style.color='#94a3b8'; chip.style.borderColor='#334155'; }
-      };
-      container.appendChild(chip);
+    const res = await fetch('/api/schedule');
+    const data = await res.json();
+    _schedules = data.list || [];
+    _categoriesList = data.categories_list || [];
+    
+    // Calculate cumulative progress
+    const active = _schedules.some(s => s.enabled);
+    const todaySent = _schedules.reduce((sum, s) => sum + (s.today_sent || 0), 0);
+    const totalLimit = _schedules.reduce((sum, s) => sum + (s.daily_limit || 0), 0);
+    const totalSent = _schedules.reduce((sum, s) => sum + (s.total_sent || 0), 0);
+    
+    let maxLastRun = null;
+    _schedules.forEach(s => {
+      if (s.last_run) {
+        const d = new Date(s.last_run);
+        if (!maxLastRun || d > maxLastRun) maxLastRun = d;
+      }
     });
+    
+    // Update status panel
+    document.getElementById('sch-today-sent').textContent = todaySent;
+    document.getElementById('sch-today-limit').textContent = totalLimit;
+    document.getElementById('sch-total-sent').textContent = totalSent;
+    
+    const lastRunEl = document.getElementById('sch-last-run');
+    if (maxLastRun) {
+      lastRunEl.textContent = '⏰ Last run: ' + maxLastRun.toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'});
+    } else {
+      lastRunEl.textContent = 'Not run yet';
+    }
+    
+    const badge = document.getElementById('sch-enabled-badge');
+    badge.textContent = active ? '🟢 ACTIVE' : '⚪ PAUSED';
+    badge.style.background = active ? '#14532d' : '#1e3a5f';
+    badge.style.color = active ? '#86efac' : '#60a5fa';
+    
+    renderScheduleRules();
   } catch(e) {
-    document.getElementById('sch-msg').textContent = '❌ Load error: ' + e.message;
+    console.error('Error loading schedule data:', e);
+    container.innerHTML = `<div style="text-align:center;padding:20px;color:#f87171">❌ Error: ${e.message}</div>`;
   }
+}
+
+function renderScheduleRules() {
+  const container = document.getElementById('sch-rules-container');
+  container.innerHTML = '';
+  if (!_schedules.length) {
+    container.innerHTML = '<div style="text-align:center;padding:30px;color:#64748b;font-size:13px">No schedule rules found. Click "Add Schedule Rule" to create one.</div>';
+    return;
+  }
+  
+  _schedules.forEach(s => {
+    const card = document.createElement('div');
+    card.style.cssText = `background:#1e293b;border:1px solid #334155;border-radius:12px;padding:16px;display:flex;justify-content:space-between;align-items:center;transition:all 0.2s ease;gap:15px`;
+    
+    card.onmouseover = () => { card.style.borderColor = '#4f46e5'; card.style.transform = 'translateY(-1px)'; };
+    card.onmouseout = () => { card.style.borderColor = '#334155'; card.style.transform = 'none'; };
+    
+    const hoursFormatted = (s.send_hours || []).map(h => {
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      const disp = h % 12 || 12;
+      return `${disp}:00 ${ampm}`;
+    }).join(', ') || 'None';
+    
+    const catsStr = (s.categories && s.categories.length) ? s.categories.join(', ') : 'All Categories';
+    const citiesStr = (s.cities && s.cities.length) ? s.cities.join(', ') : 'All Cities';
+    
+    const infoCol = document.createElement('div');
+    infoCol.style.cssText = `flex:1;display:flex;flex-direction:column;gap:4px`;
+    infoCol.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-weight:700;color:#f8fafc;font-size:14px">${s.name || 'Unnamed Schedule'}</span>
+        <span style="font-size:10px;padding:2px 8px;border-radius:12px;font-weight:600;background:${s.enabled ? '#065f46' : '#374151'};color:${s.enabled ? '#34d399' : '#9ca3af'}">
+          ${s.enabled ? 'ACTIVE' : 'PAUSED'}
+        </span>
+      </div>
+      <div style="font-size:11px;color:#94a3b8">
+        🏷️ <b>Categories:</b> ${catsStr} &bull; 🌆 <b>Cities:</b> ${citiesStr}
+      </div>
+      <div style="font-size:11px;color:#94a3b8">
+        🕐 <b>Send Hours (IST):</b> ${hoursFormatted}
+      </div>
+      <div style="font-size:11px;color:#64748b;margin-top:2px">
+        📈 Sent today: <span style="color:#34d399;font-weight:600">${s.today_sent || 0}</span> / <span style="color:#60a5fa;font-weight:600">${s.daily_limit || 60}</span>
+        ${s.last_run ? `&nbsp;&bull;&nbsp; Last run: ${new Date(s.last_run).toLocaleDateString('en-IN')} ${new Date(s.last_run).toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'})}` : ''}
+      </div>
+    `;
+    
+    const actionsCol = document.createElement('div');
+    actionsCol.style.cssText = `display:flex;gap:8px;align-items:center`;
+    
+    const editBtn = document.createElement('button');
+    editBtn.className = 'btn b-blue';
+    editBtn.style.cssText = `padding:6px 12px;font-size:12px`;
+    editBtn.textContent = '✏️ Edit';
+    editBtn.onclick = () => editScheduleRuleForm(s._id);
+    
+    const runNowBtn = document.createElement('button');
+    runNowBtn.className = 'btn b-green';
+    runNowBtn.style.cssText = `padding:6px 12px;font-size:12px`;
+    runNowBtn.textContent = '🚀 Run Now';
+    runNowBtn.onclick = async () => {
+      runNowBtn.disabled = true;
+      runNowBtn.textContent = '⏳ Starting...';
+      try {
+        const res = await (await fetch(`/api/schedule/${s._id}/run-now`, { method: 'POST' })).json();
+        if (res.success) {
+          alert('✅ Success: ' + res.message);
+          closeSchedule();
+          connectSSE();
+        } else {
+          alert('⚠️ Warning: ' + (res.error || 'Could not start'));
+        }
+      } catch (err) {
+        alert('❌ Error: ' + err.message);
+      } finally {
+        runNowBtn.disabled = false;
+        runNowBtn.textContent = '🚀 Run Now';
+      }
+    };
+    
+    actionsCol.appendChild(editBtn);
+    actionsCol.appendChild(runNowBtn);
+    
+    card.appendChild(infoCol);
+    card.appendChild(actionsCol);
+    container.appendChild(card);
+  });
+}
+
+function openNewScheduleForm() {
+  document.getElementById('sch-list-view').style.display = 'none';
+  document.getElementById('sch-form-view').style.display = 'block';
+  document.getElementById('sch-form-title').textContent = '➕ Create New Schedule Rule';
+  document.getElementById('sch-edit-id').value = '';
+  
+  document.getElementById('sch-name').value = '';
+  document.getElementById('sch-enabled').checked = true;
+  updateEnableVisual();
+  
+  _selectedCategories = [];
+  renderFormCategories();
+  
+  document.getElementById('sch-cities').value = '';
+  
+  document.getElementById('sch-limit-slider').value = 60;
+  document.getElementById('sch-limit-num').textContent = '60';
+  
+  const hourCheckboxes = document.querySelectorAll('input[name="sch-hour"]');
+  hourCheckboxes.forEach(cb => {
+    const val = parseInt(cb.value);
+    cb.checked = (val === 10 || val === 16);
+  });
+  
+  document.getElementById('sch-skip-sent').checked = true;
+  document.getElementById('sch-allow-resend').checked = false;
+  document.getElementById('sch-report-email').value = '';
+  
+  document.getElementById('sch-delete-btn').style.display = 'none';
+  document.getElementById('sch-msg').textContent = '';
+  triggerSchedulePreview();
+}
+
+function editScheduleRuleForm(id) {
+  const s = _schedules.find(item => item._id === id);
+  if (!s) return;
+  
+  document.getElementById('sch-list-view').style.display = 'none';
+  document.getElementById('sch-form-view').style.display = 'block';
+  document.getElementById('sch-form-title').textContent = '✏️ Edit Schedule Rule';
+  document.getElementById('sch-edit-id').value = id;
+  
+  document.getElementById('sch-name').value = s.name || '';
+  document.getElementById('sch-enabled').checked = !!s.enabled;
+  updateEnableVisual();
+  
+  _selectedCategories = [...(s.categories || [])];
+  renderFormCategories();
+  
+  document.getElementById('sch-cities').value = (s.cities || []).join(', ');
+  
+  document.getElementById('sch-limit-slider').value = s.daily_limit || 60;
+  document.getElementById('sch-limit-num').textContent = s.daily_limit || 60;
+  
+  const hours = s.send_hours || [10, 16];
+  const hourCheckboxes = document.querySelectorAll('input[name="sch-hour"]');
+  hourCheckboxes.forEach(cb => {
+    cb.checked = hours.includes(parseInt(cb.value));
+  });
+  
+  document.getElementById('sch-skip-sent').checked = s.skip_sent !== false;
+  document.getElementById('sch-allow-resend').checked = !!s.allow_resend;
+  document.getElementById('sch-report-email').value = s.report_email || '';
+  
+  document.getElementById('sch-delete-btn').style.display = 'inline-block';
+  document.getElementById('sch-msg').textContent = '';
+  triggerSchedulePreview();
+}
+
+function renderFormCategories() {
+  const container = document.getElementById('sch-cat-list');
+  container.innerHTML = '';
+  if (!_categoriesList.length) {
+    container.innerHTML = '<div style="color:#64748b;font-size:11px">No categories available.</div>';
+    return;
+  }
+  _categoriesList.forEach(cat => {
+    const selected = _selectedCategories.includes(cat);
+    const chip = document.createElement('span');
+    chip.textContent = cat;
+    chip.style.cssText = `cursor:pointer;padding:4px 10px;border-radius:20px;font-size:11px;border:1px solid ${selected?'#7c3aed':'#334155'};background:${selected?'#4f46e5':'transparent'};color:${selected?'#fff':'#94a3b8'};transition:.2s`;
+    chip.onclick = () => {
+      const idx = _selectedCategories.indexOf(cat);
+      if (idx === -1) {
+        _selectedCategories.push(cat);
+        chip.style.background = '#4f46e5';
+        chip.style.color = '#fff';
+        chip.style.borderColor = '#7c3aed';
+      } else {
+        _selectedCategories.splice(idx, 1);
+        chip.style.background = 'transparent';
+        chip.style.color = '#94a3b8';
+        chip.style.borderColor = '#334155';
+      }
+      triggerSchedulePreview();
+    };
+    container.appendChild(chip);
+  });
+}
+
+function showScheduleList() {
+  document.getElementById('sch-form-view').style.display = 'none';
+  document.getElementById('sch-list-view').style.display = 'block';
+  loadScheduleData();
 }
 
 function updateEnableVisual() {
@@ -1423,77 +1643,776 @@ function updateEnableVisual() {
   document.getElementById('sch-toggle-knob').style.left        = on ? '25px' : '3px';
 }
 
-async function saveSchedule() {
-  const msg = document.getElementById('sch-msg');
-  msg.textContent = '⏳ Saving...';
-  msg.style.color = '#64748b';
+let _previewTimeout = null;
+function triggerSchedulePreview() {
+  if (_previewTimeout) clearTimeout(_previewTimeout);
+  _previewTimeout = setTimeout(fetchSchedulePreview, 250);
+}
+
+async function fetchSchedulePreview() {
+  const previewList = document.getElementById('sch-preview-list');
+  const previewCount = document.getElementById('sch-preview-count');
+  
+  const categories = _selectedCategories;
+  const citiesStr = document.getElementById('sch-cities').value;
+  const cities = citiesStr ? citiesStr.split(',').map(c => c.trim()).filter(Boolean) : [];
+  const skip_sent = document.getElementById('sch-skip-sent').checked;
+  const allow_resend = document.getElementById('sch-allow-resend').checked;
+  const daily_limit = parseInt(document.getElementById('sch-limit-slider').value) || 60;
+  
+  const hourCheckboxes = document.querySelectorAll('input[name="sch-hour"]:checked');
+  const send_hours = Array.from(hourCheckboxes).map(cb => parseInt(cb.value));
+  
   try {
-    const body = {
-      enabled:      document.getElementById('sch-enabled').checked,
-      categories:   _schedCats,
-      daily_limit:  parseInt(document.getElementById('sch-limit-slider').value),
-      skip_sent:    document.getElementById('sch-skip-sent').checked,
-      allow_resend: document.getElementById('sch-allow-resend').checked,
-      morning_hour: parseInt(document.getElementById('sch-morning-hour').value),
-      evening_hour: parseInt(document.getElementById('sch-evening-hour').value),
-      report_email: document.getElementById('sch-report-email').value.trim(),
-    };
-    const r = await (await fetch('/api/schedule', {
+    const res = await fetch('/api/schedule/preview', {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify(body)
-    })).json();
-    if (r.success) {
-      msg.textContent = '✅ Schedule saved! ' + (body.enabled ? `Will send at ${body.morning_hour}:00 AM + ${body.evening_hour}:00 PM IST` : 'Scheduler is paused.');
-      msg.style.color = '#34d399';
-      await loadScheduleData();
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ categories, cities, skip_sent, allow_resend, daily_limit, send_hours })
+    });
+    const data = await res.json();
+    if (data.success) {
+      previewCount.textContent = `${data.count} matching`;
+      previewList.innerHTML = '';
+      if (!data.leads || !data.leads.length) {
+        previewList.innerHTML = '<div style="color:#64748b;font-size:11px;text-align:center;padding:10px">No matching leads. Adjust filters to load preview.</div>';
+        return;
+      }
+      data.leads.forEach(lead => {
+        const item = document.createElement('div');
+        item.style.cssText = `display:flex;justify-content:space-between;padding:6px 10px;border-bottom:1px solid #1e293b;font-size:11px;color:#cbd5e1`;
+        
+        const info = document.createElement('div');
+        info.innerHTML = `<b>${lead.name || 'No Name'}</b> <span style="color:#64748b">(${lead.phone})</span>`;
+        
+        const meta = document.createElement('div');
+        meta.style.cssText = `display:flex;gap:6px;align-items:center`;
+        
+        if (lead.category) {
+          meta.innerHTML += `<span style="background:#334155;color:#94a3b8;padding:1px 6px;border-radius:4px;font-size:9px">${lead.category}</span>`;
+        }
+        if (lead.city) {
+          meta.innerHTML += `<span style="background:#1e3a5f;color:#60a5fa;padding:1px 6px;border-radius:4px;font-size:9px">${lead.city}</span>`;
+        }
+        if (lead.wa_sent) {
+          meta.innerHTML += `<span style="color:#34d399;font-size:9px">✔ Sent</span>`;
+        }
+        
+        item.appendChild(info);
+        item.appendChild(meta);
+        previewList.appendChild(item);
+      });
     } else {
-      msg.textContent = '❌ ' + (r.error || 'Save failed');
+      previewCount.textContent = '0 matching';
+      previewList.innerHTML = `<div style="color:#f87171;font-size:11px;text-align:center;padding:10px">Preview error: ${data.error}</div>`;
+    }
+  } catch (e) {
+    previewCount.textContent = '0 matching';
+    previewList.innerHTML = `<div style="color:#f87171;font-size:11px;text-align:center;padding:10px">Preview error: ${e.message}</div>`;
+  }
+}
+
+async function saveScheduleRule() {
+  const id = document.getElementById('sch-edit-id').value;
+  const msg = document.getElementById('sch-msg');
+  msg.textContent = '⏳ Saving rule...';
+  msg.style.color = '#64748b';
+  
+  const name = document.getElementById('sch-name').value.trim() || 'New Schedule';
+  const enabled = document.getElementById('sch-enabled').checked;
+  const categories = _selectedCategories;
+  const citiesStr = document.getElementById('sch-cities').value;
+  const cities = citiesStr ? citiesStr.split(',').map(c => c.trim()).filter(Boolean) : [];
+  const daily_limit = parseInt(document.getElementById('sch-limit-slider').value) || 60;
+  
+  const hourCheckboxes = document.querySelectorAll('input[name="sch-hour"]:checked');
+  const send_hours = Array.from(hourCheckboxes).map(cb => parseInt(cb.value));
+  
+  const skip_sent = document.getElementById('sch-skip-sent').checked;
+  const allow_resend = document.getElementById('sch-allow-resend').checked;
+  const report_email = document.getElementById('sch-report-email').value.trim();
+  
+  if (!send_hours.length) {
+    msg.textContent = '⚠️ Please select at least one Send Time checkbox.';
+    msg.style.color = '#fbbf24';
+    return;
+  }
+  
+  const body = { name, enabled, categories, cities, daily_limit, send_hours, skip_sent, allow_resend, report_email };
+  const url = id ? `/api/schedule/${id}` : '/api/schedule';
+  const method = id ? 'PUT' : 'POST';
+  
+  try {
+    const res = await fetch(url, {
+      method: method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const r = await res.json();
+    if (r.success) {
+      msg.textContent = id ? '✅ Rule updated successfully!' : '✅ New rule created successfully!';
+      msg.style.color = '#34d399';
+      setTimeout(() => {
+        showScheduleList();
+      }, 1000);
+    } else {
+      msg.textContent = '❌ ' + (r.error || 'Failed to save rule');
       msg.style.color = '#f87171';
     }
-  } catch(e) {
+  } catch (e) {
     msg.textContent = '❌ ' + e.message;
     msg.style.color = '#f87171';
   }
 }
 
-async function runScheduleNow() {
+async function deleteScheduleRule() {
+  const id = document.getElementById('sch-edit-id').value;
+  if (!id) return;
+  if (!confirm('Are you sure you want to delete this schedule rule?')) return;
+  
+  const msg = document.getElementById('sch-msg');
+  msg.textContent = '⏳ Deleting...';
+  msg.style.color = '#64748b';
+  
+  try {
+    const res = await fetch(`/api/schedule/${id}`, { method: 'DELETE' });
+    const r = await res.json();
+    if (r.success) {
+      msg.textContent = '🗑️ Rule deleted successfully!';
+      msg.style.color = '#34d399';
+      setTimeout(() => {
+        showScheduleList();
+      }, 1000);
+    } else {
+      msg.textContent = '❌ ' + (r.error || 'Delete failed');
+      msg.style.color = '#f87171';
+    }
+  } catch (e) {
+    msg.textContent = '❌ ' + e.message;
+    msg.style.color = '#f87171';
+  }
+}
+
+async function runScheduleRuleNow() {
+  const id = document.getElementById('sch-edit-id').value;
   const btn = document.getElementById('sch-run-btn');
   const msg = document.getElementById('sch-msg');
+  
   btn.disabled = true;
   btn.textContent = '⏳ Starting...';
+  msg.textContent = '⏳ Saving rule and executing...';
+  msg.style.color = '#64748b';
+  
+  const name = document.getElementById('sch-name').value.trim() || 'New Schedule';
+  const enabled = document.getElementById('sch-enabled').checked;
+  const categories = _selectedCategories;
+  const citiesStr = document.getElementById('sch-cities').value;
+  const cities = citiesStr ? citiesStr.split(',').map(c => c.trim()).filter(Boolean) : [];
+  const daily_limit = parseInt(document.getElementById('sch-limit-slider').value) || 60;
+  
+  const hourCheckboxes = document.querySelectorAll('input[name="sch-hour"]:checked');
+  const send_hours = Array.from(hourCheckboxes).map(cb => parseInt(cb.value));
+  
+  const skip_sent = document.getElementById('sch-skip-sent').checked;
+  const allow_resend = document.getElementById('sch-allow-resend').checked;
+  const report_email = document.getElementById('sch-report-email').value.trim();
+  
+  if (!send_hours.length) {
+    msg.textContent = '⚠️ Please select at least one Send Time checkbox.';
+    msg.style.color = '#fbbf24';
+    btn.disabled = false;
+    btn.textContent = '🚀 Run Now';
+    return;
+  }
+  
+  const body = { name, enabled, categories, cities, daily_limit, send_hours, skip_sent, allow_resend, report_email };
+  const saveUrl = id ? `/api/schedule/${id}` : '/api/schedule';
+  const saveMethod = id ? 'PUT' : 'POST';
+  
   try {
-    // Save first
-    await saveSchedule();
-    await new Promise(r => setTimeout(r, 500));
-    const r = await (await fetch('/api/schedule/run-now', {method:'POST'})).json();
-    if (r.success) {
-      msg.textContent = '✅ ' + r.message;
+    const saveRes = await fetch(saveUrl, {
+      method: saveMethod,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const saveR = await saveRes.json();
+    if (!saveR.success) {
+      msg.textContent = '❌ Failed to save rule before running: ' + (saveR.error || 'Unknown error');
+      msg.style.color = '#f87171';
+      btn.disabled = false;
+      btn.textContent = '🚀 Run Now';
+      return;
+    }
+    
+    const targetId = id || (saveR.schedule && saveR.schedule._id);
+    if (!targetId) {
+      msg.textContent = '❌ Error retrieving schedule ID.';
+      msg.style.color = '#f87171';
+      btn.disabled = false;
+      btn.textContent = '🚀 Run Now';
+      return;
+    }
+    
+    const runRes = await fetch(`/api/schedule/${targetId}/run-now`, { method: 'POST' });
+    const runR = await runRes.json();
+    if (runR.success) {
+      msg.textContent = '✅ ' + runR.message;
       msg.style.color = '#34d399';
-      closeSchedule();
-      connectSSE();
+      setTimeout(() => {
+        closeSchedule();
+        connectSSE();
+      }, 1500);
     } else {
-      msg.textContent = '⚠️ ' + (r.error || 'Could not start');
+      msg.textContent = '⚠️ ' + (runR.error || 'Could not start');
       msg.style.color = '#fbbf24';
     }
-  } catch(e) {
+  } catch (e) {
     msg.textContent = '❌ ' + e.message;
     msg.style.color = '#f87171';
   } finally {
     btn.disabled = false;
-    btn.textContent = '▶️ Run Now';
+    btn.textContent = '🚀 Run Now';
   }
 }
 
-async function testScheduleReport() {
+async function testScheduleRuleReport() {
+  const id = document.getElementById('sch-edit-id').value;
+  if (!id) {
+    alert('Please save the rule first before testing the report email.');
+    return;
+  }
   const msg = document.getElementById('sch-msg');
   msg.textContent = '⏳ Sending test report...';
   msg.style.color = '#64748b';
+  
   try {
-    const r = await (await fetch('/api/schedule/test-report', {method:'POST'})).json();
-    msg.textContent = r.success ? '✅ Test report sent! Check your email.' : '❌ ' + r.error;
-    msg.style.color = r.success ? '#34d399' : '#f87171';
+    const res = await fetch(`/api/schedule/${id}/test-report`, { method: 'POST' });
+    const r = await res.json();
+    if (r.success) {
+      msg.textContent = '✅ Test report sent! Check your email.';
+      msg.style.color = '#34d399';
+    } else {
+      msg.textContent = '❌ ' + (r.error || 'Failed to send test report');
+      msg.style.color = '#f87171';
+    }
+  } catch (e) {
+    msg.textContent = '❌ ' + e.message;
+    msg.style.color = '#f87171';
+  }
+}
+
+// ── Email Auto Schedule Modal ─────────────────────────────────────
+let _emailSchedules = [];
+let _emailCategoriesList = [];
+let _emailSelectedCategories = [];
+
+async function openEmailSchedule() {
+  document.getElementById('email-schedule-modal').style.display = 'flex';
+  await loadEmailScheduleData();
+  showEmailScheduleList();
+}
+
+function closeEmailSchedule() {
+  document.getElementById('email-schedule-modal').style.display = 'none';
+}
+
+async function loadEmailScheduleData() {
+  const container = document.getElementById('esch-rules-container');
+  container.innerHTML = '<div style="text-align:center;padding:20px;color:#64748b">Loading schedules...</div>';
+  try {
+    const res = await fetch('/api/email-schedule');
+    const data = await res.json();
+    _emailSchedules = data.list || [];
+    _emailCategoriesList = data.categories_list || [];
+    
+    // Calculate cumulative progress
+    const active = _emailSchedules.some(s => s.enabled);
+    const todaySent = _emailSchedules.reduce((sum, s) => sum + (s.today_sent || 0), 0);
+    const totalLimit = _emailSchedules.reduce((sum, s) => sum + (s.daily_limit || 0), 0);
+    const totalSent = _emailSchedules.reduce((sum, s) => sum + (s.total_sent || 0), 0);
+    
+    let maxLastRun = null;
+    _emailSchedules.forEach(s => {
+      if (s.last_run) {
+        const d = new Date(s.last_run);
+        if (!maxLastRun || d > maxLastRun) maxLastRun = d;
+      }
+    });
+    
+    // Update status panel
+    document.getElementById('esch-today-sent').textContent = todaySent;
+    document.getElementById('esch-today-limit').textContent = totalLimit;
+    document.getElementById('esch-total-sent').textContent = totalSent;
+    
+    const lastRunEl = document.getElementById('esch-last-run');
+    if (maxLastRun) {
+      lastRunEl.textContent = '⏰ Last run: ' + maxLastRun.toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'});
+    } else {
+      lastRunEl.textContent = 'Not run yet';
+    }
+    
+    const badge = document.getElementById('esch-enabled-badge');
+    badge.textContent = active ? '🟢 ACTIVE' : '⚪ PAUSED';
+    badge.style.background = active ? '#14532d' : '#1e3a5f';
+    badge.style.color = active ? '#86efac' : '#60a5fa';
+    
+    renderEmailScheduleRules();
   } catch(e) {
+    console.error('Error loading email schedule data:', e);
+    container.innerHTML = `<div style="text-align:center;padding:20px;color:#f87171">❌ Error: ${e.message}</div>`;
+  }
+}
+
+function renderEmailScheduleRules() {
+  const container = document.getElementById('esch-rules-container');
+  container.innerHTML = '';
+  if (!_emailSchedules.length) {
+    container.innerHTML = '<div style="text-align:center;padding:30px;color:#64748b;font-size:13px">No schedule rules found. Click "Add Schedule Rule" to create one.</div>';
+    return;
+  }
+  
+  _emailSchedules.forEach(s => {
+    const card = document.createElement('div');
+    card.style.cssText = `background:#1e293b;border:1px solid #334155;border-radius:12px;padding:16px;display:flex;justify-content:space-between;align-items:center;transition:all 0.2s ease;gap:15px`;
+    
+    card.onmouseover = () => { card.style.borderColor = '#2563eb'; card.style.transform = 'translateY(-1px)'; };
+    card.onmouseout = () => { card.style.borderColor = '#334155'; card.style.transform = 'none'; };
+    
+    const hoursFormatted = (s.send_hours || []).map(h => {
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      const disp = h % 12 || 12;
+      return `${disp}:00 ${ampm}`;
+    }).join(', ') || 'None';
+    
+    const catsStr = (s.categories && s.categories.length) ? s.categories.join(', ') : 'All Categories';
+    const citiesStr = (s.cities && s.cities.length) ? s.cities.join(', ') : 'All Cities';
+    
+    const infoCol = document.createElement('div');
+    infoCol.style.cssText = `flex:1;display:flex;flex-direction:column;gap:4px`;
+    infoCol.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-weight:700;color:#f8fafc;font-size:14px">${s.name || 'Unnamed Schedule'}</span>
+        <span style="font-size:10px;padding:2px 8px;border-radius:12px;font-weight:600;background:${s.enabled ? '#1e3a5f' : '#374151'};color:${s.enabled ? '#60a5fa' : '#9ca3af'}">
+          ${s.enabled ? 'ACTIVE' : 'PAUSED'}
+        </span>
+      </div>
+      <div style="font-size:11px;color:#94a3b8">
+        🏷️ <b>Categories:</b> ${catsStr} &bull; 🌆 <b>Cities:</b> ${citiesStr}
+      </div>
+      <div style="font-size:11px;color:#94a3b8">
+        🕐 <b>Send Hours (IST):</b> ${hoursFormatted}
+      </div>
+      <div style="font-size:11px;color:#64748b;margin-top:2px">
+        📈 Sent today: <span style="color:#34d399;font-weight:600">${s.today_sent || 0}</span> / <span style="color:#60a5fa;font-weight:600">${s.daily_limit || 60}</span>
+        ${s.last_run ? `&nbsp;&bull;&nbsp; Last run: ${new Date(s.last_run).toLocaleDateString('en-IN')} ${new Date(s.last_run).toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'})}` : ''}
+      </div>
+    `;
+    
+    const actionsCol = document.createElement('div');
+    actionsCol.style.cssText = `display:flex;gap:8px;align-items:center`;
+    
+    const editBtn = document.createElement('button');
+    editBtn.className = 'btn b-blue';
+    editBtn.style.cssText = `padding:6px 12px;font-size:12px`;
+    editBtn.textContent = '✏️ Edit';
+    editBtn.onclick = () => editEmailScheduleRuleForm(s._id);
+    
+    const runNowBtn = document.createElement('button');
+    runNowBtn.className = 'btn b-green';
+    runNowBtn.style.cssText = `padding:6px 12px;font-size:12px`;
+    runNowBtn.textContent = '🚀 Run Now';
+    runNowBtn.onclick = async () => {
+      runNowBtn.disabled = true;
+      runNowBtn.textContent = '⏳ Starting...';
+      try {
+        const res = await (await fetch(`/api/email-schedule/${s._id}/run-now`, { method: 'POST' })).json();
+        if (res.success) {
+          alert('✅ Success: ' + res.message);
+          closeEmailSchedule();
+          connectSSE();
+        } else {
+          alert('⚠️ Warning: ' + (res.error || 'Could not start'));
+        }
+      } catch (err) {
+        alert('❌ Error: ' + err.message);
+      } finally {
+        runNowBtn.disabled = false;
+        runNowBtn.textContent = '🚀 Run Now';
+      }
+    };
+    
+    actionsCol.appendChild(editBtn);
+    actionsCol.appendChild(runNowBtn);
+    
+    card.appendChild(infoCol);
+    card.appendChild(actionsCol);
+    container.appendChild(card);
+  });
+}
+
+function openNewEmailScheduleForm() {
+  document.getElementById('esch-list-view').style.display = 'none';
+  document.getElementById('esch-form-view').style.display = 'block';
+  document.getElementById('esch-form-title').textContent = '➕ Create New Email Schedule Rule';
+  document.getElementById('esch-edit-id').value = '';
+  
+  document.getElementById('esch-name').value = '';
+  document.getElementById('esch-enabled').checked = true;
+  updateEmailEnableVisual();
+  
+  _emailSelectedCategories = [];
+  renderEmailFormCategories();
+  
+  document.getElementById('esch-cities').value = '';
+  
+  document.getElementById('esch-limit-slider').value = 60;
+  document.getElementById('esch-limit-num').textContent = '60';
+  
+  const hourCheckboxes = document.querySelectorAll('input[name="esch-hour"]');
+  hourCheckboxes.forEach(cb => {
+    const val = parseInt(cb.value);
+    cb.checked = (val === 10 || val === 16);
+  });
+  
+  document.getElementById('esch-skip-sent').checked = true;
+  document.getElementById('esch-allow-resend').checked = false;
+  document.getElementById('esch-report-email').value = '';
+  
+  document.getElementById('esch-delete-btn').style.display = 'none';
+  document.getElementById('esch-msg').textContent = '';
+  triggerEmailSchedulePreview();
+}
+
+function editEmailScheduleRuleForm(id) {
+  const s = _emailSchedules.find(item => item._id === id);
+  if (!s) return;
+  
+  document.getElementById('esch-list-view').style.display = 'none';
+  document.getElementById('esch-form-view').style.display = 'block';
+  document.getElementById('esch-form-title').textContent = '✏️ Edit Email Schedule Rule';
+  document.getElementById('esch-edit-id').value = id;
+  
+  document.getElementById('esch-name').value = s.name || '';
+  document.getElementById('esch-enabled').checked = !!s.enabled;
+  updateEmailEnableVisual();
+  
+  _emailSelectedCategories = [...(s.categories || [])];
+  renderEmailFormCategories();
+  
+  document.getElementById('esch-cities').value = (s.cities || []).join(', ');
+  
+  document.getElementById('esch-limit-slider').value = s.daily_limit || 60;
+  document.getElementById('esch-limit-num').textContent = s.daily_limit || 60;
+  
+  const hours = s.send_hours || [10, 16];
+  const hourCheckboxes = document.querySelectorAll('input[name="esch-hour"]');
+  hourCheckboxes.forEach(cb => {
+    cb.checked = hours.includes(parseInt(cb.value));
+  });
+  
+  document.getElementById('esch-skip-sent').checked = s.skip_sent !== false;
+  document.getElementById('esch-allow-resend').checked = !!s.allow_resend;
+  document.getElementById('esch-report-email').value = s.report_email || '';
+  
+  document.getElementById('esch-delete-btn').style.display = 'inline-block';
+  document.getElementById('esch-msg').textContent = '';
+  triggerEmailSchedulePreview();
+}
+
+function renderEmailFormCategories() {
+  const container = document.getElementById('esch-cat-list');
+  container.innerHTML = '';
+  if (!_emailCategoriesList.length) {
+    container.innerHTML = '<div style="color:#64748b;font-size:11px">No categories available.</div>';
+    return;
+  }
+  _emailCategoriesList.forEach(cat => {
+    const selected = _emailSelectedCategories.includes(cat);
+    const chip = document.createElement('span');
+    chip.textContent = cat;
+    chip.style.cssText = `cursor:pointer;padding:4px 10px;border-radius:20px;font-size:11px;border:1px solid ${selected?'#2563eb':'#334155'};background:${selected?'#2563eb':'transparent'};color:${selected?'#fff':'#94a3b8'};transition:.2s`;
+    chip.onclick = () => {
+      const idx = _emailSelectedCategories.indexOf(cat);
+      if (idx === -1) {
+        _emailSelectedCategories.push(cat);
+        chip.style.background = '#2563eb';
+        chip.style.color = '#fff';
+        chip.style.borderColor = '#2563eb';
+      } else {
+        _emailSelectedCategories.splice(idx, 1);
+        chip.style.background = 'transparent';
+        chip.style.color = '#94a3b8';
+        chip.style.borderColor = '#334155';
+      }
+      triggerEmailSchedulePreview();
+    };
+    container.appendChild(chip);
+  });
+}
+
+function showEmailScheduleList() {
+  document.getElementById('esch-form-view').style.display = 'none';
+  document.getElementById('esch-list-view').style.display = 'block';
+  loadEmailScheduleData();
+}
+
+function updateEmailEnableVisual() {
+  const on = document.getElementById('esch-enabled').checked;
+  document.getElementById('esch-toggle-bg').style.background    = on ? '#2563eb' : '#334155';
+  document.getElementById('esch-toggle-knob').style.left        = on ? '25px' : '3px';
+}
+
+let _emailPreviewTimeout = null;
+function triggerEmailSchedulePreview() {
+  if (_emailPreviewTimeout) clearTimeout(_emailPreviewTimeout);
+  _emailPreviewTimeout = setTimeout(fetchEmailSchedulePreview, 250);
+}
+
+async function fetchEmailSchedulePreview() {
+  const previewList = document.getElementById('esch-preview-list');
+  const previewCount = document.getElementById('esch-preview-count');
+  
+  const categories = _emailSelectedCategories;
+  const citiesStr = document.getElementById('esch-cities').value;
+  const cities = citiesStr ? citiesStr.split(',').map(c => c.trim()).filter(Boolean) : [];
+  const skip_sent = document.getElementById('esch-skip-sent').checked;
+  const allow_resend = document.getElementById('esch-allow-resend').checked;
+  const daily_limit = parseInt(document.getElementById('esch-limit-slider').value) || 60;
+  
+  const hourCheckboxes = document.querySelectorAll('input[name="esch-hour"]:checked');
+  const send_hours = Array.from(hourCheckboxes).map(cb => parseInt(cb.value));
+  
+  try {
+    const res = await fetch('/api/email-schedule/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ categories, cities, skip_sent, allow_resend, daily_limit, send_hours })
+    });
+    const data = await res.json();
+    if (data.success) {
+      previewCount.textContent = `${data.count} matching`;
+      previewList.innerHTML = '';
+      if (!data.leads || !data.leads.length) {
+        previewList.innerHTML = '<div style="color:#64748b;font-size:11px;text-align:center;padding:10px">No matching leads. Adjust filters to load preview.</div>';
+        return;
+      }
+      data.leads.forEach(lead => {
+        const item = document.createElement('div');
+        item.style.cssText = `display:flex;justify-content:space-between;padding:6px 10px;border-bottom:1px solid #1e293b;font-size:11px;color:#cbd5e1`;
+        
+        const info = document.createElement('div');
+        info.innerHTML = `<b>${lead.name || 'No Name'}</b> <span style="color:#64748b">(${lead.email})</span>`;
+        
+        const meta = document.createElement('div');
+        meta.style.cssText = `display:flex;gap:6px;align-items:center`;
+        
+        if (lead.category) {
+          meta.innerHTML += `<span style="background:#334155;color:#94a3b8;padding:1px 6px;border-radius:4px;font-size:9px">${lead.category}</span>`;
+        }
+        if (lead.city) {
+          meta.innerHTML += `<span style="background:#1e3a5f;color:#60a5fa;padding:1px 6px;border-radius:4px;font-size:9px">${lead.city}</span>`;
+        }
+        if (lead.email_sent) {
+          meta.innerHTML += `<span style="color:#60a5fa;font-size:9px">✉ Sent</span>`;
+        }
+        
+        item.appendChild(info);
+        item.appendChild(meta);
+        previewList.appendChild(item);
+      });
+    } else {
+      previewCount.textContent = '0 matching';
+      previewList.innerHTML = `<div style="color:#f87171;font-size:11px;text-align:center;padding:10px">Preview error: ${data.error}</div>`;
+    }
+  } catch (e) {
+    previewCount.textContent = '0 matching';
+    previewList.innerHTML = `<div style="color:#f87171;font-size:11px;text-align:center;padding:10px">Preview error: ${e.message}</div>`;
+  }
+}
+
+async function saveEmailScheduleRule() {
+  const id = document.getElementById('esch-edit-id').value;
+  const msg = document.getElementById('esch-msg');
+  msg.textContent = '⏳ Saving rule...';
+  msg.style.color = '#64748b';
+  
+  const name = document.getElementById('esch-name').value.trim() || 'New Email Schedule';
+  const enabled = document.getElementById('esch-enabled').checked;
+  const categories = _emailSelectedCategories;
+  const citiesStr = document.getElementById('esch-cities').value;
+  const cities = citiesStr ? citiesStr.split(',').map(c => c.trim()).filter(Boolean) : [];
+  const daily_limit = parseInt(document.getElementById('esch-limit-slider').value) || 60;
+  
+  const hourCheckboxes = document.querySelectorAll('input[name="esch-hour"]:checked');
+  const send_hours = Array.from(hourCheckboxes).map(cb => parseInt(cb.value));
+  
+  const skip_sent = document.getElementById('esch-skip-sent').checked;
+  const allow_resend = document.getElementById('esch-allow-resend').checked;
+  const report_email = document.getElementById('esch-report-email').value.trim();
+  
+  if (!send_hours.length) {
+    msg.textContent = '⚠️ Please select at least one Send Time checkbox.';
+    msg.style.color = '#fbbf24';
+    return;
+  }
+  
+  const body = { name, enabled, categories, cities, daily_limit, send_hours, skip_sent, allow_resend, report_email };
+  const url = id ? `/api/email-schedule/${id}` : '/api/email-schedule';
+  const method = id ? 'PUT' : 'POST';
+  
+  try {
+    const res = await fetch(url, {
+      method: method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const r = await res.json();
+    if (r.success) {
+      msg.textContent = id ? '✅ Rule updated successfully!' : '✅ New rule created successfully!';
+      msg.style.color = '#34d399';
+      setTimeout(() => {
+        showEmailScheduleList();
+      }, 1000);
+    } else {
+      msg.textContent = '❌ ' + (r.error || 'Failed to save rule');
+      msg.style.color = '#f87171';
+    }
+  } catch (e) {
+    msg.textContent = '❌ ' + e.message;
+    msg.style.color = '#f87171';
+  }
+}
+
+async function deleteEmailScheduleRule() {
+  const id = document.getElementById('esch-edit-id').value;
+  if (!id) return;
+  if (!confirm('Are you sure you want to delete this email schedule rule?')) return;
+  
+  const msg = document.getElementById('esch-msg');
+  msg.textContent = '⏳ Deleting...';
+  msg.style.color = '#64748b';
+  
+  try {
+    const res = await fetch(`/api/email-schedule/${id}`, { method: 'DELETE' });
+    const r = await res.json();
+    if (r.success) {
+      msg.textContent = '🗑️ Rule deleted successfully!';
+      msg.style.color = '#34d399';
+      setTimeout(() => {
+        showEmailScheduleList();
+      }, 1000);
+    } else {
+      msg.textContent = '❌ ' + (r.error || 'Delete failed');
+      msg.style.color = '#f87171';
+    }
+  } catch (e) {
+    msg.textContent = '❌ ' + e.message;
+    msg.style.color = '#f87171';
+  }
+}
+
+async function runEmailScheduleRuleNow() {
+  const id = document.getElementById('esch-edit-id').value;
+  const btn = document.getElementById('esch-run-btn');
+  const msg = document.getElementById('esch-msg');
+  
+  btn.disabled = true;
+  btn.textContent = '⏳ Starting...';
+  msg.textContent = '⏳ Saving rule and executing...';
+  msg.style.color = '#64748b';
+  
+  const name = document.getElementById('esch-name').value.trim() || 'New Email Schedule';
+  const enabled = document.getElementById('esch-enabled').checked;
+  const categories = _emailSelectedCategories;
+  const citiesStr = document.getElementById('esch-cities').value;
+  const cities = citiesStr ? citiesStr.split(',').map(c => c.trim()).filter(Boolean) : [];
+  const daily_limit = parseInt(document.getElementById('esch-limit-slider').value) || 60;
+  
+  const hourCheckboxes = document.querySelectorAll('input[name="esch-hour"]:checked');
+  const send_hours = Array.from(hourCheckboxes).map(cb => parseInt(cb.value));
+  
+  const skip_sent = document.getElementById('esch-skip-sent').checked;
+  const allow_resend = document.getElementById('esch-allow-resend').checked;
+  const report_email = document.getElementById('esch-report-email').value.trim();
+  
+  if (!send_hours.length) {
+    msg.textContent = '⚠️ Please select at least one Send Time checkbox.';
+    msg.style.color = '#fbbf24';
+    btn.disabled = false;
+    btn.textContent = '🚀 Run Now';
+    return;
+  }
+  
+  const body = { name, enabled, categories, cities, daily_limit, send_hours, skip_sent, allow_resend, report_email };
+  const saveUrl = id ? `/api/email-schedule/${id}` : '/api/email-schedule';
+  const saveMethod = id ? 'PUT' : 'POST';
+  
+  try {
+    const saveRes = await fetch(saveUrl, {
+      method: saveMethod,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const saveR = await saveRes.json();
+    if (!saveR.success) {
+      msg.textContent = '❌ Failed to save rule before running: ' + (saveR.error || 'Unknown error');
+      msg.style.color = '#f87171';
+      btn.disabled = false;
+      btn.textContent = '🚀 Run Now';
+      return;
+    }
+    
+    const targetId = id || (saveR.schedule && saveR.schedule._id);
+    if (!targetId) {
+      msg.textContent = '❌ Error retrieving schedule ID.';
+      msg.style.color = '#f87171';
+      btn.disabled = false;
+      btn.textContent = '🚀 Run Now';
+      return;
+    }
+    
+    const runRes = await fetch(`/api/email-schedule/${targetId}/run-now`, { method: 'POST' });
+    const runR = await runRes.json();
+    if (runR.success) {
+      msg.textContent = '✅ ' + runR.message;
+      msg.style.color = '#34d399';
+      setTimeout(() => {
+        closeEmailSchedule();
+        connectSSE();
+      }, 1500);
+    } else {
+      msg.textContent = '⚠️ ' + (runR.error || 'Could not start');
+      msg.style.color = '#fbbf24';
+    }
+  } catch (e) {
+    msg.textContent = '❌ ' + e.message;
+    msg.style.color = '#f87171';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🚀 Run Now';
+  }
+}
+
+async function testEmailScheduleRuleReport() {
+  const id = document.getElementById('esch-edit-id').value;
+  if (!id) {
+    alert('Please save the rule first before testing the report email.');
+    return;
+  }
+  const msg = document.getElementById('esch-msg');
+  msg.textContent = '⏳ Sending test report...';
+  msg.style.color = '#64748b';
+  
+  try {
+    const res = await fetch(`/api/email-schedule/${id}/test-report`, { method: 'POST' });
+    const r = await res.json();
+    if (r.success) {
+      msg.textContent = '✅ Test report sent! Check your email.';
+      msg.style.color = '#34d399';
+    } else {
+      msg.textContent = '❌ ' + (r.error || 'Failed to send test report');
+      msg.style.color = '#f87171';
+    }
+  } catch (e) {
     msg.textContent = '❌ ' + e.message;
     msg.style.color = '#f87171';
   }
@@ -1877,3 +2796,287 @@ async function clearLogs() {
   }
 }
 
+
+// ═══════════════════════════════════════════════════════════════
+// ── SMTP Email Accounts — Multi-Account Load Balancer ──────────
+// ═══════════════════════════════════════════════════════════════
+
+// Load and render all SMTP accounts
+async function loadSmtpAccounts() {
+  try {
+    const r = await fetch('/api/smtp-accounts');
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Failed to load accounts');
+    renderSmtpAccounts(d.accounts || []);
+    updateLbStatusBar(d.summary || {});
+  } catch(e) {
+    const list = document.getElementById('smtp-accounts-list');
+    if (list) list.innerHTML = `<div style="color:#f87171;font-size:12px;padding:12px">❌ ${e.message}</div>`;
+  }
+}
+
+// Update the load balancer status bar stats
+function updateLbStatusBar(summary) {
+  const dot = document.getElementById('lb-dot');
+  const txt = document.getElementById('lb-status-txt');
+  const activeEl = document.getElementById('lb-active-count');
+  const capEl    = document.getElementById('lb-capacity');
+  const sentEl   = document.getElementById('lb-sent-today');
+  const remEl    = document.getElementById('lb-remaining');
+  if (!dot) return;
+
+  const active = summary.active || 0;
+  const cap    = summary.totalCapacity || 0;
+  const sent   = summary.totalSentToday || 0;
+  const rem    = summary.remainingToday || 0;
+
+  dot.style.background = active > 0 ? '#34d399' : '#f87171';
+  dot.style.boxShadow  = active > 0 ? '0 0 8px #34d399' : '0 0 8px #f87171';
+  txt.textContent = active > 0
+    ? `Load Balancer ACTIVE — ${active} account${active > 1 ? 's' : ''} distributing emails`
+    : 'No active email accounts — add one below';
+
+  if (activeEl) activeEl.textContent = active;
+  if (capEl)    capEl.textContent    = cap;
+  if (sentEl)   sentEl.textContent   = sent;
+  if (remEl)    remEl.textContent    = rem;
+}
+
+// Render account cards
+function renderSmtpAccounts(accounts) {
+  const list = document.getElementById('smtp-accounts-list');
+  if (!list) return;
+
+  if (!accounts.length) {
+    list.innerHTML = `
+      <div style="text-align:center;padding:32px 20px;border:2px dashed #1e293b;border-radius:12px">
+        <div style="font-size:36px;margin-bottom:10px">📭</div>
+        <div style="font-size:14px;color:#94a3b8;font-weight:600;margin-bottom:6px">No Email Accounts Yet</div>
+        <div style="font-size:12px;color:#64748b;margin-bottom:16px">Add your first Gmail account to start sending emails via the load balancer</div>
+        <button class="btn b-green" onclick="openAddSmtpModal()" style="padding:9px 20px;font-size:12px">➕ Add First Account</button>
+      </div>`;
+    return;
+  }
+
+  list.innerHTML = accounts.map(a => {
+    const pct   = a.daily_limit > 0 ? Math.min(100, Math.round((a.daily_sent / a.daily_limit) * 100)) : 0;
+    const color = pct >= 90 ? '#f87171' : pct >= 70 ? '#fbbf24' : '#34d399';
+    const host  = (a.smtp_host || 'smtp.gmail.com').replace('smtp.', '');
+    const lastUsed = a.last_used_at
+      ? new Date(a.last_used_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'short', timeStyle: 'short' })
+      : 'Never used';
+
+    return `
+    <div class="smtp-acct-card ${a.isActive ? 'active-card' : 'inactive-card'}" id="smtp-card-${a._id}">
+      <div class="smtp-acct-avatar">📧</div>
+
+      <div class="smtp-acct-info">
+        <div class="smtp-acct-label">${esc(a.label || 'Gmail Account')}</div>
+        <div class="smtp-acct-email">${esc(a.smtp_user)}</div>
+        <div class="smtp-acct-meta">
+          ${host} · Port ${a.smtp_port} · ${a.smtp_secure ? 'SSL' : 'STARTTLS'} · From: "${esc(a.smtp_from || '')}"
+          &nbsp;·&nbsp; Last used: ${lastUsed}
+        </div>
+      </div>
+
+      <!-- Daily usage bar -->
+      <div class="smtp-usage-bar-wrap">
+        <div class="smtp-usage-label">
+          <span style="color:${color};font-weight:700">${a.daily_sent}</span>
+          <span>/ ${a.daily_limit}/day</span>
+        </div>
+        <div class="smtp-usage-track">
+          <div class="smtp-usage-fill" style="width:${pct}%;background:${color}"></div>
+        </div>
+        <div style="font-size:9px;color:#64748b;margin-top:3px;text-align:right">${pct}% used · ${a.daily_limit - a.daily_sent} remaining</div>
+      </div>
+
+      <!-- Actions -->
+      <div class="smtp-acct-actions">
+        <!-- Active toggle -->
+        <label class="smtp-toggle-label" title="Enable/disable this account in the load balancer">
+          <input type="checkbox" ${a.isActive ? 'checked' : ''}
+            onchange="toggleSmtpAccount('${a._id}', this.checked)"
+            style="accent-color:#34d399;width:14px;height:14px">
+          <span>${a.isActive ? '<span style="color:#34d399">Active</span>' : '<span style="color:#64748b">Paused</span>'}</span>
+        </label>
+
+        <!-- Test button -->
+        <button class="btn b-blue" style="padding:5px 10px;font-size:10px;min-width:60px"
+          onclick="testExistingSmtpAccount('${a._id}', this)">
+          🔌 Test
+        </button>
+
+        <!-- Delete button -->
+        <button class="btn b-red" style="padding:5px 10px;font-size:10px;background:#7f1d1d;color:#fca5a5;border:1px solid #991b1b"
+          onclick="deleteSmtpAccount('${a._id}', '${esc(a.smtp_user)}')"
+          title="Remove this account">
+          🗑
+        </button>
+      </div>
+
+      <!-- Per-account test result inline -->
+      <div id="test-result-${a._id}" style="width:100%;font-size:11px;min-height:0"></div>
+    </div>`;
+  }).join('');
+}
+
+// ── Open / Close Add Modal ──────────────────────────────────
+function openAddSmtpModal() {
+  document.getElementById('add-smtp-label').value   = '';
+  document.getElementById('add-smtp-user').value    = '';
+  document.getElementById('add-smtp-pass').value    = '';
+  document.getElementById('add-smtp-from').value    = 'Digital Growth Team';
+  document.getElementById('add-smtp-host').value    = 'smtp.gmail.com';
+  document.getElementById('add-smtp-port').value    = '587';
+  document.getElementById('add-smtp-secure').value  = 'false';
+  document.getElementById('add-smtp-limit').value   = '400';
+  document.getElementById('add-smtp-status').innerHTML = '';
+  document.getElementById('add-smtp-modal').style.display = 'flex';
+}
+
+function closeAddSmtpModal() {
+  document.getElementById('add-smtp-modal').style.display = 'none';
+}
+
+// Close modal on backdrop click
+document.getElementById('add-smtp-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeAddSmtpModal();
+});
+
+// ── Test new account inline (before saving) ────────────────
+async function testNewSmtpAccount() {
+  const statusEl  = document.getElementById('add-smtp-status');
+  const testBtn   = document.getElementById('add-smtp-test-btn');
+  const user = document.getElementById('add-smtp-user').value.trim();
+  const pass = document.getElementById('add-smtp-pass').value.trim();
+  const host = document.getElementById('add-smtp-host').value.trim();
+  const port = document.getElementById('add-smtp-port').value.trim();
+  const secure = document.getElementById('add-smtp-secure').value;
+
+  if (!user) { statusEl.innerHTML = '<span style="color:#f87171">❌ Enter your Gmail address.</span>'; return; }
+  if (!pass) { statusEl.innerHTML = '<span style="color:#f87171">❌ Enter your 16-character App Password.</span>'; return; }
+
+  testBtn.disabled = true;
+  testBtn.textContent = '⏳ Testing...';
+  statusEl.innerHTML = '<span style="color:#60a5fa">⏳ Connecting to Gmail SMTP...</span>';
+
+  try {
+    const r = await fetch('/api/smtp-accounts/test-inline', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ smtp_host: host, smtp_port: parseInt(port), smtp_secure: secure === 'true', smtp_user: user, smtp_pass: pass })
+    });
+    const d = await r.json();
+    if (d.success) {
+      statusEl.innerHTML = `<span style="color:#34d399">✅ ${d.message || 'Connection successful!'}</span>`;
+    } else {
+      statusEl.innerHTML = `<span style="color:#f87171">❌ ${d.error}</span>`;
+    }
+  } catch(e) {
+    statusEl.innerHTML = `<span style="color:#f87171">❌ Network error: ${e.message}</span>`;
+  } finally {
+    testBtn.disabled = false;
+    testBtn.textContent = '🔌 Test Connection';
+  }
+}
+
+// ── Save new account ────────────────────────────────────────
+async function saveNewSmtpAccount() {
+  const statusEl = document.getElementById('add-smtp-status');
+  const saveBtn  = document.getElementById('add-smtp-save-btn');
+
+  const smtp_user  = document.getElementById('add-smtp-user').value.trim();
+  const smtp_pass  = document.getElementById('add-smtp-pass').value.trim();
+  const label      = document.getElementById('add-smtp-label').value.trim() || 'Gmail Account';
+  const smtp_from  = document.getElementById('add-smtp-from').value.trim() || 'Digital Growth Team';
+  const smtp_host  = document.getElementById('add-smtp-host').value.trim();
+  const smtp_port  = parseInt(document.getElementById('add-smtp-port').value) || 587;
+  const smtp_secure= document.getElementById('add-smtp-secure').value === 'true';
+  const daily_limit= parseInt(document.getElementById('add-smtp-limit').value) || 400;
+
+  if (!smtp_user) { statusEl.innerHTML = '<span style="color:#f87171">❌ Gmail address is required.</span>'; return; }
+  if (!smtp_pass) { statusEl.innerHTML = '<span style="color:#f87171">❌ App Password is required.</span>'; return; }
+
+  saveBtn.disabled = true;
+  saveBtn.textContent = '⏳ Saving...';
+
+  try {
+    const r = await fetch('/api/smtp-accounts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label, smtp_host, smtp_port, smtp_secure, smtp_user, smtp_pass, smtp_from, daily_limit })
+    });
+    const d = await r.json();
+    if (d.success) {
+      statusEl.innerHTML = '<span style="color:#34d399">✅ Account saved! Refreshing...</span>';
+      setTimeout(() => {
+        closeAddSmtpModal();
+        loadSmtpAccounts();
+      }, 800);
+    } else {
+      statusEl.innerHTML = `<span style="color:#f87171">❌ ${d.error}</span>`;
+    }
+  } catch(e) {
+    statusEl.innerHTML = `<span style="color:#f87171">❌ ${e.message}</span>`;
+  } finally {
+    saveBtn.disabled = false;
+    saveBtn.textContent = '💾 Save Account';
+  }
+}
+
+// ── Test existing (saved) account ────────────────────────────
+async function testExistingSmtpAccount(id, btn) {
+  const resultEl = document.getElementById('test-result-' + id);
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳';
+  if (resultEl) resultEl.innerHTML = '<span style="color:#60a5fa">⏳ Testing...</span>';
+
+  try {
+    const r = await fetch(`/api/smtp-accounts/${id}/test`, { method: 'POST' });
+    const d = await r.json();
+    if (resultEl) {
+      resultEl.innerHTML = d.success
+        ? `<span style="color:#34d399">✅ ${d.message}</span>`
+        : `<span style="color:#f87171">❌ ${d.error}</span>`;
+      setTimeout(() => { if (resultEl) resultEl.innerHTML = ''; }, 6000);
+    }
+  } catch(e) {
+    if (resultEl) resultEl.innerHTML = `<span style="color:#f87171">❌ ${e.message}</span>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+// ── Toggle active / paused ────────────────────────────────────
+async function toggleSmtpAccount(id, isActive) {
+  try {
+    await fetch(`/api/smtp-accounts/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isActive })
+    });
+    // Refresh cards without full page reload
+    await loadSmtpAccounts();
+  } catch(e) {
+    alert('Error updating account: ' + e.message);
+  }
+}
+
+// ── Delete account ────────────────────────────────────────────
+async function deleteSmtpAccount(id, email) {
+  if (!confirm(`🗑 Remove email account "${email}" from the load balancer?\n\nThis cannot be undone.`)) return;
+  try {
+    const r = await fetch(`/api/smtp-accounts/${id}`, { method: 'DELETE' });
+    const d = await r.json();
+    if (d.success) {
+      await loadSmtpAccounts();
+    } else {
+      alert('❌ Delete failed: ' + (d.error || 'Unknown error'));
+    }
+  } catch(e) {
+    alert('❌ ' + e.message);
+  }
+}

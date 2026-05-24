@@ -223,6 +223,7 @@ async function postToSocial(generatedPosts, settings) {
     // Save to Database
     const SocialPost = getSocialPost();
     const doc = await SocialPost.create({
+        userId: settings.userId || 'admin',
         topic: settings.topic || 'Auto Post',
         title: settings.title || 'Scheduled Update',
         website_url: settings.website_url,

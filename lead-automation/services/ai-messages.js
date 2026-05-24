@@ -87,7 +87,7 @@ Example style: "I can get [business name] to appear on the first page of Google 
 
 // ── Build Initial WhatsApp Message ───────────────────────────
 async function buildInitialWA(lead) {
-    const { wa_template } = getTemplates();
+    const { wa_template } = await getTemplates(lead?.userId);
     const name     = cleanName(lead.name) || 'your business';
     const hasWeb   = !!(lead.website && !['facebook','instagram','whatsapp','wa.me','youtube'].some(s => (lead.website || '').includes(s)));
     const city     = lead.city || 'India';
@@ -96,25 +96,24 @@ async function buildInitialWA(lead) {
 
     const specificInsight = buildSpecificInsight(name, hasWeb, city, category, lead.rating, lead.reviews);
 
-    // ── Pick a random style for this message ──────────────────
+    // ── Pick a random style for fallback/default use ──────────
     const style = getRandom(WA_STYLES);
 
     if (aiModel) {
         try {
             let prompt;
+            let logStyle = 'TEMPLATE';
 
             if (wa_template && wa_template.trim()) {
                 const cleanedWa = cleanTemplate(wa_template, name, city, category, specificInsight);
 
-                prompt = `You are an expert WhatsApp sales copywriter for Indian businesses. Personalise this template using the "${style.name}" style.
+                prompt = `You are an expert WhatsApp sales copywriter. Personalise the user's template below for the target business.
+Use the template below as your structure and tone, but rewrite and personalise it so it feels specific, natural, and highly engaging for this business.
 
 USER'S TEMPLATE:
 """
 ${cleanedWa}
 """
-
-STYLE TO USE — ${style.name}:
-${style.desc}
 
 BUSINESS DETAILS:
 - Business Name: "${name}"
@@ -122,19 +121,20 @@ BUSINESS DETAILS:
 - City: ${city}
 - Has Own Website: ${hasWeb ? 'Yes' : 'No — losing online customers daily'}
 - Google Rating: ${rating || 'Not listed'}
-- Key Insight: ${specificInsight}
+- Key Insight to weave in naturally: ${specificInsight}
 
-STRICT RULES:
-1. Replace ALL remaining placeholders with real values from the business details above.
-2. Apply the ${style.name} style naturally — don't just copy the template word-for-word.
-3. Keep it SHORT — max 4 lines. WhatsApp messages must be readable in 10 seconds.
-4. End with ONE easy yes/no question CTA.
-5. Use *bold* for 1-2 key phrases only.
-6. Sound like a REAL PERSON texting, not a marketing robot.
-7. NO generic openers like "Hope this finds you well".
-8. Output ONLY the final message. No explanation, no quotes.`;
+STRICT RULES TO ENSURE CUSTOMER READS AND REPLIES:
+1. Use the template structure, tone, and offer as your core guide. Do NOT change the core message or offer.
+2. Naturally weave in the Key Insight or details from the business details (like Google rating, city, etc.) if appropriate.
+3. Keep it VERY SHORT — max 4-5 lines. WhatsApp messages must be readable in 5 seconds on a mobile screen.
+4. Resolve/replace all placeholders with actual details.
+5. Sound like a REAL PERSON sending a direct, 1-on-1 WhatsApp text, not a marketing robot or bulk automation.
+6. End with ONE simple, direct CTA/question (like the template has) that makes it easy for the customer to reply (e.g., "Would a quick 5-min call work this week?").
+7. Use *bold* for 1-2 key words only (e.g., *${name}*).
+8. NO conversational filler, no subject line, no quotes. Output ONLY the final WhatsApp message body.`;
 
             } else {
+                logStyle = style.name;
                 const problemLine = !hasWeb
                     ? `no website — customers searching "${category} in ${city}" on Google can't find them`
                     : `website exists but Google ranking is low — missing local search traffic`;
@@ -170,7 +170,7 @@ WRITE THE MESSAGE:
 
             const result = await aiModel.generateContent(prompt);
             const text   = result.response.text().replace(/\*\*/g, '*').trim();
-            console.log(`  ✍️  Gemini [${style.name}] → ${name}`);
+            console.log(`  ✍️  Gemini [${logStyle}] → ${name}`);
             return text;
 
         } catch (e) {
@@ -243,7 +243,7 @@ Rules:
 
 // ── Build Initial Email ───────────────────────────────────────
 async function buildInitialEmail(lead) {
-    const { email_subject, email_body } = getTemplates();
+    const { email_subject, email_body } = await getTemplates(lead?.userId);
     const name     = cleanName(lead.name) || 'Business Owner';
     const hasWeb   = !!(lead.website && !['facebook','instagram','whatsapp','wa.me'].some(s => (lead.website || '').includes(s)));
     const city     = lead.city || '';

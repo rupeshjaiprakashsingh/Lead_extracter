@@ -8,7 +8,12 @@ const getLeadModel = () => mongoose.model('Lead');
 const { buildInitialWA, buildFollowupWA } = require('./services/ai-messages');
 const { saveContactQuiet, isAuthorized } = require('./services/google-contacts');
 
-const SESSION_DIR = path.join(__dirname, '.wa_session_data');
+function getSessionDir(companyId) {
+    if (companyId) {
+        return path.join(__dirname, 'wa_sessions', companyId.toString());
+    }
+    return path.join(__dirname, '.wa_session_data');
+}
 
 // ── Human-like random delays ─────────────────────────────────
 function getDelay(index) {
@@ -51,11 +56,12 @@ async function sendLocalWA(ids, isFollowup = false, options = {}) {
         const total = leads.length;
         emit({ type: 'start', total });
         
-        if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
+        const sessionDir = getSessionDir(options.companyId);
+        if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
         let browser;
         try {
-            browser = await chromium.launchPersistentContext(SESSION_DIR, {
+            browser = await chromium.launchPersistentContext(sessionDir, {
                 headless: false, // Must be visible for safety
                 args: ['--no-sandbox', '--start-maximized', '--disable-blink-features=AutomationControlled'],
                 viewport: null,
@@ -150,7 +156,7 @@ async function sendLocalWA(ids, isFollowup = false, options = {}) {
 
                 // Click Send Button
                 let sent_ok = false;
-                const sendSelectors = ['[data-testid="send"]', 'button[aria-label="Send"]', 'span[data-icon="send"]'];
+                const sendSelectors = ['[data-testid="send"]', 'button[aria-label="Send"]', 'span[data-icon="send"]', 'button:has(span[data-icon="send"])'];
                 for (const sel of sendSelectors) {
                     const el = page.locator(sel).first();
                     if (await el.isVisible({ timeout: 3000 }).catch(() => false)) {
@@ -161,8 +167,10 @@ async function sendLocalWA(ids, isFollowup = false, options = {}) {
                 }
                 
                 if (!sent_ok) {
-                    const inputBox = page.locator('[data-testid="conversation-compose-box-input"], [aria-label="Type a message"]').first();
+                    const inputBox = page.locator('[data-testid="conversation-compose-box-input"], [contenteditable="true"], [aria-label="Type a message"]').first();
                     if (await inputBox.isVisible({ timeout: 2000 }).catch(() => false)) {
+                        await inputBox.focus();
+                        await sleep(500);
                         await inputBox.press('Enter');
                         sent_ok = true;
                     }
@@ -238,11 +246,12 @@ async function sendLocalWA_Manual(ids, isFollowup = false, options = {}) {
         const total = leads.length;
         emit({ type: 'start', total });
 
-        if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
+        const sessionDir = getSessionDir(options.companyId);
+        if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
         let browser;
         try {
-            browser = await chromium.launchPersistentContext(SESSION_DIR, {
+            browser = await chromium.launchPersistentContext(sessionDir, {
                 headless: false,
                 args: ['--no-sandbox', '--start-maximized', '--disable-blink-features=AutomationControlled'],
                 viewport: null,
@@ -413,11 +422,12 @@ async function sendLocalWA_Draft(ids, isFollowup = false, options = {}) {
         const total = leads.length;
         emit({ type: 'start', total });
 
-        if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
+        const sessionDir = getSessionDir(options.companyId);
+        if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
         let browser;
         try {
-            browser = await chromium.launchPersistentContext(SESSION_DIR, {
+            browser = await chromium.launchPersistentContext(sessionDir, {
                 headless: false,
                 args: ['--no-sandbox', '--start-maximized', '--disable-blink-features=AutomationControlled'],
                 viewport: null,

@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Admin Panel — Lead CRM</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:'Inter',sans-serif;background:#020817;min-height:100vh;color:#e2e8f0}
+  .hdr{background:linear-gradient(135deg,#0f172a,#1e1b4b);border-bottom:1px solid #1e293b;padding:14px 24px;display:flex;align-items:center;gap:12px}
+  .hdr h1{font-size:16px;font-weight:700;color:#fff}
+  .hdr .back{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:6px 14px;color:#94a3b8;font-size:12px;cursor:pointer;text-decoration:none}
+  .container{max-width:1100px;margin:0 auto;padding:28px 20px}
+  .section{background:#0f172a;border:1px solid #1e293b;border-radius:16px;padding:24px;margin-bottom:24px}
+  h2{font-size:15px;font-weight:700;color:#e2e8f0;margin-bottom:18px;display:flex;align-items:center;gap:8px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:24px}
+  .stat{background:#1e293b;border-radius:12px;padding:18px;text-align:center}
+  .stat .n{font-size:32px;font-weight:800;color:#6366f1}
+  .stat .l{font-size:11px;color:#64748b;margin-top:4px;font-weight:500}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{padding:10px 14px;text-align:left;color:#94a3b8;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid #1e293b}
+  td{padding:10px 14px;border-bottom:1px solid #0f172a;vertical-align:middle}
+  tr:hover td{background:rgba(99,102,241,.04)}
+  .badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700}
+  .b-green{background:#14532d;color:#86efac} .b-red{background:#7f1d1d;color:#fca5a5}
+  .b-blue{background:#1e3a5f;color:#60a5fa} .b-purple{background:#3b0764;color:#d8b4fe}
+  .b-yellow{background:#713f12;color:#fde68a}
+  input,select{padding:9px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px;font-family:inherit;outline:none}
+  input:focus,select:focus{border-color:#6366f1}
+  .btn{padding:8px 16px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;transition:.15s}
+  .btn-purple{background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff}
+  .btn-red{background:#ef4444;color:#fff}
+  .btn-gray{background:#334155;color:#e2e8f0}
+  .form-row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+  .ig{display:flex;flex-direction:column;gap:5px}
+  .ig label{font-size:11px;color:#94a3b8;font-weight:600}
+  .msg{padding:8px 12px;border-radius:8px;font-size:12px;margin-top:12px;display:none}
+  .msg.ok{background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.3);color:#34d399}
+  .msg.err{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);color:#f87171}
+  .key-mono{font-family:monospace;background:#0f172a;padding:2px 6px;border-radius:4px;font-size:12px;color:#a78bfa;letter-spacing:.05em}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <span style="font-size:22px">⚙️</span>
+  <h1>Admin Panel — Lead CRM</h1>
+  <a href="/" class="back" style="margin-left:auto">← Back to CRM</a>
+  <a href="/auth/logout" class="back">🚪 Logout</a>
+</div>
+
+<div class="container">
+
+  <!-- Stats -->
+  <div class="grid" id="stats-grid">
+    <div class="stat"><div class="n" id="st-users">…</div><div class="l">Total Users</div></div>
+    <div class="stat"><div class="n" id="st-active">…</div><div class="l">Active Users</div></div>
+    <div class="stat"><div class="n" id="st-trial">…</div><div class="l">Trial Users</div></div>
+    <div class="stat"><div class="n" style="color:#34d399" id="st-pro">…</div><div class="l">Pro Users</div></div>
+  </div>
+
+  <!-- Create New User -->
+  <div class="section">
+    <h2>➕ Create New Customer Account</h2>
+    <div class="form-row">
+      <div class="ig">
+        <label>Company Name</label>
+        <input type="text" id="n-company" placeholder="e.g. ABC Traders" style="width:200px">
+      </div>
+      <div class="ig">
+        <label>Username</label>
+        <input type="text" id="n-user" placeholder="e.g. abc_traders" style="width:160px" oninput="this.value=this.value.toLowerCase().replace(/\s/g,'_')">
+      </div>
+      <div class="ig">
+        <label>Password</label>
+        <input type="text" id="n-pass" placeholder="auto-generate" style="width:160px">
+        <button onclick="genPass()" style="background:none;border:none;color:#6366f1;font-size:11px;cursor:pointer;text-align:left;padding:0">🎲 Generate</button>
+      </div>
+      <div class="ig">
+        <label>Plan</label>
+        <select id="n-plan" style="width:130px">
+          <option value="trial">Trial (7 days)</option>
+          <option value="starter">Starter</option>
+          <option value="pro" selected>Pro</option>
+          <option value="agency">Agency</option>
+        </select>
+      </div>
+      <div class="ig">
+        <label>License Expiry</label>
+        <input type="date" id="n-expiry" style="width:160px">
+      </div>
+      <div class="ig">
+        <label>&nbsp;</label>
+        <button class="btn btn-purple" onclick="createUser()">✅ Create User</button>
+      </div>
+    </div>
+    <div class="msg" id="create-msg"></div>
+  </div>
+
+  <!-- Generate License Key -->
+  <div class="section">
+    <h2>🔑 Generate License Key</h2>
+    <div class="form-row">
+      <div class="ig">
+        <label>Plan</label>
+        <select id="key-plan" style="width:160px">
+          <option value="trial">Trial (7 days)</option>
+          <option value="starter">Starter (1 month)</option>
+          <option value="pro">Pro (1 month)</option>
+          <option value="agency">Agency (1 month)</option>
+        </select>
+      </div>
+      <div class="ig">
+        <label>&nbsp;</label>
+        <button class="btn btn-purple" onclick="generateKey()">🔑 Generate Key</button>
+      </div>
+      <div class="ig" id="key-result" style="display:none">
+        <label>Generated Key (give to customer)</label>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="key-mono" id="key-display"></span>
+          <button onclick="copyKey()" class="btn btn-gray" style="font-size:11px;padding:5px 10px">📋 Copy</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- User List -->
+  <div class="section">
+    <h2>👥 All Customer Accounts</h2>
+    <div id="users-table"><div style="color:#64748b;padding:20px 0">Loading...</div></div>
+  </div>
+
+</div>
+
+<script>
+async function loadStats() {
+  try {
+    const r = await fetch('/admin/api/users');
+    const users = await r.json();
+    document.getElementById('st-users').textContent = users.length;
+    document.getElementById('st-active').textContent = users.filter(u=>u.isActive).length;
+    document.getElementById('st-trial').textContent = users.filter(u=>u.plan==='trial').length;
+    document.getElementById('st-pro').textContent = users.filter(u=>u.plan==='pro'||u.plan==='agency').length;
+    renderTable(users);
+  } catch(e) { console.error(e); }
+}
+
+function renderTable(users) {
+  if (!users.length) {
+    document.getElementById('users-table').innerHTML = '<div style="color:#64748b;padding:20px 0">No users yet.</div>';
+    return;
+  }
+  const planColors = { trial:'b-yellow', starter:'b-blue', pro:'b-purple', agency:'b-green' };
+  let h = `<table><thead><tr>
+    <th>#</th><th>Company</th><th>Username</th><th>Plan</th><th>Status</th><th>License Key</th><th>Expiry</th><th>Last Login</th><th>Actions</th>
+  </tr></thead><tbody>`;
+  users.forEach((u, i) => {
+    const exp = u.licenseExpiry ? new Date(u.licenseExpiry).toLocaleDateString('en-IN') : '—';
+    const lastLogin = u.lastLogin ? new Date(u.lastLogin).toLocaleString('en-IN',{dateStyle:'short',timeStyle:'short'}) : 'Never';
+    const expired = u.licenseExpiry && new Date(u.licenseExpiry) < new Date();
+    h += `<tr>
+      <td style="color:#64748b">${i+1}</td>
+      <td style="font-weight:600">${u.company}</td>
+      <td style="font-family:monospace;color:#94a3b8">${u.username}</td>
+      <td><span class="badge ${planColors[u.plan]||'b-blue'}">${(u.plan||'pro').toUpperCase()}</span></td>
+      <td><span class="badge ${u.isActive ? 'b-green' : 'b-red'}">${u.isActive ? 'Active' : 'Suspended'}</span></td>
+      <td><span class="key-mono" style="font-size:10px">${u.licenseKey || '—'}</span></td>
+      <td style="${expired?'color:#f87171;font-weight:600':''}">${exp}${expired?' ⚠️':''}</td>
+      <td style="font-size:11px;color:#64748b">${lastLogin}</td>
+      <td>
+        <div style="display:flex;gap:4px">
+          <button class="btn btn-gray" style="font-size:10px;padding:4px 8px" onclick="resetPass('${u._id}','${u.company}')">🔑 Reset</button>
+          <button class="btn ${u.isActive?'btn-red':'btn-purple'}" style="font-size:10px;padding:4px 8px" onclick="toggleUser('${u._id}',${u.isActive})">${u.isActive?'Suspend':'Activate'}</button>
+        </div>
+      </td>
+    </tr>`;
+  });
+  h += '</tbody></table>';
+  document.getElementById('users-table').innerHTML = h;
+}
+
+function genPass() {
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$';
+  const pass = Array.from({length:12}, ()=>chars[Math.floor(Math.random()*chars.length)]).join('');
+  document.getElementById('n-pass').value = pass;
+}
+
+// Set default expiry = 30 days from now
+const d = new Date(); d.setDate(d.getDate()+30);
+document.getElementById('n-expiry').value = d.toISOString().slice(0,10);
+
+async function createUser() {
+  const company = document.getElementById('n-company').value.trim();
+  const username = document.getElementById('n-user').value.trim();
+  const password = document.getElementById('n-pass').value.trim();
+  const plan = document.getElementById('n-plan').value;
+  const expiry = document.getElementById('n-expiry').value;
+  const msg = document.getElementById('create-msg');
+  if (!company||!username||!password) { msg.textContent='Fill all fields'; msg.className='msg err'; msg.style.display='block'; return; }
+  try {
+    const r = await fetch('/admin/api/users', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ company, username, password, plan, licenseExpiry: expiry })
+    });
+    const d = await r.json();
+    if (d.success) {
+      msg.textContent = `✅ User "${username}" created! License Key: ${d.licenseKey}`;
+      msg.className = 'msg ok'; msg.style.display = 'block';
+      loadStats();
+      document.getElementById('n-company').value = '';
+      document.getElementById('n-user').value = '';
+      document.getElementById('n-pass').value = '';
+    } else {
+      msg.textContent = '❌ ' + (d.error||'Failed'); msg.className='msg err'; msg.style.display='block';
+    }
+  } catch(e) { msg.textContent='❌ '+e.message; msg.className='msg err'; msg.style.display='block'; }
+}
+
+function generateKey() {
+  const plan = document.getElementById('key-plan').value;
+  const prefix = 'INNV';
+  const seg = () => Math.random().toString(36).substring(2,6).toUpperCase();
+  const key = `${prefix}-${seg()}-${seg()}-${seg()}`;
+  document.getElementById('key-display').textContent = key;
+  document.getElementById('key-result').style.display = 'flex';
+}
+
+function copyKey() {
+  const key = document.getElementById('key-display').textContent;
+  navigator.clipboard.writeText(key).then(()=>alert('Key copied: '+key));
+}
+
+async function toggleUser(id, isActive) {
+  await fetch(`/admin/api/users/${id}`, {
+    method:'PATCH', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ isActive: !isActive })
+  });
+  loadStats();
+}
+
+async function resetPass(id, company) {
+  const newPass = prompt(`New password for ${company}:`);
+  if (!newPass) return;
+  const r = await fetch(`/admin/api/users/${id}/reset-password`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ password: newPass })
+  });
+  const d = await r.json();
+  alert(d.success ? `✅ Password updated for ${company}` : '❌ '+d.error);
+}
+
+loadStats();
+</script>
+</body>
+</html>

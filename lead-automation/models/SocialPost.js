@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
 const socialPostSchema = new mongoose.Schema({
+    userId: { type: String, required: true, index: true },
     topic: { type: String, default: '' },
     title: { type: String, default: '' },
     website_url: { type: String, default: '' },

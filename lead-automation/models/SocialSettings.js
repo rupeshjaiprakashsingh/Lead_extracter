@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
 const socialSettingsSchema = new mongoose.Schema({
+    userId: { type: String, required: true, unique: true, index: true },
     enabled: { type: Boolean, default: false },
     frequency: { type: String, default: 'daily' }, // 'daily' or 'hourly'
     time_hour: { type: Number, default: 10 }, // 10:00 AM (0-23) if daily

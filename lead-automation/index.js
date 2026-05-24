@@ -1,25 +1,256 @@
 // ============================================================
 //  index.js — Lead Automation CRM (MongoDB + UltraMsg + Email)
 // ============================================================
+const logger     = require('./services/logger');
 const express    = require('express');
 const path       = require('path');
 const fs         = require('fs');
 const multer     = require('multer');
+
 const XLSX       = require('xlsx');
 
 // multer — keep file in memory (no disk write needed)
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
+const session = require('express-session');
+const { MongoStore } = require('connect-mongo');
+const User = require('./models/User');
+const { requireAuth, requireAdmin, loadUser } = require('./services/auth');
+
 const app = express();
 app.use(express.json());
+
+// Session config
+app.use(session({
+    secret: 'lead-automation-crm-secret-2026',
+    resave: false,
+    saveUninitialized: false,
+    store: MongoStore.create({
+        mongoUrl: 'mongodb+srv://rupeshwork72:Gate%40air7208@mern-cluster.ahj3x8j.mongodb.net/lead_automation?appName=mern-cluster',
+        ttl: 14 * 24 * 60 * 60
+    }),
+    cookie: {
+        maxAge: 14 * 24 * 60 * 60 * 1000
+    }
+}));
+
+// Load user info into req.user
+app.use(loadUser);
+
+// Define helper: uid
+function uid(req) {
+    return req.session && req.session.userId ? req.session.userId : null;
+}
+
+// ── Public Auth Pages/APIs ────────────────────────────────────
+app.get('/login', (req, res) => {
+    res.sendFile(path.join(__dirname, 'dashboard', 'login.html'));
+});
+
+app.get('/auth/status', async (req, res) => {
+    try {
+        const userCount = await User.countDocuments({});
+        if (userCount === 0) {
+            return res.json({ firstRun: true });
+        }
+        if (req.session && req.session.userId) {
+            return res.json({
+                isAuthenticated: true,
+                username: req.session.username,
+                company: req.session.company,
+                role: req.session.userRole
+            });
+        }
+        return res.json({ isAuthenticated: false });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/auth/login', async (req, res) => {
+    try {
+        const { username, password } = req.body;
+        if (!username || !password) {
+            return res.status(400).json({ success: false, error: 'Username and password are required' });
+        }
+        const user = await User.findOne({ username: username.toLowerCase().trim() });
+        if (!user || !(await user.comparePassword(password))) {
+            return res.status(401).json({ success: false, error: 'Invalid username or password' });
+        }
+        if (!user.isActive) {
+            return res.status(403).json({ success: false, error: 'Account suspended' });
+        }
+        
+        req.session.userId = user._id;
+        req.session.username = user.username;
+        req.session.userRole = user.role;
+        req.session.company = user.company;
+        req.session.plan = user.plan;
+        
+        user.lastLogin = new Date();
+        await user.save();
+        
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+app.post('/auth/register', async (req, res) => {
+    try {
+        const { company, username, password, email, license } = req.body;
+        const userCount = await User.countDocuments({});
+        
+        if (userCount === 0) {
+            const adminUser = await User.create({
+                company: company || 'Default Company',
+                username: username.toLowerCase().trim(),
+                password,
+                email: email ? email.toLowerCase().trim() : '',
+                role: 'admin',
+                plan: 'pro',
+                isActive: true
+            });
+            req.session.userId = adminUser._id;
+            req.session.username = adminUser.username;
+            req.session.userRole = adminUser.role;
+            req.session.company = adminUser.company;
+            req.session.plan = adminUser.plan;
+        } else {
+            const targetUser = await User.findOne({ licenseKey: license });
+            if (!targetUser) {
+                return res.status(400).json({ success: false, error: 'Invalid license key' });
+            }
+            const dup = await User.findOne({ username: username.toLowerCase().trim(), _id: { $ne: targetUser._id } });
+            if (dup) {
+                return res.status(400).json({ success: false, error: 'Username already taken' });
+            }
+            targetUser.username = username.toLowerCase().trim();
+            targetUser.password = password;
+            if (email) targetUser.email = email.toLowerCase().trim();
+            if (company) targetUser.company = company;
+            targetUser.isActive = true;
+            await targetUser.save();
+            
+            req.session.userId = targetUser._id;
+            req.session.username = targetUser.username;
+            req.session.userRole = targetUser.role;
+            req.session.company = targetUser.company;
+            req.session.plan = targetUser.plan;
+        }
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+app.get('/auth/logout', (req, res) => {
+    if (req.session) {
+        req.session.destroy(() => {
+            res.redirect('/login');
+        });
+    } else {
+        res.redirect('/login');
+    }
+});
+
+// ── Protected Pages ───────────────────────────────────────────
+app.get('/', requireAuth, (req, res) => {
+    res.sendFile(path.join(__dirname, 'dashboard', 'index.html'));
+});
+app.get('/index.html', requireAuth, (req, res) => {
+    res.sendFile(path.join(__dirname, 'dashboard', 'index.html'));
+});
+app.get('/admin', requireAuth, requireAdmin, (req, res) => {
+    res.sendFile(path.join(__dirname, 'dashboard', 'admin.html'));
+});
+app.get('/admin.html', requireAuth, requireAdmin, (req, res) => {
+    res.sendFile(path.join(__dirname, 'dashboard', 'admin.html'));
+});
+app.get('/multi-control.html', requireAuth, requireAdmin, (req, res) => {
+    res.sendFile(path.join(__dirname, 'dashboard', 'multi-control.html'));
+});
+
+// ── Admin API Routes ──────────────────────────────────────────
+app.get('/admin/api/users', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const users = await User.find({}).select('-password').sort({ createdAt: -1 }).lean();
+        res.json(users);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/admin/api/users', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const { company, username, password, plan, licenseExpiry } = req.body;
+        if (!company || !username || !password) {
+            return res.status(400).json({ success: false, error: 'Fill all fields' });
+        }
+        const existing = await User.findOne({ username: username.toLowerCase().trim() });
+        if (existing) {
+            return res.status(400).json({ success: false, error: 'Username already taken' });
+        }
+        
+        const prefix = 'INNV';
+        const seg = () => Math.random().toString(36).substring(2,6).toUpperCase();
+        const licenseKey = `${prefix}-${seg()}-${seg()}-${seg()}`;
+        
+        const newUser = await User.create({
+            company,
+            username: username.toLowerCase().trim(),
+            password,
+            plan: plan || 'pro',
+            licenseKey,
+            licenseExpiry: licenseExpiry ? new Date(licenseExpiry) : undefined,
+            isActive: true
+        });
+        
+        res.json({ success: true, licenseKey });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+app.patch('/admin/api/users/:id', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const { isActive } = req.body;
+        await User.findByIdAndUpdate(req.params.id, { $set: { isActive: !!isActive } });
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/admin/api/users/:id/reset-password', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const { password } = req.body;
+        if (!password || password.length < 6) {
+            return res.status(400).json({ success: false, error: 'Password must be at least 6 characters' });
+        }
+        const user = await User.findById(req.params.id);
+        if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+        
+        user.password = password;
+        await user.save();
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Protect all /api routes
+app.use('/api', requireAuth);
+
+// Static assets (css, js, images) falling through
 app.use(express.static(path.join(__dirname, 'dashboard')));
 
+
 // ── Services & Models ─────────────────────────────────────────
-const logger = require('./services/logger');
 const { connectDB, isConnected }  = require('./services/mongodb');
 const { categorize, ALL_CATEGORIES } = require('./services/categories');
 const { exportLeads }             = require('./services/excel');
-const { sendEmail, testSmtp }     = require('./services/email-sender');
+const { sendEmail, testSmtp, testSmtpAccountById, migrateOldSettingsIfNeeded } = require('./services/email-sender');
 const { buildInitialWA, buildFollowupWA, buildInitialEmail, buildFollowupEmail, daysSince } = require('./services/ai-messages');
 const { setTemplates } = require('./services/templates-cache');
 const googleContacts = require('./services/google-contacts');
@@ -29,9 +260,12 @@ const ultraMsg = require('./ultramsg-sender');
 const Lead           = require('./models/Lead');
 const Settings       = require('./models/Settings');
 const Schedule       = require('./models/Schedule');
+const EmailSchedule  = require('./models/EmailSchedule');
 const SocialSettings = require('./models/SocialSettings');
 const SocialPost     = require('./models/SocialPost');
+const SmtpAccount    = require('./models/SmtpAccount');
 const scheduler      = require('./services/scheduler');
+const emailScheduler = require('./services/email-scheduler');
 
 // ── SSE Progress ──────────────────────────────────────────────
 let sseClients = [];
@@ -75,21 +309,26 @@ app.get('/api/db-status', (req, res) => res.json({ connected: isConnected() }));
 // ── Stats ─────────────────────────────────────────────────────
 app.get('/api/stats', async (req, res) => {
     try {
-        const total    = await Lead.countDocuments();
-        const pending  = await Lead.countDocuments({ wa_sent: false });
-        const waSent   = await Lead.countDocuments({ wa_sent: true });
+        const userId = uid(req);
+        const total    = await Lead.countDocuments({ userId });
+        const pending  = await Lead.countDocuments({ userId, wa_sent: false });
+        const waSent   = await Lead.countDocuments({ userId, wa_sent: true });
         // Fix: include 'No Site' string AND social links AND empty
         const socialPatterns = ['facebook','instagram','whatsapp','wa.me','youtube','twitter'];
-        const noSite = await Lead.countDocuments({ $or: [
-            { website: { $exists: false } },
-            { website: null },
-            { website: '' },
-            { website: 'No Site' },
-            { website: { $regex: socialPatterns.join('|'), $options: 'i' } }
-        ]});
-        const followup = await Lead.countDocuments({ next_followup: { $lte: new Date() } });
+        const noSite = await Lead.countDocuments({
+            userId,
+            $or: [
+                { website: { $exists: false } },
+                { website: null },
+                { website: '' },
+                { website: 'No Site' },
+                { website: { $regex: socialPatterns.join('|'), $options: 'i' } }
+            ]
+        });
+        const followup = await Lead.countDocuments({ userId, next_followup: { $lte: new Date() } });
         // Per-category breakdown
         const catAgg = await Lead.aggregate([
+            { $match: { userId } },
             { $group: { _id: '$category', count: { $sum: 1 } } },
             { $sort: { count: -1 } }
         ]);
@@ -101,6 +340,7 @@ app.get('/api/stats', async (req, res) => {
 // ── GET Leads (paginated, filtered, searched) ─────────────────
 app.get('/api/leads', async (req, res) => {
     try {
+        const userId = uid(req);
         const page     = parseInt(req.query.page)  || 1;
         const limit    = parseInt(req.query.limit) || 25;
         const search   = req.query.search   || '';
@@ -112,10 +352,13 @@ app.get('/api/leads', async (req, res) => {
         const skipEmailSent = req.query.skipEmailSent === '1';
         const noWebsite     = req.query.noWebsite     === '1';
 
-        const filter = {};
+        const filter = { userId };
         if (search) {
             const re = new RegExp(search, 'i');
-            filter.$or = [{ name: re }, { phone: re }, { raw_phone: re }, { city: re }, { email: re }, { keyword: re }];
+            filter.$and = [
+                { userId },
+                { $or: [{ name: re }, { phone: re }, { raw_phone: re }, { city: re }, { email: re }, { keyword: re }] }
+            ];
         }
         if (category) filter.category = category;
         if (status)   filter.status   = status;
@@ -148,7 +391,8 @@ app.get('/api/leads', async (req, res) => {
 // ── GET Categories list ───────────────────────────────────────
 app.get('/api/categories', async (req, res) => {
     try {
-        const cats = await Lead.distinct('category');
+        const userId = uid(req);
+        const cats = await Lead.distinct('category', { userId });
         res.json(cats.sort());
     } catch(e) { res.json(ALL_CATEGORIES); }
 });
@@ -156,7 +400,8 @@ app.get('/api/categories', async (req, res) => {
 // ── GET Cities list ───────────────────────────────────────────
 app.get('/api/cities', async (req, res) => {
     try {
-        const cities = await Lead.distinct('city');
+        const userId = uid(req);
+        const cities = await Lead.distinct('city', { userId });
         res.json(cities.filter(Boolean).sort());
     } catch(e) { res.json([]); }
 });
@@ -165,6 +410,7 @@ app.get('/api/cities', async (req, res) => {
 app.post('/api/scrape', async (req, res) => {
     const { keyword, city, max, category } = req.body;
     if (!keyword || !city) return res.status(400).json({ error: 'keyword and city required' });
+    const userId = uid(req);
 
     res.json({ success: true, message: 'Scraping started...' });
 
@@ -180,15 +426,19 @@ app.post('/api/scrape', async (req, res) => {
                 try {
                     const doc = {
                         ...lead,
+                        userId,
                         keyword,
                         category: category && category.trim() ? category.trim() : categorize(keyword, lead.category || ''),
                         source: 'google_maps'
                     };
                     await Lead.findOneAndUpdate(
-                        { $or: [
-                            lead.phone ? { phone: lead.phone } : { _id: null },
-                            { name: lead.name, city: lead.city || city }
-                        ]},
+                        {
+                            userId,
+                            $or: [
+                                lead.phone ? { phone: lead.phone } : { _id: null },
+                                { name: lead.name, city: lead.city || city }
+                            ]
+                        },
                         { $setOnInsert: doc },
                         { upsert: true, new: false }
                     );
@@ -208,22 +458,29 @@ app.post('/api/scrape', async (req, res) => {
 
 // ── DELETE one lead ───────────────────────────────────────────
 app.delete('/api/leads/:id', async (req, res) => {
-    try { await Lead.findByIdAndDelete(req.params.id); res.json({ success: true }); }
-    catch(e) { res.status(500).json({ error: e.message }); }
+    try {
+        const userId = uid(req);
+        await Lead.findOneAndDelete({ _id: req.params.id, userId });
+        res.json({ success: true });
+    } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── DELETE all leads ──────────────────────────────────────────
 app.delete('/api/leads', async (req, res) => {
-    try { await Lead.deleteMany({}); res.json({ success: true }); }
-    catch(e) { res.status(500).json({ error: e.message }); }
+    try {
+        const userId = uid(req);
+        await Lead.deleteMany({ userId });
+        res.json({ success: true });
+    } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── POST bulk delete leads ────────────────────────────────────
 app.post('/api/leads/bulk-delete', async (req, res) => {
     try {
+        const userId = uid(req);
         const { ids } = req.body;
         if (!ids || !ids.length) return res.status(400).json({ error: 'No IDs provided' });
-        await Lead.deleteMany({ _id: { $in: ids } });
+        await Lead.deleteMany({ _id: { $in: ids }, userId });
         res.json({ success: true });
     } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -231,7 +488,8 @@ app.post('/api/leads/bulk-delete', async (req, res) => {
 // ── PUT Update lead ───────────────────────────────────────────
 app.put('/api/leads/:id', async (req, res) => {
     try {
-        const lead = await Lead.findByIdAndUpdate(req.params.id, req.body, { new: true });
+        const userId = uid(req);
+        const lead = await Lead.findOneAndUpdate({ _id: req.params.id, userId }, req.body, { new: true });
         res.json(lead);
     } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -239,17 +497,22 @@ app.put('/api/leads/:id', async (req, res) => {
 // ── POST Import leads manually ────────────────────────────────
 app.post('/api/leads/import', async (req, res) => {
     try {
+        const userId = uid(req);
         const { leads: rows } = req.body;
         if (!Array.isArray(rows)) return res.status(400).json({ error: 'leads must be array' });
         let added = 0, dupes = 0;
         for (const row of rows) {
             if (!row.name) continue;
             try {
-                const doc = { ...row, source: 'manual', category: categorize(row.keyword || '', row.category || '') };
-                await Lead.findOneAndUpdate(
-                    row.phone ? { phone: row.phone } : { name: row.name, city: row.city },
-                    { $setOnInsert: doc }, { upsert: true, new: false }
-                );
+                const doc = { ...row, userId, source: 'manual', category: categorize(row.keyword || '', row.category || '') };
+                const filter = {
+                    userId,
+                    $or: [
+                        row.phone ? { phone: row.phone } : { _id: null },
+                        { name: row.name, city: row.city }
+                    ]
+                };
+                await Lead.findOneAndUpdate(filter, { $setOnInsert: doc }, { upsert: true, new: false });
                 added++;
             } catch(e) { if (e.code === 11000) dupes++; }
         }
@@ -370,15 +633,20 @@ app.post('/api/leads/import-excel', upload.single('file'), async (req, res) => {
         if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
         const rows   = parseExcelBuffer(req.file.buffer);
         const category = req.body.category || 'Excel Import';
+        const userId = uid(req);
         let added = 0, dupes = 0, skipped = 0;
 
         for (const row of rows) {
             if (!row.name && !row.phone) { skipped++; continue; }
             try {
-                const doc = { ...row, keyword: category, category };
-                const filter = row.phone
-                    ? { phone: row.phone }
-                    : { name: row.name, city: row.city };
+                const doc = { ...row, userId, keyword: category, category };
+                const filter = {
+                    userId,
+                    $or: [
+                        row.phone ? { phone: row.phone } : { _id: null },
+                        { name: row.name, city: row.city }
+                    ]
+                };
                 await Lead.findOneAndUpdate(filter, { $setOnInsert: doc }, { upsert: true, new: false });
                 added++;
             } catch(e) { if (e.code === 11000) dupes++; else console.error(e.message); }
@@ -390,8 +658,9 @@ app.post('/api/leads/import-excel', upload.single('file'), async (req, res) => {
 // ── GET Export Excel ──────────────────────────────────────────
 app.get('/api/leads/export', async (req, res) => {
     try {
+        const userId = uid(req);
         const { category } = req.query;
-        const filter = {};
+        const filter = { userId };
         if (category) filter.category = category;
         const leads = await Lead.find(filter).lean();
         const buffer = exportLeads(leads);
@@ -404,9 +673,10 @@ app.get('/api/leads/export', async (req, res) => {
 // ── GET Contact Sync Stats ────────────────────────────────────
 app.get('/api/contacts/stats', async (req, res) => {
     try {
+        const userId = uid(req);
         const { category } = req.query;
-        const totalFilter = { phone: { $exists: true, $ne: '' } };
-        const savedFilter = { phone: { $exists: true, $ne: '' }, contact_saved: true };
+        const totalFilter = { userId, phone: { $exists: true, $ne: '' } };
+        const savedFilter = { userId, phone: { $exists: true, $ne: '' }, contact_saved: true };
         if (category) {
             totalFilter.category = category;
             savedFilter.category = category;
@@ -421,10 +691,15 @@ app.get('/api/contacts/stats', async (req, res) => {
 // ── POST Mark contacts as saved (specific IDs) ───────────────
 app.post('/api/contacts/mark-saved', async (req, res) => {
     try {
+        const userId = uid(req);
         const { ids } = req.body;
-        const filter = ids?.length
-            ? { _id: { $in: ids } }
-            : { contact_saved: { $ne: true }, phone: { $exists: true, $ne: '' } };
+        const filter = { userId };
+        if (ids?.length) {
+            filter._id = { $in: ids };
+        } else {
+            filter.contact_saved = { $ne: true };
+            filter.phone = { $exists: true, $ne: '' };
+        }
         const result = await Lead.updateMany(filter, {
             $set: { contact_saved: true, contact_saved_at: new Date() }
         });
@@ -435,22 +710,22 @@ app.post('/api/contacts/mark-saved', async (req, res) => {
 // ── POST Mark ALL leads as saved (one-time fix when user already imported) ─
 app.post('/api/contacts/mark-all-saved', async (req, res) => {
     try {
+        const userId = uid(req);
         const result = await Lead.updateMany(
-            { phone: { $exists: true, $ne: '' } },
+            { userId, phone: { $exists: true, $ne: '' } },
             { $set: { contact_saved: true, contact_saved_at: new Date() } }
         );
-        console.log(`✅ Marked all ${result.modifiedCount} leads as contact_saved=true`);
+        console.log(`✅ Marked all ${result.modifiedCount} leads as contact_saved=true for user ${userId}`);
         res.json({ success: true, marked: result.modifiedCount });
     } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-
-
 // ── GET Export VCard — ALL leads (no dedup) ───────────────────
 app.get('/api/leads/export-vcf', async (req, res) => {
     try {
+        const userId = uid(req);
         const { category } = req.query;
-        const filter = { phone: { $exists: true, $ne: '' } };
+        const filter = { userId, phone: { $exists: true, $ne: '' } };
         if (category) filter.category = category;
         const leads = await Lead.find(filter).lean();
         res.setHeader('Content-Type', 'text/vcard; charset=utf-8');
@@ -462,13 +737,15 @@ app.get('/api/leads/export-vcf', async (req, res) => {
 // ── POST Export VCard — SMART (new only, auto-marks as saved server-side) ─
 app.post('/api/leads/export-vcf', async (req, res) => {
     try {
+        const userId = uid(req);
         const { ids, newOnly, category } = req.body;
 
-        let filter;
+        let filter = { userId };
         if (ids?.length) {
-            filter = { _id: { $in: ids }, phone: { $exists: true, $ne: '' } };
+            filter._id = { $in: ids };
+            filter.phone = { $exists: true, $ne: '' };
         } else {
-            filter = { phone: { $exists: true, $ne: '' } };
+            filter.phone = { $exists: true, $ne: '' };
             if (newOnly) filter.contact_saved = { $ne: true };
             if (category) filter.category = category;
         }
@@ -485,7 +762,7 @@ app.post('/api/leads/export-vcf', async (req, res) => {
         if (newOnly) {
             const exportedIds = leads.map(l => l._id);
             await Lead.updateMany(
-                { _id: { $in: exportedIds } },
+                { _id: { $in: exportedIds }, userId },
                 { $set: { contact_saved: true, contact_saved_at: new Date() } }
             );
         }
@@ -533,7 +810,8 @@ function buildVcf(leads) {
 // ── GET lead message (for manual WA sending) ──────────────────
 app.get('/api/leads/:id/message', async (req, res) => {
     try {
-        const lead = await Lead.findById(req.params.id);
+        const userId = uid(req);
+        const lead = await Lead.findOne({ _id: req.params.id, userId });
         if(!lead) return res.status(404).json({error: 'Not found'});
         const type = req.query.type;
         let text = '';
@@ -548,18 +826,20 @@ app.get('/api/leads/:id/message', async (req, res) => {
 // ── POST mark WA sent (manual) ────────────────────────────────
 app.post('/api/leads/:id/mark-wa', async (req, res) => {
     try {
+        const userId = uid(req);
         const type = req.query.type || 'wa';
         const today = todayStr();
         if (type === 'wa') {
-            await Lead.findByIdAndUpdate(req.params.id, {
+            await Lead.findOneAndUpdate({ _id: req.params.id, userId }, {
                 $set:  { wa_sent: true, wa_sent_at: new Date(), wa_last_date: today, status: 'contacted' },
                 $inc:  { wa_count: 1 },
                 $push: { activity: { type: 'wa_sent', message: 'Initial WA sent manually', date: new Date() } }
             });
         } else if (type === 'followup_wa') {
-            const lead = await Lead.findById(req.params.id).lean();
+            const lead = await Lead.findOne({ _id: req.params.id, userId }).lean();
+            if (!lead) return res.status(404).json({ error: 'Not found' });
             const followupNum = (lead.followup_count || 0) + 1;
-            await Lead.findByIdAndUpdate(req.params.id, {
+            await Lead.findOneAndUpdate({ _id: req.params.id, userId }, {
                 $inc:  { wa_count: 1, followup_count: 1 },
                 $set:  { wa_last_date: today, next_followup: new Date(Date.now() + 7*24*60*60*1000), status: 'followup' },
                 $push: { activity: { type: 'wa_sent', message: `Followup #${followupNum} WA sent manually`, date: new Date() } }
@@ -571,45 +851,62 @@ app.post('/api/leads/:id/mark-wa', async (req, res) => {
 
 // ── POST Send WhatsApp (Local Automation via Playwright) ──────
 app.post('/api/send/wa', async (req, res) => {
+    const userId = uid(req);
     const { ids, skipWaSent } = req.body;
+    let allowedIds = ids;
+    if (ids?.length) {
+        const matchingLeads = await Lead.find({ _id: { $in: ids }, userId }).select('_id');
+        allowedIds = matchingLeads.map(l => l._id.toString());
+        if (!allowedIds.length) return res.status(400).json({ error: 'No authorized leads selected' });
+    }
     res.json({ success: true, message: 'Local WA Auto-send started!' });
     setImmediate(async () => {
         const { sendLocalWA } = require('./playwright-sender');
-        await sendLocalWA(ids, false, { skipWaSent: !!skipWaSent });
+        await sendLocalWA(allowedIds, false, { skipWaSent: !!skipWaSent, companyId: userId });
     });
 });
 
 // ── POST Send WA — DRAFT mode (pre-fill all, user sends) ────────────────────
 app.post('/api/send/wa-draft', async (req, res) => {
+    const userId = uid(req);
     const { ids, skipWaSent } = req.body;
     if (!ids || !ids.length) return res.status(400).json({ error: 'No leads selected' });
+    const matchingLeads = await Lead.find({ _id: { $in: ids }, userId }).select('_id');
+    const allowedIds = matchingLeads.map(l => l._id.toString());
+    if (!allowedIds.length) return res.status(400).json({ error: 'No authorized leads selected' });
     res.json({ success: true, message: '📝 Draft mode started — WhatsApp will open and pre-fill all messages!' });
     setImmediate(async () => {
         const { sendLocalWA_Draft } = require('./playwright-sender');
-        await sendLocalWA_Draft(ids, false, { skipWaSent: !!skipWaSent });
+        await sendLocalWA_Draft(allowedIds, false, { skipWaSent: !!skipWaSent, companyId: userId });
     });
 });
 
 // ── POST Send WA — MANUAL mode (user clicks send one by one) ──────────────
 app.post('/api/send/wa-manual', async (req, res) => {
+    const userId = uid(req);
     const { ids, skipWaSent } = req.body;
     if (!ids || !ids.length) return res.status(400).json({ error: 'No leads selected' });
+    const matchingLeads = await Lead.find({ _id: { $in: ids }, userId }).select('_id');
+    const allowedIds = matchingLeads.map(l => l._id.toString());
+    if (!allowedIds.length) return res.status(400).json({ error: 'No authorized leads selected' });
     res.json({ success: true, message: '👆 Manual WA mode started — WhatsApp will open. Click Send for each lead!' });
     setImmediate(async () => {
         const { sendLocalWA_Manual } = require('./playwright-sender');
-        await sendLocalWA_Manual(ids, false, { skipWaSent: !!skipWaSent });
+        await sendLocalWA_Manual(allowedIds, false, { skipWaSent: !!skipWaSent, companyId: userId });
     });
 });
 
+
 // ── POST Send Initial Email ─────────────────────────────────────────
 app.post('/api/send/email', async (req, res) => {
+    const userId = uid(req);
     const { ids } = req.body;
     if (!ids || !ids.length) return res.status(400).json({ error: 'No IDs provided' });
     res.json({ success: true, message: 'Email sending started!' });
 
     setImmediate(async () => {
         try {
-            const leads = await Lead.find({ _id: { $in: ids } }).lean();
+            const leads = await Lead.find({ _id: { $in: ids }, userId }).lean();
             let sent = 0, failed = 0, skipped = 0;
             emit({ type: 'start', total: leads.length });
 
@@ -629,8 +926,8 @@ app.post('/api/send/email', async (req, res) => {
 
                 try {
                     const { subject, html } = await buildInitialEmail(lead);
-                    await sendEmail(lead.email, subject, html);
-                    await Lead.findByIdAndUpdate(lead._id, {
+                    await sendEmail(lead.email, subject, html, userId);
+                    await Lead.findOneAndUpdate({ _id: lead._id, userId }, {
                         $inc:  { email_count: 1 },
                         $set:  { email_sent: true, email_last_date: todayStr() },
                         $push: { activity: { type: 'email_sent', message: 'Initial email sent', date: new Date() } }
@@ -668,20 +965,25 @@ app.post('/api/send/email', async (req, res) => {
 
 // ── POST Send Follow-up (Email API + WA Local) ──────────────────────
 app.post('/api/send/followup', async (req, res) => {
+    const userId = uid(req);
     const { ids, channel } = req.body; 
     res.json({ success: true, message: 'Follow-up started!' });
 
     setImmediate(async () => {
         if (channel === 'wa' || channel === 'both') {
-            const { sendLocalWA } = require('./playwright-sender');
-            await sendLocalWA(ids, true);
+            const matchingLeads = await Lead.find({ _id: { $in: ids }, userId }).select('_id');
+            const allowedIds = matchingLeads.map(l => l._id.toString());
+            if (allowedIds.length) {
+                const { sendLocalWA } = require('./playwright-sender');
+                await sendLocalWA(allowedIds, true, { companyId: userId });
+            }
         }
 
         if (channel === 'email' || channel === 'both') {
             const today = todayStr();
             const filter = ids?.length
-                ? { _id: { $in: ids } }
-                : { wa_sent: true, next_followup: { $lte: new Date() } };
+                ? { _id: { $in: ids }, userId }
+                : { userId, wa_sent: true, next_followup: { $lte: new Date() } };
 
             const leads = await Lead.find(filter).lean();
             let sent = 0, failed = 0;
@@ -699,8 +1001,8 @@ app.post('/api/send/followup', async (req, res) => {
                 if (lead.email) {
                     try {
                         const { subject, html } = buildFollowupEmail(lead, followupNum);
-                        await sendEmail(lead.email, subject, html);
-                        await Lead.findByIdAndUpdate(lead._id, {
+                        await sendEmail(lead.email, subject, html, userId);
+                        await Lead.findOneAndUpdate({ _id: lead._id, userId }, {
                             $inc:  { email_count: 1 },
                             $set:  { email_sent: true, email_last_date: today },
                             $push: { activity: { type: 'email_sent', message: `Followup #${followupNum} email sent`, date: new Date() } }
@@ -719,12 +1021,19 @@ app.post('/api/send/followup', async (req, res) => {
 
 // ── POST Extract Emails from Websites ──────────────────────────────────
 app.post('/api/leads/extract-emails', async (req, res) => {
+    const userId = uid(req);
     const { ids } = req.body;
+    let allowedIds = ids;
+    if (ids?.length) {
+        const matchingLeads = await Lead.find({ _id: { $in: ids }, userId }).select('_id');
+        allowedIds = matchingLeads.map(l => l._id.toString());
+        if (!allowedIds.length) return res.status(400).json({ error: 'No authorized leads selected' });
+    }
     res.json({ success: true, message: 'Email extraction started...' });
     setImmediate(async () => {
         const { extractEmailsForLeads } = require('./services/email-extractor');
         try {
-            await extractEmailsForLeads(ids, (progress) => {
+            await extractEmailsForLeads(allowedIds, userId, (progress) => {
                 if (progress.type === 'start') {
                     emit({ type: 'start', total: progress.total });
                     emit({ type: 'status', message: `🌐 Extracting emails from ${progress.total} websites...` });
@@ -747,7 +1056,28 @@ app.post('/api/leads/extract-emails', async (req, res) => {
 // ── Settings: GET ─────────────────────────────────────────────
 app.get('/api/settings', async (req, res) => {
     try {
-        const rows = await Settings.find({});
+        const userId = uid(req);
+        let rows = await Settings.find({ userId });
+        
+        // Auto-migration: if no settings exist for this user, copy global ones (without userId)
+        if (userId && rows.length === 0) {
+            const globalRows = await Settings.find({ $or: [{ userId: null }, { userId: { $exists: false } }] });
+            if (globalRows.length > 0) {
+                logger.log(`Migrating global settings to user ${userId}...`, 'SETTINGS');
+                const migrated = [];
+                for (const r of globalRows) {
+                    const existing = await Settings.findOne({ userId, key: r.key });
+                    if (!existing) {
+                        const newSetting = await Settings.create({ userId, key: r.key, value: r.value });
+                        migrated.push(newSetting);
+                    }
+                }
+                if (migrated.length > 0) {
+                    rows = await Settings.find({ userId });
+                }
+            }
+        }
+
         const cfg  = {};
         rows.forEach(r => { cfg[r.key] = r.value; });
         // Mask password
@@ -759,8 +1089,9 @@ app.get('/api/settings', async (req, res) => {
 // ── Settings: POST ────────────────────────────────────────────
 app.post('/api/settings', async (req, res) => {
     try {
+        const userId = uid(req);
         const { ultramsg: um, ...smtpFields } = req.body;
-        logger.log(`Received POST settings updates: ${Object.keys(smtpFields).join(', ')}`, 'SETTINGS');
+        logger.log(`Received POST settings updates for user ${userId}: ${Object.keys(smtpFields).join(', ')}`, 'SETTINGS');
         for (const [key, value] of Object.entries(smtpFields)) {
             if (value !== undefined) {
                 // Safeguard against browser autofill or UI mask overwriting valid password
@@ -775,8 +1106,8 @@ app.post('/api/settings', async (req, res) => {
                     }
                 }
                 
-                logger.log(`Saving setting: ${key}`, 'SETTINGS');
-                await Settings.findOneAndUpdate({ key }, { value }, { upsert: true });
+                logger.log(`Saving setting: ${key} for user: ${userId}`, 'SETTINGS');
+                await Settings.findOneAndUpdate({ userId, key }, { value }, { upsert: true });
             }
         }
         if (um?.instanceId) {
@@ -832,6 +1163,150 @@ app.post('/api/test-smtp', async (req, res) => {
     }
 });
 
+// ═══════════════════════════════════════════════════════════
+// ── SMTP Email Accounts (Multi-Account Load Balancer) ──────
+// ═══════════════════════════════════════════════════════════
+
+// ── GET all SMTP accounts (passwords masked) ──────────────────
+app.get('/api/smtp-accounts', async (req, res) => {
+    try {
+        const userId = uid(req);
+        // Trigger migration of old single-account settings on first load
+        await migrateOldSettingsIfNeeded(userId);
+
+        const accounts = await SmtpAccount.find({ userId }).sort({ createdAt: 1 }).lean();
+        const today = new Date().toISOString().slice(0, 10);
+
+        // Mask passwords, compute today's sent
+        const safe = accounts.map(a => ({
+            _id:         a._id,
+            label:       a.label,
+            smtp_host:   a.smtp_host,
+            smtp_port:   a.smtp_port,
+            smtp_secure: a.smtp_secure,
+            smtp_user:   a.smtp_user,
+            smtp_from:   a.smtp_from,
+            isActive:    a.isActive,
+            daily_limit: a.daily_limit,
+            daily_sent:  a.daily_date === today ? a.daily_sent : 0,
+            total_sent:  a.total_sent,
+            last_used_at: a.last_used_at,
+            createdAt:   a.createdAt,
+            hasPassword: !!a.smtp_pass,
+        }));
+
+        // Load balancer summary
+        const activeAccounts = safe.filter(a => a.isActive);
+        const totalCapacity  = activeAccounts.reduce((s, a) => s + a.daily_limit, 0);
+        const totalSentToday = activeAccounts.reduce((s, a) => s + a.daily_sent, 0);
+
+        res.json({
+            accounts: safe,
+            summary: {
+                total:         safe.length,
+                active:        activeAccounts.length,
+                totalCapacity,
+                totalSentToday,
+                remainingToday: totalCapacity - totalSentToday,
+            }
+        });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── POST add new SMTP account ──────────────────────────────────
+app.post('/api/smtp-accounts', async (req, res) => {
+    try {
+        const userId = uid(req);
+        const { label, smtp_host, smtp_port, smtp_secure, smtp_user, smtp_pass, smtp_from, daily_limit } = req.body;
+        if (!smtp_user || !smtp_pass) {
+            return res.status(400).json({ success: false, error: 'Gmail address and App Password are required.' });
+        }
+        const acct = await SmtpAccount.create({
+            userId,
+            label:       label       || 'Gmail Account',
+            smtp_host:   smtp_host   || 'smtp.gmail.com',
+            smtp_port:   parseInt(smtp_port) || 587,
+            smtp_secure: smtp_secure === true || smtp_secure === 'true',
+            smtp_user:   smtp_user.trim(),
+            smtp_pass:   smtp_pass,
+            smtp_from:   smtp_from   || 'Digital Growth Team',
+            daily_limit: parseInt(daily_limit) || 400,
+            isActive:    true,
+        });
+        logger.log(`New SMTP account added: ${smtp_user.split('@')[0]}***@${smtp_user.split('@')[1]}`, 'SMTP_ACCT');
+        res.json({ success: true, id: acct._id });
+    } catch(e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// ── PUT update SMTP account ────────────────────────────────────
+app.put('/api/smtp-accounts/:id', async (req, res) => {
+    try {
+        const userId = uid(req);
+        const { label, smtp_host, smtp_port, smtp_secure, smtp_user, smtp_pass, smtp_from, daily_limit, isActive } = req.body;
+        const update = {};
+        if (label       !== undefined) update.label       = label;
+        if (smtp_host   !== undefined) update.smtp_host   = smtp_host;
+        if (smtp_port   !== undefined) update.smtp_port   = parseInt(smtp_port) || 587;
+        if (smtp_secure !== undefined) update.smtp_secure = smtp_secure === true || smtp_secure === 'true';
+        if (smtp_user   !== undefined) update.smtp_user   = smtp_user.trim();
+        if (smtp_from   !== undefined) update.smtp_from   = smtp_from;
+        if (daily_limit !== undefined) update.daily_limit = parseInt(daily_limit) || 400;
+        if (isActive    !== undefined) update.isActive    = !!isActive;
+        // Only update password if a new one is supplied (not masked placeholder)
+        if (smtp_pass && !smtp_pass.includes('•') && smtp_pass.trim().length > 0) {
+            update.smtp_pass = smtp_pass.trim();
+        }
+        const acct = await SmtpAccount.findOneAndUpdate({ _id: req.params.id, userId }, { $set: update }, { new: true });
+        if (!acct) return res.status(404).json({ success: false, error: 'Account not found.' });
+        res.json({ success: true });
+    } catch(e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// ── DELETE SMTP account ────────────────────────────────────────
+app.delete('/api/smtp-accounts/:id', async (req, res) => {
+    try {
+        const userId = uid(req);
+        const acct = await SmtpAccount.findOneAndDelete({ _id: req.params.id, userId });
+        if (!acct) return res.status(404).json({ success: false, error: 'Account not found.' });
+        logger.log(`SMTP account deleted: ${acct.smtp_user}`, 'SMTP_ACCT');
+        res.json({ success: true });
+    } catch(e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// ── POST test individual SMTP account ─────────────────────────
+app.post('/api/smtp-accounts/:id/test', async (req, res) => {
+    try {
+        const userId = uid(req);
+        const result = await testSmtpAccountById(req.params.id, userId);
+        res.json(result);
+    } catch(e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// ── POST test NEW account inline (before saving) ───────────────
+app.post('/api/smtp-accounts/test-inline', async (req, res) => {
+    const { smtp_host, smtp_port, smtp_secure, smtp_user, smtp_pass } = req.body || {};
+    if (!smtp_user || !smtp_pass) {
+        return res.json({ success: false, error: 'Gmail address and App Password are required.' });
+    }
+    const { createTransportDirect } = require('./services/email-sender');
+    try {
+        logger.log(`Testing inline SMTP for: ${smtp_user}`, 'SMTP_TEST');
+        const t = createTransportDirect({ host: smtp_host || 'smtp.gmail.com', port: smtp_port || 587, secure: smtp_secure, user: smtp_user, pass: smtp_pass });
+        await t.verify();
+        res.json({ success: true, message: '✅ SMTP Connected! Account is ready to send emails.' });
+    } catch(e) {
+        let msg = e.message;
+        if (msg.includes('535') || msg.includes('Username and Password') || msg.includes('Invalid login')) {
+            msg = 'Wrong App Password. Visit myaccount.google.com/apppasswords to create a 16-char App Password.';
+        } else if (msg.includes('ECONNREFUSED') || msg.includes('ETIMEDOUT')) {
+            msg = 'Cannot connect — check Host and Port.';
+        } else if (msg.includes('SSL') || msg.includes('wrong version') || msg.includes('WRONG_VERSION')) {
+            msg = 'SSL mismatch. Port 587 → STARTTLS (No SSL). Port 465 → Yes (SSL).';
+        }
+        res.json({ success: false, error: msg });
+    }
+});
+
 // ── GET logs ──────────────────────────────────────────────────
 app.get('/api/logs', (req, res) => {
     try {
@@ -860,48 +1335,130 @@ app.delete('/api/logs', (req, res) => {
     }
 });
 
-// ── Schedule: GET ───────────────────────────────────────────────
+// ── Schedule: GET List ──────────────────────────────────────────
 app.get('/api/schedule', async (req, res) => {
     try {
-        let s = await Schedule.findOne({});
-        if (!s) s = await Schedule.create({});
-        res.json({ ...s.toObject(), categories_list: ALL_CATEGORIES });
+        const userId = uid(req);
+        let list = await Schedule.find({ userId }).sort({ createdAt: -1 });
+        if (!list.length) {
+            const defaultSched = await Schedule.create({ userId, name: 'Default Schedule' });
+            list = [defaultSched];
+        }
+        res.json({ list, categories_list: ALL_CATEGORIES });
     } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Schedule: POST (save) ────────────────────────────────────
+// ── Schedule: POST (create) ───────────────────────────────────
 app.post('/api/schedule', async (req, res) => {
     try {
-        const { enabled, categories, daily_limit, skip_sent, allow_resend,
-                morning_hour, evening_hour, report_email } = req.body;
-        const s = await Schedule.findOneAndUpdate(
-            {},
-            { enabled, categories, daily_limit: parseInt(daily_limit) || 60,
-              skip_sent, allow_resend, morning_hour: parseInt(morning_hour) || 10,
-              evening_hour: parseInt(evening_hour) || 16, report_email },
-            { upsert: true, new: true }
-        );
-        // Restart cron with new settings
-        scheduler.startScheduler(s);
+        const userId = uid(req);
+        const { name, enabled, categories, cities, daily_limit, skip_sent, allow_resend, send_hours, report_email } = req.body;
+        const s = await Schedule.create({
+            userId,
+            name: name || 'New Schedule',
+            enabled: !!enabled,
+            categories: categories || [],
+            cities: cities || [],
+            daily_limit: parseInt(daily_limit) || 60,
+            skip_sent: skip_sent !== false,
+            allow_resend: !!allow_resend,
+            send_hours: send_hours || [10, 16],
+            report_email: report_email || ''
+        });
         res.json({ success: true, schedule: s });
     } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Schedule: Run Now (manual trigger) ──────────────────────────
-app.post('/api/schedule/run-now', async (req, res) => {
-    if (scheduler.isRunning()) {
-        return res.json({ success: false, error: 'Already sending — please wait for current batch to finish' });
+// ── Schedule: PUT (update) ────────────────────────────────────
+app.put('/api/schedule/:id', async (req, res) => {
+    try {
+        const userId = uid(req);
+        const { name, enabled, categories, cities, daily_limit, skip_sent, allow_resend, send_hours, report_email } = req.body;
+        const s = await Schedule.findOneAndUpdate(
+            { _id: req.params.id, userId },
+            {
+                $set: {
+                    name: name || 'Schedule',
+                    enabled: !!enabled,
+                    categories: categories || [],
+                    cities: cities || [],
+                    daily_limit: parseInt(daily_limit) || 60,
+                    skip_sent: skip_sent !== false,
+                    allow_resend: !!allow_resend,
+                    send_hours: send_hours || [10, 16],
+                    report_email: report_email || ''
+                }
+            },
+            { new: true }
+        );
+        if (!s) return res.status(404).json({ error: 'Schedule not found' });
+        res.json({ success: true, schedule: s });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Schedule: DELETE ──────────────────────────────────────────
+app.delete('/api/schedule/:id', async (req, res) => {
+    try {
+        const userId = uid(req);
+        const s = await Schedule.findOneAndDelete({ _id: req.params.id, userId });
+        if (!s) return res.status(404).json({ error: 'Schedule not found' });
+        res.json({ success: true });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Schedule: Run Now (manual trigger for a rule) ─────────────
+app.post('/api/schedule/:id/run-now', async (req, res) => {
+    try {
+        const userId = uid(req);
+        const scheduleId = req.params.id;
+        if (scheduler.isRunning(userId)) {
+            return res.json({ success: false, error: 'Already sending — please wait for current batch to finish' });
+        }
+        
+        const schedule = await Schedule.findOne({ _id: scheduleId, userId });
+        if (!schedule) {
+            return res.json({ success: false, error: 'Schedule rule not found.' });
+        }
+        
+        // Count matching leads
+        const filter = { userId, phone: { $exists: true, $ne: '' } };
+        if (schedule.categories?.length) {
+            filter.category = { $in: schedule.categories };
+        }
+        if (schedule.cities?.length) {
+            const cityRegexes = schedule.cities.map(c => new RegExp(`^${c.trim()}$`, 'i'));
+            filter.city = { $in: cityRegexes };
+        }
+        if (schedule.skip_sent && !schedule.allow_resend) {
+            filter.wa_sent = { $ne: true };
+        }
+        
+        const count = await Lead.countDocuments(filter);
+        if (count === 0) {
+            return res.json({ 
+                success: false, 
+                error: `No matching unsent leads found. Category: [${schedule.categories.join(', ')}], City: [${schedule.cities.join(', ')}]. Please edit the rule to expand filters or check "Allow Re-send".`
+            });
+        }
+        
+        res.json({ success: true, message: `Found ${count} matching leads. Scheduled batch started! WhatsApp window will open shortly.` });
+        setImmediate(() => {
+            scheduler.runScheduledSend('manual', userId, scheduleId).catch(e => console.error('Run-now error:', e.message));
+        });
+    } catch(e) {
+        res.status(500).json({ success: false, error: e.message });
     }
-    res.json({ success: true, message: 'Scheduled batch started! WhatsApp window will open shortly.' });
-    setImmediate(() => {
-        scheduler.runScheduledSend('manual').catch(e => console.error('Run-now error:', e.message));
-    });
 });
 
 // ── Schedule: Test Daily Report Email ────────────────────────
-app.post('/api/schedule/test-report', async (req, res) => {
+app.post('/api/schedule/:id/test-report', async (req, res) => {
     try {
-        await scheduler.sendDailyReport();
+        const userId = uid(req);
+        const schedule = await Schedule.findOne({ _id: req.params.id, userId });
+        if (!schedule) return res.status(404).json({ error: 'Schedule not found' });
+        
+        const { sendDailyReportForRule } = require('./services/scheduler');
+        await sendDailyReportForRule(schedule);
         res.json({ success: true, message: 'Test report sent!' });
     } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -909,23 +1466,266 @@ app.post('/api/schedule/test-report', async (req, res) => {
 // ── Schedule: Status ─────────────────────────────────────────────
 app.get('/api/schedule/status', async (req, res) => {
     try {
-        const s = await Schedule.findOne({});
+        const userId = uid(req);
+        const list = await Schedule.find({ userId });
+        
+        const active = list.some(s => s.enabled);
+        const today_sent = list.reduce((sum, s) => sum + (s.today_sent || 0), 0);
+        const today_failed = list.reduce((sum, s) => sum + (s.today_failed || 0), 0);
+        const total_limit = list.reduce((sum, s) => sum + (s.daily_limit || 0), 0);
+        
+        let last_run = null;
+        list.forEach(s => {
+            if (s.last_run && (!last_run || s.last_run > last_run)) {
+                last_run = s.last_run;
+            }
+        });
+
         res.json({
-            enabled:     s?.enabled || false,
-            today_sent:  s?.today_sent || 0,
-            today_failed:s?.today_failed || 0,
-            daily_limit: s?.daily_limit || 60,
-            last_run:    s?.last_run,
-            is_running:  scheduler.isRunning()
+            enabled:     active,
+            today_sent:  today_sent,
+            today_failed:today_failed,
+            daily_limit: total_limit,
+            last_run:    last_run,
+            is_running:  scheduler.isRunning(userId)
         });
     } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Schedule: Preview matching leads ──────────────────────────
+app.post('/api/schedule/preview', async (req, res) => {
+    try {
+        const userId = uid(req);
+        const { categories, cities, skip_sent, allow_resend, daily_limit, send_hours } = req.body;
+        
+        const filter = { userId, phone: { $exists: true, $ne: '' } };
+
+        if (categories?.length) {
+            filter.category = { $in: categories };
+        }
+        
+        if (cities?.length) {
+            const cityRegexes = cities.map(c => new RegExp(`^${c.trim()}$`, 'i'));
+            filter.city = { $in: cityRegexes };
+        }
+
+        if (skip_sent && !allow_resend) {
+            filter.wa_sent = { $ne: true };
+        }
+
+        const hourCount = send_hours?.length || 1;
+        const targetBatchSize = Math.ceil((parseInt(daily_limit) || 60) / hourCount);
+
+        const leads = await Lead.find(filter)
+            .sort({ createdAt: 1 })
+            .limit(Math.min(targetBatchSize, 30))
+            .select('name phone city category wa_sent')
+            .lean();
+
+        res.json({ success: true, count: leads.length, leads });
+    } catch(e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ── Email Schedule: GET List ──────────────────────────────────────────
+app.get('/api/email-schedule', async (req, res) => {
+    try {
+        const userId = uid(req);
+        let list = await EmailSchedule.find({ userId }).sort({ createdAt: -1 });
+        if (!list.length) {
+            const defaultSched = await EmailSchedule.create({ userId, name: 'Default Email Schedule' });
+            list = [defaultSched];
+        }
+        res.json({ list, categories_list: ALL_CATEGORIES });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Email Schedule: POST (create) ───────────────────────────────────
+app.post('/api/email-schedule', async (req, res) => {
+    try {
+        const userId = uid(req);
+        const { name, enabled, categories, cities, daily_limit, skip_sent, allow_resend, send_hours, report_email } = req.body;
+        const s = await EmailSchedule.create({
+            userId,
+            name: name || 'New Email Schedule',
+            enabled: !!enabled,
+            categories: categories || [],
+            cities: cities || [],
+            daily_limit: parseInt(daily_limit) || 60,
+            skip_sent: skip_sent !== false,
+            allow_resend: !!allow_resend,
+            send_hours: send_hours || [10, 16],
+            report_email: report_email || ''
+        });
+        res.json({ success: true, schedule: s });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Email Schedule: PUT (update) ────────────────────────────────────
+app.put('/api/email-schedule/:id', async (req, res) => {
+    try {
+        const userId = uid(req);
+        const { name, enabled, categories, cities, daily_limit, skip_sent, allow_resend, send_hours, report_email } = req.body;
+        const s = await EmailSchedule.findOneAndUpdate(
+            { _id: req.params.id, userId },
+            {
+                $set: {
+                    name: name || 'Email Schedule',
+                    enabled: !!enabled,
+                    categories: categories || [],
+                    cities: cities || [],
+                    daily_limit: parseInt(daily_limit) || 60,
+                    skip_sent: skip_sent !== false,
+                    allow_resend: !!allow_resend,
+                    send_hours: send_hours || [10, 16],
+                    report_email: report_email || ''
+                }
+            },
+            { new: true }
+        );
+        if (!s) return res.status(404).json({ error: 'Email schedule not found' });
+        res.json({ success: true, schedule: s });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Email Schedule: DELETE ──────────────────────────────────────────
+app.delete('/api/email-schedule/:id', async (req, res) => {
+    try {
+        const userId = uid(req);
+        const s = await EmailSchedule.findOneAndDelete({ _id: req.params.id, userId });
+        if (!s) return res.status(404).json({ error: 'Email schedule not found' });
+        res.json({ success: true });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Email Schedule: Run Now (manual trigger for a rule) ─────────────
+app.post('/api/email-schedule/:id/run-now', async (req, res) => {
+    try {
+        const userId = uid(req);
+        const scheduleId = req.params.id;
+        if (emailScheduler.isRunning(userId)) {
+            return res.json({ success: false, error: 'Already sending — please wait for current batch to finish' });
+        }
+        
+        const schedule = await EmailSchedule.findOne({ _id: scheduleId, userId });
+        if (!schedule) {
+            return res.json({ success: false, error: 'Email schedule rule not found.' });
+        }
+        
+        // Count matching leads
+        const filter = { userId, email: { $exists: true, $ne: '' } };
+        if (schedule.categories?.length) {
+            filter.category = { $in: schedule.categories };
+        }
+        if (schedule.cities?.length) {
+            const cityRegexes = schedule.cities.map(c => new RegExp(`^${c.trim()}$`, 'i'));
+            filter.city = { $in: cityRegexes };
+        }
+        if (schedule.skip_sent && !schedule.allow_resend) {
+            filter.email_sent = { $ne: true };
+        }
+        
+        const count = await Lead.countDocuments(filter);
+        if (count === 0) {
+            return res.json({ 
+                success: false, 
+                error: `No matching unsent leads found. Category: [${schedule.categories.join(', ')}], City: [${schedule.cities.join(', ')}]. Please edit the rule to expand filters or check "Allow Re-send".`
+            });
+        }
+        
+        res.json({ success: true, message: `Found ${count} matching leads. Scheduled email batch started in background!` });
+        setImmediate(() => {
+            emailScheduler.runScheduledSend('manual', userId, scheduleId).catch(e => console.error('Run-now error:', e.message));
+        });
+    } catch(e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// ── Email Schedule: Test Daily Report Email ────────────────────────
+app.post('/api/email-schedule/:id/test-report', async (req, res) => {
+    try {
+        const userId = uid(req);
+        const schedule = await EmailSchedule.findOne({ _id: req.params.id, userId });
+        if (!schedule) return res.status(404).json({ error: 'Email schedule not found' });
+        
+        await emailScheduler.sendDailyReportForRule(schedule);
+        res.json({ success: true, message: 'Test report sent!' });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Email Schedule: Status ─────────────────────────────────────────────
+app.get('/api/email-schedule/status', async (req, res) => {
+    try {
+        const userId = uid(req);
+        const list = await EmailSchedule.find({ userId });
+        
+        const active = list.some(s => s.enabled);
+        const today_sent = list.reduce((sum, s) => sum + (s.today_sent || 0), 0);
+        const today_failed = list.reduce((sum, s) => sum + (s.today_failed || 0), 0);
+        const total_limit = list.reduce((sum, s) => sum + (s.daily_limit || 0), 0);
+        
+        let last_run = null;
+        list.forEach(s => {
+            if (s.last_run && (!last_run || s.last_run > last_run)) {
+                last_run = s.last_run;
+            }
+        });
+
+        res.json({
+            enabled:     active,
+            today_sent:  today_sent,
+            today_failed:today_failed,
+            daily_limit: total_limit,
+            last_run:    last_run,
+            is_running:  emailScheduler.isRunning(userId)
+        });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Email Schedule: Preview matching leads ──────────────────────────
+app.post('/api/email-schedule/preview', async (req, res) => {
+    try {
+        const userId = uid(req);
+        const { categories, cities, skip_sent, allow_resend, daily_limit, send_hours } = req.body;
+        
+        const filter = { userId, email: { $exists: true, $ne: '' } };
+
+        if (categories?.length) {
+            filter.category = { $in: categories };
+        }
+        
+        if (cities?.length) {
+            const cityRegexes = cities.map(c => new RegExp(`^${c.trim()}$`, 'i'));
+            filter.city = { $in: cityRegexes };
+        }
+
+        if (skip_sent && !allow_resend) {
+            filter.email_sent = { $ne: true };
+        }
+
+        const hourCount = send_hours?.length || 1;
+        const targetBatchSize = Math.ceil((parseInt(daily_limit) || 60) / hourCount);
+
+        const leads = await Lead.find(filter)
+            .sort({ createdAt: 1 })
+            .limit(Math.min(targetBatchSize, 30))
+            .select('name email city category email_sent')
+            .lean();
+
+        res.json({ success: true, count: leads.length, leads });
+    } catch(e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 // ── Social Poster: GET Settings ──────────────────────────────
 app.get('/api/social/settings', async (req, res) => {
     try {
-        let s = await SocialSettings.findOne({});
-        if (!s) s = await SocialSettings.create({});
+        const userId = uid(req);
+        let s = await SocialSettings.findOne({ userId });
+        if (!s) s = await SocialSettings.create({ userId });
         
         const settingsObj = s.toObject();
         // Mask passwords/tokens
@@ -946,9 +1746,10 @@ app.get('/api/social/settings', async (req, res) => {
 // ── Social Poster: SAVE Settings ─────────────────────────────
 app.post('/api/social/settings', async (req, res) => {
     try {
+        const userId = uid(req);
         const { enabled, frequency, time_hour, website_url, topic, title, custom_content, channels } = req.body;
-        let s = await SocialSettings.findOne({});
-        if (!s) s = new SocialSettings({});
+        let s = await SocialSettings.findOne({ userId });
+        if (!s) s = new SocialSettings({ userId });
 
         s.enabled = !!enabled;
         s.frequency = frequency || 'daily';
@@ -993,7 +1794,8 @@ app.post('/api/social/settings', async (req, res) => {
 // ── Social Poster: GET Recent Posts ──────────────────────────
 app.get('/api/social/posts', async (req, res) => {
     try {
-        const posts = await SocialPost.find({}).sort({ createdAt: -1 }).limit(100).lean();
+        const userId = uid(req);
+        const posts = await SocialPost.find({ userId }).sort({ createdAt: -1 }).limit(100).lean();
         res.json(posts);
     } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -1014,10 +1816,11 @@ app.post('/api/social/generate-preview', async (req, res) => {
 // ── Social Poster: Post Now (Trigger Instant Simulation) ─────
 app.post('/api/social/post-now', async (req, res) => {
     try {
+        const userId = uid(req);
         const { website_url, topic, title, custom_content } = req.body;
         const { scrapeWebsite, generateSocialPosts, postToSocial } = require('./services/social-poster');
         
-        let settings = await SocialSettings.findOne({});
+        let settings = await SocialSettings.findOne({ userId });
         if (!settings) {
             return res.status(400).json({ error: 'Please save settings first before running immediate post.' });
         }
@@ -1027,6 +1830,7 @@ app.post('/api/social/post-now', async (req, res) => {
         if (!webUrl) return res.status(400).json({ error: 'Website URL is required' });
         
         const tempSettings = {
+            userId,
             website_url: webUrl,
             topic: topic || settings.topic,
             title: title || settings.title,
@@ -1131,6 +1935,7 @@ app.get('/api/followups', async (req, res) => {
 // ── POST Add lead to follow-up queue ──────────────────────────
 app.post('/api/leads/:id/add-followup', async (req, res) => {
     try {
+        const userId = uid(req);
         const { note, scheduled_at } = req.body;
         const update = {
             followup_queued: true,
@@ -1138,7 +1943,8 @@ app.post('/api/leads/:id/add-followup', async (req, res) => {
             followup_scheduled_at: scheduled_at ? new Date(scheduled_at) : new Date(),
             status: 'followup'
         };
-        const lead = await Lead.findByIdAndUpdate(req.params.id,
+        const lead = await Lead.findOneAndUpdate(
+            { _id: req.params.id, userId },
             { $set: update, $push: { activity: { type: 'followup', message: note || 'Added to follow-up queue', date: new Date() } } },
             { new: true }
         );
@@ -1150,10 +1956,15 @@ app.post('/api/leads/:id/add-followup', async (req, res) => {
 // ── DELETE Remove lead from follow-up queue ───────────────────
 app.delete('/api/leads/:id/remove-followup', async (req, res) => {
     try {
-        await Lead.findByIdAndUpdate(req.params.id, {
-            $set: { followup_queued: false, followup_note: '', followup_scheduled_at: null },
-            $push: { activity: { type: 'followup', message: 'Removed from follow-up queue', date: new Date() } }
-        });
+        const userId = uid(req);
+        const lead = await Lead.findOneAndUpdate(
+            { _id: req.params.id, userId },
+            {
+                $set: { followup_queued: false, followup_note: '', followup_scheduled_at: null },
+                $push: { activity: { type: 'followup', message: 'Removed from follow-up queue', date: new Date() } }
+            }
+        );
+        if (!lead) return res.status(404).json({ error: 'Lead not found' });
         res.json({ success: true });
     } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -1161,12 +1972,13 @@ app.delete('/api/leads/:id/remove-followup', async (req, res) => {
 // ── POST Send follow-up WA (draft) from follow-up queue ───────
 app.post('/api/leads/:id/followup-send-wa', async (req, res) => {
     try {
-        const lead = await Lead.findById(req.params.id).lean();
+        const userId = uid(req);
+        const lead = await Lead.findOne({ _id: req.params.id, userId }).lean();
         if (!lead) return res.status(404).json({ error: 'Lead not found' });
         res.json({ success: true, message: 'Follow-up WA draft started!' });
         setImmediate(async () => {
             const { sendLocalWA_Draft } = require('./playwright-sender');
-            await sendLocalWA_Draft([req.params.id], true, { skipWaSent: false });
+            await sendLocalWA_Draft([req.params.id], true, { skipWaSent: false, companyId: userId });
         });
     } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -1174,13 +1986,14 @@ app.post('/api/leads/:id/followup-send-wa', async (req, res) => {
 // ── POST Send follow-up Email from follow-up queue ────────────
 app.post('/api/leads/:id/followup-send-email', async (req, res) => {
     try {
-        const lead = await Lead.findById(req.params.id).lean();
+        const userId = uid(req);
+        const lead = await Lead.findOne({ _id: req.params.id, userId }).lean();
         if (!lead) return res.status(404).json({ error: 'Lead not found' });
         if (!lead.email) return res.status(400).json({ error: 'No email address for this lead' });
         const followupNum = (lead.followup_count || 0) + 1;
         const { subject, html } = buildFollowupEmail(lead, followupNum);
-        await sendEmail(lead.email, subject, html);
-        await Lead.findByIdAndUpdate(lead._id, {
+        await sendEmail(lead.email, subject, html, userId);
+        await Lead.findOneAndUpdate({ _id: lead._id, userId }, {
             $inc:  { email_count: 1, followup_count: 1 },
             $set:  { email_sent: true, email_last_date: todayStr() },
             $push: { activity: { type: 'email_sent', message: `Follow-up #${followupNum} email sent`, date: new Date() } }
@@ -1191,22 +2004,27 @@ app.post('/api/leads/:id/followup-send-email', async (req, res) => {
 
 // ── POST Bulk send follow-up WA (draft) ───────────────────────
 app.post('/api/followups/send-wa', async (req, res) => {
+    const userId = uid(req);
     const { ids } = req.body;
     if (!ids || !ids.length) return res.status(400).json({ error: 'No IDs provided' });
+    const matchingLeads = await Lead.find({ _id: { $in: ids }, userId }).select('_id');
+    const allowedIds = matchingLeads.map(l => l._id.toString());
+    if (!allowedIds.length) return res.status(400).json({ error: 'No authorized leads selected' });
     res.json({ success: true, message: 'Follow-up WA draft started for selected leads!' });
     setImmediate(async () => {
         const { sendLocalWA_Draft } = require('./playwright-sender');
-        await sendLocalWA_Draft(ids, true, { skipWaSent: false });
+        await sendLocalWA_Draft(allowedIds, true, { skipWaSent: false, companyId: userId });
     });
 });
 
 // ── POST Bulk send follow-up Emails ───────────────────────────
 app.post('/api/followups/send-email', async (req, res) => {
+    const userId = uid(req);
     const { ids } = req.body;
     if (!ids || !ids.length) return res.status(400).json({ error: 'No IDs provided' });
     res.json({ success: true, message: 'Follow-up emails started!' });
     setImmediate(async () => {
-        const leads = await Lead.find({ _id: { $in: ids } }).lean();
+        const leads = await Lead.find({ _id: { $in: ids }, userId }).lean();
         let sent = 0, failed = 0;
         emit({ type: 'start', total: leads.length });
         for (let i = 0; i < leads.length; i++) {
@@ -1216,8 +2034,8 @@ app.post('/api/followups/send-email', async (req, res) => {
             try {
                 const followupNum = (lead.followup_count || 0) + 1;
                 const { subject, html } = buildFollowupEmail(lead, followupNum);
-                await sendEmail(lead.email, subject, html);
-                await Lead.findByIdAndUpdate(lead._id, {
+                await sendEmail(lead.email, subject, html, userId);
+                await Lead.findOneAndUpdate({ _id: lead._id, userId }, {
                     $inc: { email_count: 1, followup_count: 1 },
                     $set: { email_sent: true, email_last_date: todayStr() },
                     $push: { activity: { type: 'email_sent', message: `Follow-up #${followupNum} email sent`, date: new Date() } }
@@ -1310,8 +2128,8 @@ async function start() {
             await loadTemplatesCache();
             await loadGoogleCredentials();
             // ── Start scheduler from saved settings ──────────────────────
-            const savedSchedule = await Schedule.findOne({});
-            if (savedSchedule) scheduler.startScheduler(savedSchedule);
+            scheduler.startScheduler();
+            emailScheduler.startScheduler();
 
             // ── Start social poster scheduler ───────────────────────────
             scheduler.startSocialScheduler();

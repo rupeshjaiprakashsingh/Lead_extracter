@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Lead CRM — Login</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:'Inter',sans-serif;background:#020817;min-height:100vh;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative}
+
+  /* Animated background */
+  .bg-orb{position:fixed;border-radius:50%;filter:blur(80px);opacity:.25;animation:float 8s ease-in-out infinite}
+  .bg-orb1{width:500px;height:500px;background:radial-gradient(circle,#6366f1,#8b5cf6);top:-100px;left:-100px;animation-delay:0s}
+  .bg-orb2{width:400px;height:400px;background:radial-gradient(circle,#06b6d4,#3b82f6);bottom:-80px;right:-80px;animation-delay:3s}
+  .bg-orb3{width:300px;height:300px;background:radial-gradient(circle,#ec4899,#f43f5e);top:50%;left:50%;transform:translate(-50%,-50%);animation-delay:1.5s}
+  @keyframes float{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-30px) scale(1.05)}}
+
+  /* Grid overlay */
+  body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(rgba(99,102,241,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(99,102,241,.05) 1px,transparent 1px);background-size:50px 50px;pointer-events:none}
+
+  .card{position:relative;z-index:10;width:100%;max-width:420px;padding:20px}
+
+  .logo-wrap{text-align:center;margin-bottom:32px}
+  .logo-icon{width:64px;height:64px;background:linear-gradient(135deg,#6366f1,#8b5cf6);border-radius:18px;display:inline-flex;align-items:center;justify-content:center;font-size:32px;margin-bottom:12px;box-shadow:0 0 40px rgba(99,102,241,.5)}
+  .logo-title{font-size:24px;font-weight:800;color:#fff;letter-spacing:-.5px}
+  .logo-sub{font-size:13px;color:#64748b;margin-top:4px;font-weight:400}
+
+  .glass{background:rgba(15,23,42,.85);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.08);border-radius:20px;padding:36px;box-shadow:0 25px 50px rgba(0,0,0,.5)}
+
+  .tabs{display:flex;background:#0a1020;border-radius:10px;padding:4px;margin-bottom:28px;gap:4px}
+  .tab-btn{flex:1;padding:8px;border:none;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer;transition:.2s;background:transparent;color:#64748b}
+  .tab-btn.active{background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;box-shadow:0 4px 12px rgba(99,102,241,.4)}
+
+  .tab-content{display:none}
+  .tab-content.active{display:block}
+
+  label{display:block;font-size:11px;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
+  .field{margin-bottom:18px}
+  input[type=text],input[type=password],input[type=email]{width:100%;padding:11px 14px;background:#1e293b;border:1px solid #334155;border-radius:10px;color:#e2e8f0;font-size:14px;font-family:inherit;transition:.2s;outline:none}
+  input:focus{border-color:#6366f1;box-shadow:0 0 0 3px rgba(99,102,241,.2)}
+  input::placeholder{color:#475569}
+
+  .btn-login{width:100%;padding:13px;background:linear-gradient(135deg,#6366f1,#8b5cf6);border:none;border-radius:10px;color:#fff;font-size:15px;font-weight:700;cursor:pointer;transition:.2s;font-family:inherit;letter-spacing:.01em;box-shadow:0 8px 24px rgba(99,102,241,.4);margin-top:4px}
+  .btn-login:hover{transform:translateY(-1px);box-shadow:0 12px 28px rgba(99,102,241,.5)}
+  .btn-login:active{transform:translateY(0)}
+  .btn-login:disabled{opacity:.6;cursor:not-allowed;transform:none}
+
+  .error{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:8px;padding:10px 14px;color:#f87171;font-size:13px;margin-bottom:16px;display:none}
+  .success{background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.3);border-radius:8px;padding:10px 14px;color:#34d399;font-size:13px;margin-bottom:16px;display:none}
+
+  .divider{border:none;border-top:1px solid #1e293b;margin:20px 0}
+
+  /* Setup wizard card */
+  .setup-badge{display:inline-flex;align-items:center;gap:6px;background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.3);border-radius:20px;padding:4px 12px;font-size:11px;color:#fbbf24;font-weight:600;margin-bottom:16px}
+
+  .footer-links{text-align:center;margin-top:20px;font-size:12px;color:#475569}
+  .footer-links a{color:#6366f1;text-decoration:none}
+
+  /* Loading spinner */
+  .spinner{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .6s linear infinite;margin-right:8px;vertical-align:middle}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  .plan-badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;background:#1e3a5f;color:#60a5fa;margin-left:8px;vertical-align:middle}
+</style>
+</head>
+<body>
+
+<div class="bg-orb bg-orb1"></div>
+<div class="bg-orb bg-orb2"></div>
+<div class="bg-orb bg-orb3"></div>
+
+<div class="card">
+  <div class="logo-wrap">
+    <div class="logo-icon">🤖</div>
+    <div class="logo-title">Lead Automation CRM</div>
+    <div class="logo-sub">Powered by AI — Google Maps → WhatsApp + Email</div>
+  </div>
+
+  <div class="glass">
+
+    <!-- Check if first run -->
+    <div id="setup-prompt" style="display:none;text-align:center;margin-bottom:20px">
+      <div class="setup-badge">⚡ First Time Setup</div>
+      <div style="font-size:13px;color:#94a3b8">Create your admin account to get started</div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab-btn active" id="tab-login-btn" onclick="showTab('login')">🔐 Login</button>
+      <button class="tab-btn" id="tab-setup-btn" onclick="showTab('setup')" id="setup-tab-btn">⚙️ Setup</button>
+    </div>
+
+    <!-- LOGIN TAB -->
+    <div class="tab-content active" id="tab-login">
+      <div class="error" id="login-error"></div>
+      <div class="field">
+        <label>Username</label>
+        <input type="text" id="login-user" placeholder="your-username" autocomplete="username" onkeydown="if(event.key==='Enter')doLogin()">
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input type="password" id="login-pass" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+      </div>
+      <button class="btn-login" id="login-btn" onclick="doLogin()">
+        Login to Dashboard →
+      </button>
+      <div class="footer-links" style="margin-top:16px">
+        First time? <a href="#" onclick="showTab('setup')">Create your account</a>
+      </div>
+    </div>
+
+    <!-- SETUP / REGISTER TAB -->
+    <div class="tab-content" id="tab-setup">
+      <div class="error" id="setup-error"></div>
+      <div class="success" id="setup-success"></div>
+
+      <!-- License key field -->
+      <div class="field" id="license-field">
+        <label>🔑 License Key <span style="color:#64748b;font-weight:400;text-transform:none;font-size:10px">(provided by Innvoque)</span></label>
+        <input type="text" id="setup-license" placeholder="INNV-XXXX-XXXX-XXXX" style="font-family:monospace;letter-spacing:.05em" oninput="this.value=this.value.toUpperCase()">
+      </div>
+
+      <div class="field">
+        <label>🏢 Company Name</label>
+        <input type="text" id="setup-company" placeholder="e.g. My Business Solutions">
+      </div>
+      <div class="field">
+        <label>👤 Username</label>
+        <input type="text" id="setup-user" placeholder="e.g. rupesh (no spaces)" oninput="this.value=this.value.toLowerCase().replace(/\s/g,'')">
+      </div>
+      <div class="field">
+        <label>🔒 Password</label>
+        <input type="password" id="setup-pass" placeholder="Choose a strong password">
+      </div>
+      <div class="field">
+        <label>📧 Your Email <span style="color:#64748b;font-weight:400;text-transform:none;font-size:10px">(optional)</span></label>
+        <input type="email" id="setup-email" placeholder="your@email.com">
+      </div>
+      <button class="btn-login" id="setup-btn" onclick="doSetup()">
+        ✅ Create Account & Start
+      </button>
+    </div>
+
+  </div>
+
+    Built by <a href="https://innvoque.com" target="_blank">Innvoque Solutions</a> &nbsp;|&nbsp; <a href="tel:+917208461727" style="color:#6366f1;text-decoration:none">+91 7208461727</a>
+  </div>
+</div>
+
+<script>
+function showTab(name) {
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  document.getElementById('tab-' + name + '-btn').classList.add('active');
+}
+
+async function doLogin() {
+  const username = document.getElementById('login-user').value.trim();
+  const password = document.getElementById('login-pass').value;
+  const errEl = document.getElementById('login-error');
+  const btn = document.getElementById('login-btn');
+  errEl.style.display = 'none';
+  if (!username || !password) { errEl.textContent = 'Please enter username and password.'; errEl.style.display = 'block'; return; }
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Logging in...';
+  try {
+    const res = await fetch('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    const data = await res.json();
+    if (data.success) {
+      btn.innerHTML = '✅ Welcome back! Loading...';
+      window.location.href = '/';
+    } else {
+      errEl.textContent = data.error || 'Invalid username or password.';
+      errEl.style.display = 'block';
+      btn.disabled = false;
+      btn.innerHTML = 'Login to Dashboard →';
+    }
+  } catch(e) {
+    errEl.textContent = 'Server error. Is the app running?';
+    errEl.style.display = 'block';
+    btn.disabled = false;
+    btn.innerHTML = 'Login to Dashboard →';
+  }
+}
+
+async function doSetup() {
+  const license = document.getElementById('setup-license').value.trim();
+  const company = document.getElementById('setup-company').value.trim();
+  const username = document.getElementById('setup-user').value.trim();
+  const password = document.getElementById('setup-pass').value;
+  const email = document.getElementById('setup-email').value.trim();
+  const errEl = document.getElementById('setup-error');
+  const sucEl = document.getElementById('setup-success');
+  const btn = document.getElementById('setup-btn');
+  errEl.style.display = 'none';
+  sucEl.style.display = 'none';
+
+  if (!company || !username || !password) { errEl.textContent = 'Company name, username, and password are required.'; errEl.style.display = 'block'; return; }
+  if (password.length < 6) { errEl.textContent = 'Password must be at least 6 characters.'; errEl.style.display = 'block'; return; }
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Creating account...';
+
+  try {
+    const res = await fetch('/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ license, company, username, password, email })
+    });
+    const data = await res.json();
+    if (data.success) {
+      sucEl.textContent = '✅ Account created! Logging you in...';
+      sucEl.style.display = 'block';
+      setTimeout(() => window.location.href = '/', 1200);
+    } else {
+      errEl.textContent = data.error || 'Registration failed.';
+      errEl.style.display = 'block';
+      btn.disabled = false;
+      btn.innerHTML = '✅ Create Account & Start';
+    }
+  } catch(e) {
+    errEl.textContent = 'Server error. Is the app running?';
+    errEl.style.display = 'block';
+    btn.disabled = false;
+    btn.innerHTML = '✅ Create Account & Start';
+  }
+}
+
+// Check if first-time setup needed
+(async () => {
+  try {
+    const res = await fetch('/auth/status');
+    const d = await res.json();
+    if (d.firstRun) {
+      document.getElementById('setup-prompt').style.display = 'block';
+      // Hide license field on first run (admin creates without license)
+      document.getElementById('license-field').style.display = 'none';
+      showTab('setup');
+    }
+  } catch(e) {}
+})();
+</script>
+</body>
+</html>

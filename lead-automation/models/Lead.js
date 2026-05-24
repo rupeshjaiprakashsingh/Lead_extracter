@@ -7,6 +7,7 @@ const activitySchema = new mongoose.Schema({
 }, { _id: false });
 
 const leadSchema = new mongoose.Schema({
+    userId:     { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
     name:       { type: String, required: true, trim: true },
     phone:      { type: String, trim: true },   // E.164: 919876543210
     raw_phone:  { type: String, trim: true },   // Display: 9876543210
@@ -52,8 +53,8 @@ const leadSchema = new mongoose.Schema({
     tags:     [String]
 }, { timestamps: true });
 
-// Deduplication indexes
-leadSchema.index({ phone: 1 }, { unique: true, sparse: true });
+// Deduplication indexes — scoped per user
+leadSchema.index({ phone: 1, userId: 1 }, { unique: true, sparse: true });
 leadSchema.index({ name: 1, city: 1 });
 leadSchema.index({ category: 1 });
 leadSchema.index({ status: 1 });
