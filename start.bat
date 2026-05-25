@@ -7,13 +7,24 @@ echo  ================================══════════════
 echo.
 
 set "ROOT_DIR=%~dp0"
-set "NODE_PATH=%ROOT_DIR%node\node-v20.19.1-win-x64"
 set "APP_DIR=%ROOT_DIR%lead-automation"
+set "NODE_PATH="
+
+:: Discover dynamic portable Node directory if it exists and has npm
+for /d %%d in ("%ROOT_DIR%node\*") do (
+    if exist "%%d\node.exe" (
+        if exist "%%d\node_modules\npm\bin\npm-cli.js" (
+            set "NODE_PATH=%%d"
+            goto :node_path_resolved
+        )
+    )
+)
+:node_path_resolved
 
 :: ── Step 1: Add Bundled Node to PATH ──────────────────────
 echo  [1/5] Configuring portable Node.js environment...
-if exist "%NODE_PATH%\node.exe" goto :node_found
-echo  ⚠️  Bundled Node.js not found at %NODE_PATH%.
+if defined NODE_PATH if exist "%NODE_PATH%\node.exe" goto :node_found
+echo  ⚠️  Bundled Node.js not found in %ROOT_DIR%node.
 echo  Attempting to use system-installed Node.js...
 goto :check_node
 
