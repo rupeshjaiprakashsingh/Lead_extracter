@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const MONGO_URI = process.env.MONGO_URI || 'mongodb+srv://rupeshwork72:Gate%40air7208@mern-cluster.ahj3x8j.mongodb.net/lead_automation?appName=mern-cluster';
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://rupeshwork72:Gate%40air7208@ac-ielsbkk-shard-00-00.ahj3x8j.mongodb.net:27017,ac-ielsbkk-shard-00-01.ahj3x8j.mongodb.net:27017,ac-ielsbkk-shard-00-02.ahj3x8j.mongodb.net:27017/lead_automation?ssl=true&replicaSet=atlas-dm8oc5-shard-0&authSource=admin&retryWrites=true&w=majority';
 
 async function connectDB() {
     try {
