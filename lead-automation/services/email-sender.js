@@ -71,10 +71,20 @@ async function getLegacySmtpConfig(userId) {
 
 async function pickSmtpAccount(userId) {
     const today = todayStr();
+
+    // Auto-migrate legacy settings to SmtpAccount on run if needed
+    if (userId) {
+        try {
+            await migrateOldSettingsIfNeeded(userId);
+        } catch (err) {
+            logger.error(`[SMTP_AUTO_MIGRATE] Migration failed:`, err);
+        }
+    }
+
     const accounts = await SmtpAccount.find({ userId, isActive: true });
 
     if (!accounts.length) {
-        // Fall back to legacy single-account settings
+        // Fall back to legacy single-account settings (only if no SmtpAccount has been set up at all)
         const legacy = await getLegacySmtpConfig(userId);
         if (legacy) {
             logger.log(`📧 Load Balancer: no multi-accounts found — using legacy SMTP config`, 'EMAIL_LB');
@@ -97,16 +107,16 @@ async function pickSmtpAccount(userId) {
     // Filter: only accounts under their daily limit
     const available = fresh.filter(a => {
         const sentToday = a.daily_date === today ? a.daily_sent : 0;
-        return sentToday < a.daily_limit;
+        
+        // Gmail safety limit: enforce max 450 emails/day for free Gmail to avoid blocks
+        const isGmailHost = a.smtp_host && a.smtp_host.toLowerCase().includes('gmail.com');
+        const effectiveLimit = isGmailHost ? Math.min(a.daily_limit, 450) : a.daily_limit;
+
+        return sentToday < effectiveLimit;
     });
 
     if (!available.length) {
-        // All accounts at daily limit — check legacy fallback
-        const legacy = await getLegacySmtpConfig(userId);
-        if (legacy) {
-            logger.log(`📧 Load Balancer: all accounts at daily limit — falling back to legacy SMTP`, 'EMAIL_LB');
-            return { isLegacy: true, cfg: legacy };
-        }
+        // Strict daily limits: do NOT fall back to legacy credentials once SmtpAccounts exist
         throw new Error(
             `All ${fresh.length} email account(s) have reached their daily sending limit. ` +
             `They will automatically reset tomorrow. ` +
