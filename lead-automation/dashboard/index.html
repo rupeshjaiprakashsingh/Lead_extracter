@@ -1236,10 +1236,10 @@
         <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:14px">
           <label style="font-weight:600;color:#e2e8f0;font-size:13px;display:block;margin-bottom:8px">📊 Daily Email Limit</label>
           <div style="display:flex;align-items:center;gap:12px">
-            <input type="range" id="esch-limit-slider" min="5" max="200" step="5" value="60"
+            <input type="range" id="esch-limit-slider" min="5" max="450" step="5" value="450"
               oninput="document.getElementById('esch-limit-num').textContent=this.value;triggerEmailSchedulePreview();"
               style="flex:1;accent-color:#2563eb">
-            <span id="esch-limit-num" style="font-size:22px;font-weight:700;color:#60a5fa;min-width:40px">60</span>
+            <span id="esch-limit-num" style="font-size:22px;font-weight:700;color:#60a5fa;min-width:40px">450</span>
             <span style="font-size:11px;color:#64748b">per day</span>
           </div>
         </div>
@@ -1459,7 +1459,7 @@
       <!-- Daily limit -->
       <div style="display:flex;flex-direction:column;gap:5px">
         <label style="font-size:11px;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.04em">Daily Limit <span style="color:#64748b;font-weight:400">(emails per day, max ~500 for Gmail free)</span></label>
-        <input type="number" id="add-smtp-limit" value="400" min="10" max="500" style="padding:9px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px;width:160px">
+        <input type="number" id="add-smtp-limit" value="450" min="10" max="500" style="padding:9px 12px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:13px;width:160px">
       </div>
 
       <!-- Status message -->

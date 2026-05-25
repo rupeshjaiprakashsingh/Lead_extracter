@@ -13,7 +13,7 @@ const smtpAccountSchema = new mongoose.Schema({
     // Per-account daily tracking (reset each day)
     daily_sent:  { type: Number, default: 0 },
     daily_date:  { type: String, default: '' },                 // 'YYYY-MM-DD'
-    daily_limit: { type: Number, default: 400 },               // Gmail safe: max ~500/day
+    daily_limit: { type: Number, default: 450 },               // Gmail safe: max ~500/day
     // Metadata
     last_used_at: { type: Date, default: null },
     total_sent:   { type: Number, default: 0 },

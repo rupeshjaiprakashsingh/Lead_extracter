@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const MONGO_URI = 'mongodb+srv://rupeshwork72:Gate%40air7208@mern-cluster.ahj3x8j.mongodb.net/lead_automation?appName=mern-cluster';
+const MONGO_URI = process.env.MONGO_URI || 'mongodb+srv://rupeshwork72:Gate%40air7208@mern-cluster.ahj3x8j.mongodb.net/lead_automation?appName=mern-cluster';
 
 async function connectDB() {
     try {

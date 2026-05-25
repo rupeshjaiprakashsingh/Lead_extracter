@@ -275,7 +275,7 @@ async function migrateOldSettingsIfNeeded(userId) {
         smtp_pass:   legacy.pass,
         smtp_from:   legacy.from   || 'Digital Growth Team',
         isActive:    true,
-        daily_limit: 400,
+        daily_limit: 450,
     });
     logger.log(`✅ Legacy SMTP migrated to SmtpAccount for user ${userId}`, 'SMTP_MIGRATE');
 }

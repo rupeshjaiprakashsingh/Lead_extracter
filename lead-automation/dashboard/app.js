@@ -2049,6 +2049,34 @@ function renderEmailScheduleRules() {
   });
 }
 
+async function adjustEmailScheduleLimitSlider(currentValue) {
+  const slider = document.getElementById('esch-limit-slider');
+  const numLabel = document.getElementById('esch-limit-num');
+  if (!slider) return;
+
+  try {
+    const r = await fetch('/api/smtp-accounts');
+    const d = await r.json();
+    const accounts = d.accounts || [];
+    const count = accounts.length;
+    const maxLimit = Math.max(1, count) * 450;
+
+    slider.max = maxLimit;
+    
+    // Set slider value. If currentValue is provided, use it (clamped to maxLimit),
+    // otherwise use the maxLimit itself as the default.
+    const val = currentValue !== undefined ? Math.min(currentValue, maxLimit) : maxLimit;
+    slider.value = val;
+    if (numLabel) numLabel.textContent = val;
+  } catch (e) {
+    console.error('Error fetching SMTP accounts for slider limit:', e);
+    slider.max = 450;
+    const val = currentValue !== undefined ? Math.min(currentValue, 450) : 450;
+    slider.value = val;
+    if (numLabel) numLabel.textContent = val;
+  }
+}
+
 function openNewEmailScheduleForm() {
   document.getElementById('esch-list-view').style.display = 'none';
   document.getElementById('esch-form-view').style.display = 'block';
@@ -2064,8 +2092,7 @@ function openNewEmailScheduleForm() {
   
   document.getElementById('esch-cities').value = '';
   
-  document.getElementById('esch-limit-slider').value = 60;
-  document.getElementById('esch-limit-num').textContent = '60';
+  adjustEmailScheduleLimitSlider();
   
   const hourCheckboxes = document.querySelectorAll('input[name="esch-hour"]');
   hourCheckboxes.forEach(cb => {
@@ -2100,8 +2127,7 @@ function editEmailScheduleRuleForm(id) {
   
   document.getElementById('esch-cities').value = (s.cities || []).join(', ');
   
-  document.getElementById('esch-limit-slider').value = s.daily_limit || 60;
-  document.getElementById('esch-limit-num').textContent = s.daily_limit || 60;
+  adjustEmailScheduleLimitSlider(s.daily_limit);
   
   const hours = s.send_hours || [10, 16];
   const hourCheckboxes = document.querySelectorAll('input[name="esch-hour"]');
@@ -2176,7 +2202,7 @@ async function fetchEmailSchedulePreview() {
   const cities = citiesStr ? citiesStr.split(',').map(c => c.trim()).filter(Boolean) : [];
   const skip_sent = document.getElementById('esch-skip-sent').checked;
   const allow_resend = document.getElementById('esch-allow-resend').checked;
-  const daily_limit = parseInt(document.getElementById('esch-limit-slider').value) || 60;
+  const daily_limit = parseInt(document.getElementById('esch-limit-slider').value) || 450;
   
   const hourCheckboxes = document.querySelectorAll('input[name="esch-hour"]:checked');
   const send_hours = Array.from(hourCheckboxes).map(cb => parseInt(cb.value));
@@ -2240,7 +2266,7 @@ async function saveEmailScheduleRule() {
   const categories = _emailSelectedCategories;
   const citiesStr = document.getElementById('esch-cities').value;
   const cities = citiesStr ? citiesStr.split(',').map(c => c.trim()).filter(Boolean) : [];
-  const daily_limit = parseInt(document.getElementById('esch-limit-slider').value) || 60;
+  const daily_limit = parseInt(document.getElementById('esch-limit-slider').value) || 450;
   
   const hourCheckboxes = document.querySelectorAll('input[name="esch-hour"]:checked');
   const send_hours = Array.from(hourCheckboxes).map(cb => parseInt(cb.value));
@@ -2325,7 +2351,7 @@ async function runEmailScheduleRuleNow() {
   const categories = _emailSelectedCategories;
   const citiesStr = document.getElementById('esch-cities').value;
   const cities = citiesStr ? citiesStr.split(',').map(c => c.trim()).filter(Boolean) : [];
-  const daily_limit = parseInt(document.getElementById('esch-limit-slider').value) || 60;
+  const daily_limit = parseInt(document.getElementById('esch-limit-slider').value) || 450;
   
   const hourCheckboxes = document.querySelectorAll('input[name="esch-hour"]:checked');
   const send_hours = Array.from(hourCheckboxes).map(cb => parseInt(cb.value));
@@ -2930,7 +2956,7 @@ function openAddSmtpModal() {
   document.getElementById('add-smtp-host').value    = 'smtp.gmail.com';
   document.getElementById('add-smtp-port').value    = '587';
   document.getElementById('add-smtp-secure').value  = 'false';
-  document.getElementById('add-smtp-limit').value   = '400';
+  document.getElementById('add-smtp-limit').value   = '450';
   document.getElementById('add-smtp-status').innerHTML = '';
   document.getElementById('add-smtp-modal').style.display = 'flex';
 }
@@ -2993,7 +3019,7 @@ async function saveNewSmtpAccount() {
   const smtp_host  = document.getElementById('add-smtp-host').value.trim();
   const smtp_port  = parseInt(document.getElementById('add-smtp-port').value) || 587;
   const smtp_secure= document.getElementById('add-smtp-secure').value === 'true';
-  const daily_limit= parseInt(document.getElementById('add-smtp-limit').value) || 400;
+  const daily_limit= parseInt(document.getElementById('add-smtp-limit').value) || 450;
 
   if (!smtp_user) { statusEl.innerHTML = '<span style="color:#f87171">❌ Gmail address is required.</span>'; return; }
   if (!smtp_pass) { statusEl.innerHTML = '<span style="color:#f87171">❌ App Password is required.</span>'; return; }

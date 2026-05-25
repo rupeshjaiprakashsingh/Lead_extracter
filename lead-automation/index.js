@@ -1,6 +1,7 @@
 // ============================================================
 //  index.js — Lead Automation CRM (MongoDB + UltraMsg + Email)
 // ============================================================
+require('dotenv').config();
 const logger     = require('./services/logger');
 const express    = require('express');
 const path       = require('path');
@@ -26,7 +27,7 @@ app.use(session({
     resave: false,
     saveUninitialized: false,
     store: MongoStore.create({
-        mongoUrl: 'mongodb+srv://rupeshwork72:Gate%40air7208@mern-cluster.ahj3x8j.mongodb.net/lead_automation?appName=mern-cluster',
+        mongoUrl: process.env.MONGO_URI || 'mongodb+srv://rupeshwork72:Gate%40air7208@mern-cluster.ahj3x8j.mongodb.net/lead_automation?appName=mern-cluster',
         ttl: 14 * 24 * 60 * 60
     }),
     cookie: {
@@ -1167,12 +1168,32 @@ app.post('/api/test-smtp', async (req, res) => {
 // ── SMTP Email Accounts (Multi-Account Load Balancer) ──────
 // ═══════════════════════════════════════════════════════════
 
+// Helper to scale EmailSchedule limits based on SmtpAccount count
+async function updateScheduleLimitsForUser(userId) {
+    try {
+        const count = await SmtpAccount.countDocuments({ userId });
+        const newLimit = Math.max(1, count) * 450;
+        await EmailSchedule.updateMany(
+            { userId },
+            { $set: { daily_limit: newLimit } }
+        );
+        logger.log(`[SMTP_LIMIT_SCALE] Updated all EmailSchedule limits to ${newLimit} for user ${userId} (${count} SMTP accounts)`, 'SMTP');
+    } catch (e) {
+        logger.error(`[SMTP_LIMIT_SCALE] Failed to update EmailSchedule limits for user ${userId}:`, e);
+    }
+}
+
 // ── GET all SMTP accounts (passwords masked) ──────────────────
 app.get('/api/smtp-accounts', async (req, res) => {
     try {
         const userId = uid(req);
         // Trigger migration of old single-account settings on first load
+        const beforeCount = await SmtpAccount.countDocuments({ userId });
         await migrateOldSettingsIfNeeded(userId);
+        const afterCount = await SmtpAccount.countDocuments({ userId });
+        if (beforeCount === 0 && afterCount > 0) {
+            await updateScheduleLimitsForUser(userId);
+        }
 
         const accounts = await SmtpAccount.find({ userId }).sort({ createdAt: 1 }).lean();
         const today = new Date().toISOString().slice(0, 10);
@@ -1230,10 +1251,14 @@ app.post('/api/smtp-accounts', async (req, res) => {
             smtp_user:   smtp_user.trim(),
             smtp_pass:   smtp_pass,
             smtp_from:   smtp_from   || 'Digital Growth Team',
-            daily_limit: parseInt(daily_limit) || 400,
+            daily_limit: parseInt(daily_limit) || 450,
             isActive:    true,
         });
         logger.log(`New SMTP account added: ${smtp_user.split('@')[0]}***@${smtp_user.split('@')[1]}`, 'SMTP_ACCT');
+        
+        // Scale EmailSchedule rules limits
+        await updateScheduleLimitsForUser(userId);
+        
         res.json({ success: true, id: acct._id });
     } catch(e) { res.status(500).json({ success: false, error: e.message }); }
 });
@@ -1269,6 +1294,10 @@ app.delete('/api/smtp-accounts/:id', async (req, res) => {
         const acct = await SmtpAccount.findOneAndDelete({ _id: req.params.id, userId });
         if (!acct) return res.status(404).json({ success: false, error: 'Account not found.' });
         logger.log(`SMTP account deleted: ${acct.smtp_user}`, 'SMTP_ACCT');
+        
+        // Scale EmailSchedule rules limits
+        await updateScheduleLimitsForUser(userId);
+        
         res.json({ success: true });
     } catch(e) { res.status(500).json({ success: false, error: e.message }); }
 });
@@ -1534,7 +1563,13 @@ app.get('/api/email-schedule', async (req, res) => {
         const userId = uid(req);
         let list = await EmailSchedule.find({ userId }).sort({ createdAt: -1 });
         if (!list.length) {
-            const defaultSched = await EmailSchedule.create({ userId, name: 'Default Email Schedule' });
+            const smtpCount = await SmtpAccount.countDocuments({ userId });
+            const defaultLimit = Math.max(1, smtpCount) * 450;
+            const defaultSched = await EmailSchedule.create({ 
+                userId, 
+                name: 'Default Email Schedule',
+                daily_limit: defaultLimit
+            });
             list = [defaultSched];
         }
         res.json({ list, categories_list: ALL_CATEGORIES });
@@ -1546,13 +1581,15 @@ app.post('/api/email-schedule', async (req, res) => {
     try {
         const userId = uid(req);
         const { name, enabled, categories, cities, daily_limit, skip_sent, allow_resend, send_hours, report_email } = req.body;
+        const smtpCount = await SmtpAccount.countDocuments({ userId });
+        const defaultLimit = Math.max(1, smtpCount) * 450;
         const s = await EmailSchedule.create({
             userId,
             name: name || 'New Email Schedule',
             enabled: !!enabled,
             categories: categories || [],
             cities: cities || [],
-            daily_limit: parseInt(daily_limit) || 60,
+            daily_limit: parseInt(daily_limit) || defaultLimit,
             skip_sent: skip_sent !== false,
             allow_resend: !!allow_resend,
             send_hours: send_hours || [10, 16],
@@ -1567,6 +1604,8 @@ app.put('/api/email-schedule/:id', async (req, res) => {
     try {
         const userId = uid(req);
         const { name, enabled, categories, cities, daily_limit, skip_sent, allow_resend, send_hours, report_email } = req.body;
+        const smtpCount = await SmtpAccount.countDocuments({ userId });
+        const defaultLimit = Math.max(1, smtpCount) * 450;
         const s = await EmailSchedule.findOneAndUpdate(
             { _id: req.params.id, userId },
             {
@@ -1575,7 +1614,7 @@ app.put('/api/email-schedule/:id', async (req, res) => {
                     enabled: !!enabled,
                     categories: categories || [],
                     cities: cities || [],
-                    daily_limit: parseInt(daily_limit) || 60,
+                    daily_limit: parseInt(daily_limit) || defaultLimit,
                     skip_sent: skip_sent !== false,
                     allow_resend: !!allow_resend,
                     send_hours: send_hours || [10, 16],
