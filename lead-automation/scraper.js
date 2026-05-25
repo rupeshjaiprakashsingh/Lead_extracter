@@ -318,43 +318,103 @@ async function scrapeGoogleMaps(keyword, city, maxResults = 9999) {
                 await waitForCaptchaIfNeeded(page, `at lead #${i+1}`);
             }
 
-            await sleep(1500);
+            await sleep(500);
             await page.waitForSelector('h1', { timeout: 8000 }).catch(() => {});
 
-            // Extract data
-            const name     = await page.locator('h1').first().textContent({ timeout: 4000 }).catch(() => '');
-            const rating   = await page.locator('div.F7nice span[aria-hidden="true"]').first().textContent({ timeout: 2000 }).catch(() => '');
-            const revLabel = await page.locator('div.F7nice span[aria-label]').first().getAttribute('aria-label', { timeout: 2000 }).catch(() => '');
+            // Extract data using fast exist/count checks to avoid long sequential timeouts for missing elements
+            const nameLocator = page.locator('h1').first();
+            const name = await nameLocator.count() > 0 ? (await nameLocator.textContent({ timeout: 1000 }).catch(() => '')) : '';
+
+            const ratingLocator = page.locator('div.F7nice span[aria-hidden="true"]').first();
+            const rating = await ratingLocator.count() > 0 ? (await ratingLocator.textContent({ timeout: 1000 }).catch(() => '')) : '';
+
+            const revLocator = page.locator('div.F7nice span[aria-label]').first();
+            const revLabel = await revLocator.count() > 0 ? (await revLocator.getAttribute('aria-label', { timeout: 1000 }).catch(() => '')) : '';
             const reviews  = (revLabel || '').match(/[\d,]+/)?.[0]?.replace(',', '') || '';
-            const category = await page.locator('button.DkEaL').first().textContent({ timeout: 2000 }).catch(() => '');
-            const address  = await page.locator('[data-item-id="address"] .Io6YTe').first().textContent({ timeout: 2000 }).catch(() => '');
-            const webHref  = await page.locator('a[data-item-id="authority"]').first().getAttribute('href', { timeout: 2000 }).catch(() => '');
+
+            const catLocator = page.locator('button.DkEaL').first();
+            const category = await catLocator.count() > 0 ? (await catLocator.textContent({ timeout: 1000 }).catch(() => '')) : '';
+
+            const addrLocator = page.locator('[data-item-id="address"] .Io6YTe').first();
+            const address = await addrLocator.count() > 0 ? (await addrLocator.textContent({ timeout: 1000 }).catch(() => '')) : '';
+
+            const webLocator = page.locator('a[data-item-id="authority"]').first();
+            const webHref = await webLocator.count() > 0 ? (await webLocator.getAttribute('href', { timeout: 1000 }).catch(() => '')) : '';
             const website  = webHref ? webHref.replace(/^https?:\/\//, '').replace(/\/$/, '').split('/')[0].toLowerCase() : '';
-            const phoneRaw = await page.locator('[data-item-id^="phone:tel"] .Io6YTe').first().textContent({ timeout: 2000 }).catch(() =>
-                page.locator('button[aria-label^="Phone"] .Io6YTe').first().textContent({ timeout: 2000 }).catch(() => '')
-            );
+
+            let phoneRaw = '';
+            const phoneLocator1 = page.locator('[data-item-id^="phone:tel"] .Io6YTe').first();
+            const phoneLocator2 = page.locator('button[aria-label^="Phone"] .Io6YTe').first();
+            if (await phoneLocator1.count() > 0) {
+                phoneRaw = await phoneLocator1.textContent({ timeout: 1000 }).catch(() => '');
+            } else if (await phoneLocator2.count() > 0) {
+                phoneRaw = await phoneLocator2.textContent({ timeout: 1000 }).catch(() => '');
+            }
             const phone = cleanPhone(phoneRaw.trim());
 
             let emails = '';
             if (webHref) {
                 try {
                     console.log(`  🌐 Extracting emails from: ${webHref}`);
-                    const webPage = await browser.newPage();
-                    await webPage.goto(webHref, { waitUntil: 'domcontentloaded', timeout: 15000 });
-                    
-                    const pageText = await webPage.content();
-                    const emailRegex = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/gi;
-                    const foundEmails = pageText.match(emailRegex);
-                    
-                    if (foundEmails) {
-                        const validEmails = foundEmails.filter(e => {
-                            const lower = e.toLowerCase();
-                            return !lower.endsWith('.png') && !lower.endsWith('.jpg') && !lower.endsWith('.jpeg') && !lower.endsWith('.gif') && !lower.endsWith('.webp') && !lower.endsWith('.svg') && !lower.includes('sentry') && !lower.includes('wixpress');
+                    let html = '';
+                    let fetched = false;
+
+                    // Method 1: Try fast fetch via HTTP to bypass browser tab overhead
+                    try {
+                        const controller = new AbortController();
+                        const timeoutId = setTimeout(() => controller.abort(), 6000);
+                        const res = await fetch(webHref, {
+                            signal: controller.signal,
+                            headers: {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                                'Accept-Language': 'en-US,en;q=0.5'
+                            }
                         });
-                        const uniqueEmails = [...new Set(validEmails.map(e => e.toLowerCase()))];
-                        emails = uniqueEmails.join(',');
+                        clearTimeout(timeoutId);
+                        if (res.ok) {
+                            html = await res.text();
+                            fetched = true;
+                            console.log(`    ⚡ Fast-fetched HTML successfully via HTTP`);
+                        }
+                    } catch (fetchErr) {
+                        // Fallback to browser page if fetch fails or times out
                     }
-                    await webPage.close();
+
+                    // Method 2: Fallback to lightweight browser page (with image/styles blocking)
+                    if (!fetched) {
+                        const webPage = await browser.newPage();
+                        try {
+                            // Block non-essential heavy resources (images, stylesheets, media, fonts, sockets)
+                            await webPage.route('**/*', route => {
+                                const type = route.request().resourceType();
+                                if (['image', 'stylesheet', 'media', 'font', 'websocket', 'manifest'].includes(type)) {
+                                    route.abort();
+                                } else {
+                                    route.continue();
+                                }
+                            });
+                            await webPage.goto(webHref, { waitUntil: 'domcontentloaded', timeout: 12000 });
+                            html = await webPage.content();
+                            fetched = true;
+                        } finally {
+                            await webPage.close();
+                        }
+                    }
+
+                    if (fetched && html) {
+                        const emailRegex = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/gi;
+                        const foundEmails = html.match(emailRegex);
+                        
+                        if (foundEmails) {
+                            const validEmails = foundEmails.filter(e => {
+                                const lower = e.toLowerCase();
+                                return !lower.endsWith('.png') && !lower.endsWith('.jpg') && !lower.endsWith('.jpeg') && !lower.endsWith('.gif') && !lower.endsWith('.webp') && !lower.endsWith('.svg') && !lower.includes('sentry') && !lower.includes('wixpress');
+                            });
+                            const uniqueEmails = [...new Set(validEmails.map(e => e.toLowerCase()))];
+                            emails = uniqueEmails.join(',');
+                        }
+                    }
                 } catch(e) {
                     console.log(`  ⚠️ Could not extract emails from ${webHref}: ${e.message.split('\n')[0]}`);
                 }
