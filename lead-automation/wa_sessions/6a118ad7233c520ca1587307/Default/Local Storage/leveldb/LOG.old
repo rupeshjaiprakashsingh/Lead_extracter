@@ -1,6 +1,3 @@
-2026/05/24-20:58:05.210 5164 Reusing MANIFEST c:\Users\Admin\Documents\GitHub\Lead_extracter\lead-automation\wa_sessions\6a118ad7233c520ca1587307\Default\Local Storage\leveldb/MANIFEST-000001
-2026/05/24-20:58:05.215 5164 Recovering log #33
-2026/05/24-20:58:05.218 5164 Reusing old log c:\Users\Admin\Documents\GitHub\Lead_extracter\lead-automation\wa_sessions\6a118ad7233c520ca1587307\Default\Local Storage\leveldb/000033.log 
-2026/05/24-21:04:05.798 4fdc Level-0 table #36: started
-2026/05/24-21:04:05.814 4fdc Level-0 table #36: 25274 bytes OK
-2026/05/24-21:04:05.820 4fdc Delete type=0 #33
+2026/05/25-12:00:00.583 5f8c Reusing MANIFEST C:\Users\Admin\Documents\GitHub\Lead_extracter\lead-automation\wa_sessions\6a118ad7233c520ca1587307\Default\Local Storage\leveldb/MANIFEST-000001
+2026/05/25-12:00:00.590 5f8c Recovering log #35
+2026/05/25-12:00:00.592 5f8c Reusing old log C:\Users\Admin\Documents\GitHub\Lead_extracter\lead-automation\wa_sessions\6a118ad7233c520ca1587307\Default\Local Storage\leveldb/000035.log 
