@@ -35,8 +35,18 @@ set "PATH=%NODE_PATH%;%PATH%"
 :check_node
 node --version >nul 2>&1
 if not errorlevel 1 goto :node_ok
-echo  ❌ ERROR: Node.js is not installed and bundled Node.js was not found.
-echo  Please install Node.js from https://nodejs.org/ or ensure the 'node' folder exists.
+echo.
+echo  ⚠️  Node.js is not installed on this system and bundled Node.js was not found.
+echo  Attempting to install Node.js automatically via Windows Package Manager (winget)...
+winget install OpenJS.NodeJS --silent --accept-source-agreements --accept-package-agreements
+if errorlevel 1 goto :node_install_fail
+echo  ✅ Node.js installed successfully! Please close this window and restart start.bat.
+pause
+exit /b 0
+
+:node_install_fail
+echo  ❌ ERROR: Automated Node.js installation failed.
+echo  Please manually install Node.js (LTS version) from https://nodejs.org/
 pause
 exit /b 1
 
