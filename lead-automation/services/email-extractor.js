@@ -101,7 +101,7 @@ async function findContactLinks(page, baseUrl) {
             }));
         });
 
-        const contactKeywords = ['contact', 'about', 'get-in-touch', 'reach-us', 'find-us', 'support', 'connect'];
+        const contactKeywords = ['contact', 'about', 'get-in-touch', 'reach-us', 'find-us', 'support', 'connect', 'locate', 'office', 'career', 'help', 'team', 'service', 'terms', 'privacy', 'info'];
         const results = [];
 
         for (const link of links) {
@@ -224,8 +224,8 @@ async function extractEmailsForLeads(leadIds, userId, onProgress) {
             // 2. Discover contact page link(s)
             const contactLinks = await findContactLinks(page, startUrl);
 
-            // Visit discovered contact pages
-            const pagesToVisit = contactLinks.slice(0, 2);
+            // Visit discovered contact pages (visit up to 4 subpages for thoroughness)
+            const pagesToVisit = contactLinks.slice(0, 4);
             for (const contactUrl of pagesToVisit) {
                 try {
                     await page.goto(contactUrl, { waitUntil: 'domcontentloaded', timeout: 12000 });

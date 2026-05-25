@@ -190,7 +190,7 @@ async function scrapeGoogleMaps(keyword, city, maxResults = 9999) {
             if (href) {
                 // Ensure it's a valid place URL and not an ad/suggested link from elsewhere
                 const isRealResult = await link.evaluate(el => {
-                    const parent = el.closest('[role="feed"], [aria-label^="Results for"], .m67qEc');
+                    const parent = el.closest('[role="feed"], [aria-label^="Results for"], .m67qEc, .hfpxzc, [role="article"]');
                     return !!parent;
                 }).catch(() => true);
 
@@ -241,12 +241,23 @@ async function scrapeGoogleMaps(keyword, city, maxResults = 9999) {
 
         // ── DEEP SCROLL MECHANISM ─────────────────────────────
         try {
-            // 1. Find the results container
-            const feed = page.locator('[role="feed"], [aria-label^="Results for"], .m67qEc').first();
+            // 1. Hover over the first place link to position the mouse over the results feed panel
+            const firstResult = page.locator('a[href*="/maps/place/"]').first();
+            if (await firstResult.count() > 0) {
+                await firstResult.hover().catch(() => {});
+            }
 
-            // 2. Scroll the container to its bottom
-            await feed.hover().catch(() => {});
-            await feed.evaluate(el => el.scrollTo(0, el.scrollHeight)).catch(() => {});
+            // 2. Scroll the results container to its bottom using dynamic overflow checking
+            await page.evaluate(() => {
+                const scrollable = document.querySelector('[role="feed"], .m67qEc, div[role="feed"]') || 
+                                   Array.from(document.querySelectorAll('div')).find(el => {
+                                       const style = window.getComputedStyle(el);
+                                       return (style.overflowY === 'auto' || style.overflowY === 'scroll') && el.scrollHeight > el.clientHeight;
+                                   });
+                if (scrollable) {
+                    scrollable.scrollTo(0, scrollable.scrollHeight);
+                }
+            }).catch(() => {});
             await sleep(800);
 
             // 3. Find the last result and scroll it into view specifically
