@@ -2,6 +2,23 @@
 //  index.js — Lead Automation CRM (MongoDB + UltraMsg + Email)
 // ============================================================
 require('dotenv').config();
+
+// Prevent server crash on MongoDB connection failure/authentication issues
+process.on('unhandledRejection', (reason) => {
+    if (reason && reason.message && reason.message.includes('Authentication failed')) {
+        console.error('\n❌ ERROR: MongoDB Authentication failed. Please check your username and password in the .env file.\n');
+    } else {
+        console.error('⚠️ Unhandled Rejection:', reason);
+    }
+});
+process.on('uncaughtException', (err) => {
+    if (err && err.message && err.message.includes('Authentication failed')) {
+        console.error('\n❌ ERROR: MongoDB Authentication failed. Please check your username and password in the .env file.\n');
+    } else {
+        console.error('⚠️ Uncaught Exception:', err);
+    }
+});
+
 const logger     = require('./services/logger');
 const express    = require('express');
 const path       = require('path');
