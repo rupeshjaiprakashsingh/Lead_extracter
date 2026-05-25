@@ -59,7 +59,7 @@ echo.
 echo  [2/5] Setting up environment variables...
 if exist "%APP_DIR%\.env" goto :env_exists
 if exist "%ROOT_DIR%.env.example" goto :copy_example
-echo MONGO_URI=mongodb://rupeshwork72:Gate%%40air7208@ac-ielsbkk-shard-00-00.ahj3x8j.mongodb.net:27017,ac-ielsbkk-shard-00-01.ahj3x8j.mongodb.net:27017,ac-ielsbkk-shard-00-02.ahj3x8j.mongodb.net:27017/lead_automation?ssl=true^&replicaSet=atlas-dm8oc5-shard-0^&authSource=admin^&retryWrites=true^&w=majority > "%APP_DIR%\.env"
+echo MONGO_URI=mongodb://YOUR_DB_USER:YOUR_DB_PASSWORD@ac-ielsbkk-shard-00-00.ahj3x8j.mongodb.net:27017,ac-ielsbkk-shard-00-01.ahj3x8j.mongodb.net:27017,ac-ielsbkk-shard-00-02.ahj3x8j.mongodb.net:27017/lead_automation?ssl=true^&replicaSet=atlas-dm8oc5-shard-0^&authSource=admin^&retryWrites=true^&w=majority > "%APP_DIR%\.env"
 echo  ✅ Created basic lead-automation/.env file
 goto :env_done
 

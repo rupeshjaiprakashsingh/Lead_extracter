@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://rupeshwork72:Gate%40air7208@ac-ielsbkk-shard-00-00.ahj3x8j.mongodb.net:27017,ac-ielsbkk-shard-00-01.ahj3x8j.mongodb.net:27017,ac-ielsbkk-shard-00-02.ahj3x8j.mongodb.net:27017/lead_automation?ssl=true&replicaSet=atlas-dm8oc5-shard-0&authSource=admin&retryWrites=true&w=majority';
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/lead_automation';
 
 async function connectDB() {
     try {
