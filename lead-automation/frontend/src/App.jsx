@@ -25,6 +25,7 @@ import LeadsPage from './pages/dashboard/LeadsPage'
 import FollowupsPage from './pages/dashboard/FollowupsPage'
 import CampaignsPage from './pages/dashboard/CampaignsPage'
 import SocialPage from './pages/dashboard/SocialPage'
+import SocialLeadsPage from './pages/dashboard/SocialLeadsPage'
 import SettingsPage from './pages/dashboard/SettingsPage'
 import UsersPage from './pages/dashboard/UsersPage'
 import SchedulePage from './pages/dashboard/SchedulePage'
@@ -100,6 +101,7 @@ function App() {
           <Route path="followups" element={<FollowupsPage />} />
           <Route path="campaigns" element={<CampaignsPage />} />
           <Route path="social" element={<SocialPage />} />
+          <Route path="social-leads" element={<SocialLeadsPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route
             path="users"

@@ -18,6 +18,8 @@ client_secret.json
 playwright-profile/
 test-results/
 playwright-report/
+.wa_daily_count.json
+wa_sessions/
 
 # Logs
 logs

@@ -10,6 +10,7 @@ const NAV_ITEMS_ALL = [
   { to: '/dashboard/campaigns', label: 'Campaigns', icon: '🎯' },
   { to: '/dashboard/schedule', label: 'Scheduler', icon: '⏰' },
   { to: '/dashboard/social', label: 'Social Poster', icon: '📱' },
+  { to: '/dashboard/social-leads', label: 'Social Leads', icon: '🎯' },
 ]
 
 const ADMIN_ITEMS = [
@@ -49,6 +50,7 @@ export default function DashboardLayout() {
     if (p.includes('/followups')) return 'Follow-ups'
     if (p.includes('/campaigns')) return 'Campaigns'
     if (p.includes('/schedule')) return 'Scheduler'
+    if (p.includes('/social-leads')) return 'Social Lead Intelligence'
     if (p.includes('/social')) return 'Social Poster'
     if (p.includes('/users')) return 'Team'
     if (p.includes('/settings')) return 'Settings'

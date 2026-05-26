@@ -281,9 +281,11 @@ const Schedule       = require('./models/Schedule');
 const EmailSchedule  = require('./models/EmailSchedule');
 const SocialSettings = require('./models/SocialSettings');
 const SocialPost     = require('./models/SocialPost');
-const SmtpAccount    = require('./models/SmtpAccount');
-const scheduler      = require('./services/scheduler');
-const emailScheduler = require('./services/email-scheduler');
+const SmtpAccount       = require('./models/SmtpAccount');
+const SocialLead        = require('./models/SocialLead');
+const socialScraper     = require('./social-media-scraper');
+const scheduler         = require('./services/scheduler');
+const emailScheduler    = require('./services/email-scheduler');
 
 // ── SSE Progress ──────────────────────────────────────────────
 let sseClients = [];
@@ -865,6 +867,24 @@ app.post('/api/leads/:id/mark-wa', async (req, res) => {
         }
         res.json({ success: true });
     } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── GET WhatsApp Daily Stats & Limits ─────────────────────────
+app.get('/api/wa/daily-stats', requireAuth, (req, res) => {
+    try {
+        const { getDailyStats, WA_LIMITS } = require('./playwright-sender');
+        const stats = getDailyStats();
+        res.json({
+            ...stats,
+            perPhoneLimit: WA_LIMITS.PER_PHONE_PER_DAY,
+            warnAtPercent: WA_LIMITS.WARN_AT_PERCENT,
+            isAtRisk: stats.percent >= WA_LIMITS.WARN_AT_PERCENT,
+            isCapped: stats.remaining <= 0
+        });
+    } catch (e) {
+        // If playwright-sender not yet loaded, return defaults
+        res.json({ sent: 0, remaining: 90, cap: 90, percent: 0, perPhoneLimit: 1, warnAtPercent: 80, isAtRisk: false, isCapped: false });
+    }
 });
 
 // ── POST Send WhatsApp (Local Automation via Playwright) ──────
@@ -2166,7 +2186,280 @@ async function loadGoogleCredentials() {
     } catch(e) { console.log('  ⚠️  Google credentials load error:', e.message); }
 }
 
+
+// ================================================================
+//  SOCIAL MEDIA LEAD EXTRACTOR — API Routes
+//  Finds potential customers for Innvoque IT services
+// ================================================================
+
+// Active scrape jobs tracker
+const activeScrapeJobs = new Map();
+let socialSSEClients = [];
+
+function emitSocialEvent(jobId, data) {
+    const msg = `data: ${JSON.stringify({ jobId, ...data })}\n\n`;
+    socialSSEClients.forEach(c => { try { c.write(msg); } catch(e) {} });
+}
+
+// SSE stream for social scraping progress
+app.get('/api/social-leads/progress', requireAuth, (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+    socialSSEClients.push(res);
+    res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
+    req.on('close', () => { socialSSEClients = socialSSEClients.filter(c => c !== res); });
+});
+
+// GET /api/social-leads/keywords — return Innvoque keyword presets
+app.get('/api/social-leads/keywords', requireAuth, (req, res) => {
+    res.json({ presets: socialScraper.getKeywordPresets() });
+});
+
+// POST /api/social-leads/search — start a scraping job
+app.post('/api/social-leads/search', requireAuth, async (req, res) => {
+    try {
+        const {
+            platforms = ['linkedin', 'twitter', 'indiamart', 'justdial'],
+            keyword,
+            city = 'India',
+            maxPerPlatform = 20
+        } = req.body;
+
+        if (!keyword) return res.status(400).json({ error: 'keyword is required' });
+
+        const jobId = Date.now().toString();
+        activeScrapeJobs.set(jobId, { status: 'running', startedAt: new Date(), leads: [] });
+
+        res.json({ jobId, status: 'started' });
+
+        // Run scraping in background
+        setImmediate(async () => {
+            try {
+                emitSocialEvent(jobId, { type: 'start', keyword, platforms });
+
+                const leads = await socialScraper.scrapeAllPlatforms({
+                    platforms,
+                    keyword,
+                    city,
+                    maxPerPlatform: Math.min(maxPerPlatform, 50),
+                    onProgress: (evt) => {
+                        emitSocialEvent(jobId, { type: 'progress', ...evt });
+                    }
+                });
+
+                // Save unique leads to DB (skip if profileUrl already exists for this user)
+                const userId = uid(req);
+                let saved = 0;
+                const savedLeads = [];
+
+                for (const lead of leads) {
+                    try {
+                        const existing = lead.profileUrl
+                            ? await SocialLead.findOne({ profileUrl: lead.profileUrl, userId })
+                            : null;
+                        if (existing) continue;
+
+                        const doc = await SocialLead.create({ ...lead, userId });
+                        savedLeads.push(doc);
+                        saved++;
+                    } catch (e) { /* duplicate — skip */ }
+                }
+
+                activeScrapeJobs.set(jobId, { status: 'done', leads: savedLeads });
+                emitSocialEvent(jobId, {
+                    type: 'done',
+                    total: leads.length,
+                    saved,
+                    leads: savedLeads
+                });
+            } catch (e) {
+                activeScrapeJobs.set(jobId, { status: 'error', error: e.message });
+                emitSocialEvent(jobId, { type: 'error', error: e.message });
+            }
+        });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// GET /api/social-leads — list all social leads for user
+app.get('/api/social-leads', requireAuth, async (req, res) => {
+    try {
+        const userId = uid(req);
+        const {
+            platform, status, score, serviceCategory,
+            page = 1, limit = 50, search
+        } = req.query;
+
+        const filter = { userId };
+        if (platform) filter.platform = platform;
+        if (status)   filter.status   = status;
+        if (serviceCategory) filter.serviceCategory = serviceCategory;
+        if (score)    filter.score = { $gte: parseInt(score) };
+        if (search) {
+            filter.$or = [
+                { name: { $regex: search, $options: 'i' } },
+                { company: { $regex: search, $options: 'i' } },
+                { intentText: { $regex: search, $options: 'i' } }
+            ];
+        }
+
+        const skip = (parseInt(page) - 1) * parseInt(limit);
+        const [leads, total] = await Promise.all([
+            SocialLead.find(filter).sort({ score: -1, createdAt: -1 }).skip(skip).limit(parseInt(limit)).lean(),
+            SocialLead.countDocuments(filter)
+        ]);
+
+        // Stats
+        const stats = await SocialLead.aggregate([
+            { $match: { userId: userId ? require('mongoose').Types.ObjectId.createFromHexString(userId.toString()) : null } },
+            { $group: {
+                _id: '$platform',
+                count: { $sum: 1 },
+                avgScore: { $avg: '$score' }
+            }}
+        ]).catch(() => []);
+
+        res.json({ leads, total, page: parseInt(page), limit: parseInt(limit), stats });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// PATCH /api/social-leads/:id — update status/notes
+app.patch('/api/social-leads/:id', requireAuth, async (req, res) => {
+    try {
+        const userId = uid(req);
+        const { status, notes, score } = req.body;
+        const update = {};
+        if (status) update.status = status;
+        if (notes !== undefined) update.notes = notes;
+        if (score) update.score = score;
+
+        const lead = await SocialLead.findOneAndUpdate(
+            { _id: req.params.id, userId },
+            { $set: update },
+            { new: true }
+        );
+        if (!lead) return res.status(404).json({ error: 'Not found' });
+        res.json(lead);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// POST /api/social-leads/:id/add-to-crm — push social lead to main CRM
+app.post('/api/social-leads/:id/add-to-crm', requireAuth, async (req, res) => {
+    try {
+        const userId = uid(req);
+        const socialLead = await SocialLead.findOne({ _id: req.params.id, userId });
+        if (!socialLead) return res.status(404).json({ error: 'Social lead not found' });
+        if (socialLead.addedToCRM) return res.status(400).json({ error: 'Already added to CRM' });
+
+        // Create main lead from social lead data
+        const leadData = {
+            userId,
+            name: socialLead.name || socialLead.company || 'Unknown',
+            email: socialLead.contactEmail || '',
+            phone: socialLead.phone || '',
+            website: socialLead.website || socialLead.profileUrl || '',
+            category: socialLead.serviceCategory || 'Social Media Lead',
+            city: socialLead.location || '',
+            keyword: socialLead.intentKeyword || '',
+            source: 'manual',
+            status: 'new',
+            notes: [
+                `Source: ${socialLead.platform} lead`,
+                `Profile: ${socialLead.profileUrl || 'N/A'}`,
+                `Intent: ${socialLead.intentText ? socialLead.intentText.substring(0, 300) : 'N/A'}`,
+                `Score: ${socialLead.score}/5`
+            ].join('\n'),
+            tags: [`social-${socialLead.platform}`, `score-${socialLead.score}`, socialLead.serviceCategory].filter(Boolean)
+        };
+
+        // Try to avoid duplicate by phone
+        let crmLead;
+        if (leadData.phone) {
+            crmLead = await Lead.findOne({ phone: leadData.phone, userId });
+        }
+        if (!crmLead) {
+            crmLead = await Lead.create(leadData);
+        }
+
+        // Mark social lead as added to CRM
+        socialLead.addedToCRM = true;
+        socialLead.addedToCRMAt = new Date();
+        socialLead.crmLeadId = crmLead._id;
+        socialLead.status = 'contacted';
+        await socialLead.save();
+
+        res.json({ success: true, crmLeadId: crmLead._id, crmLead });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// DELETE /api/social-leads/:id — remove a social lead
+app.delete('/api/social-leads/:id', requireAuth, async (req, res) => {
+    try {
+        const userId = uid(req);
+        await SocialLead.findOneAndDelete({ _id: req.params.id, userId });
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// DELETE /api/social-leads — bulk delete by filter
+app.delete('/api/social-leads', requireAuth, async (req, res) => {
+    try {
+        const userId = uid(req);
+        const { status, platform, olderThanDays } = req.body;
+        const filter = { userId };
+        if (status) filter.status = status;
+        if (platform) filter.platform = platform;
+        if (olderThanDays) {
+            filter.createdAt = { $lt: new Date(Date.now() - olderThanDays * 86400000) };
+        }
+        const result = await SocialLead.deleteMany(filter);
+        res.json({ success: true, deleted: result.deletedCount });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// GET /api/social-leads/export-csv — export as CSV
+app.get('/api/social-leads/export-csv', requireAuth, async (req, res) => {
+    try {
+        const userId = uid(req);
+        const leads = await SocialLead.find({ userId }).sort({ score: -1 }).lean();
+
+        const header = ['Name','Company','Title','Platform','Location','Phone','Email','Website','Service Category','Score','Intent Keyword','Intent Text','Profile URL','Status','Added To CRM','Date Found'];
+        const rows = leads.map(l => [
+            l.name || '', l.company || '', l.title || '',
+            l.platform || '', l.location || '', l.phone || '',
+            l.contactEmail || '', l.website || '',
+            l.serviceCategory || '', l.score || '',
+            l.intentKeyword || '',
+            (l.intentText || '').replace(/,/g, ';').replace(/\n/g, ' ').substring(0, 200),
+            l.profileUrl || '', l.status || '',
+            l.addedToCRM ? 'Yes' : 'No',
+            l.createdAt ? new Date(l.createdAt).toISOString().slice(0,10) : ''
+        ]);
+
+        const csv = [header, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="social_leads_${Date.now()}.csv"`);
+        res.send(csv);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // ── Start ────────────────────────────────────────────────────
+
 const PORT = parseInt(process.env.PORT) || 3000;
 
 async function start() {

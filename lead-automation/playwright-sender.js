@@ -8,6 +8,76 @@ const getLeadModel = () => mongoose.model('Lead');
 const { buildInitialWA, buildFollowupWA } = require('./services/ai-messages');
 const { saveContactQuiet, isAuthorized } = require('./services/google-contacts');
 
+// ── WhatsApp Safety Limits ────────────────────────────────────
+// These limits protect your WhatsApp account from being banned.
+// Per WhatsApp's known tolerance:
+//   • NEW accounts  : 30-50 msgs/day max
+//   • ESTABLISHED accounts : 80-150 msgs/day max
+//   • Per phone number: never send more than 1 msg/day (default)
+const WA_LIMITS = {
+    PER_PHONE_PER_DAY: 1,        // Max messages to a single phone number per day
+    GLOBAL_DAILY_CAP: 90,        // Max total WA messages per day across ALL batches
+    WARN_AT_PERCENT: 80,         // Warn when reaching 80% of daily cap
+};
+
+// ── Daily count tracker (persisted to file across restarts) ───
+const DAILY_COUNT_FILE = path.join(__dirname, '.wa_daily_count.json');
+
+function loadDailyCount() {
+    try {
+        const today = new Date().toISOString().slice(0, 10);
+        if (fs.existsSync(DAILY_COUNT_FILE)) {
+            const data = JSON.parse(fs.readFileSync(DAILY_COUNT_FILE, 'utf8'));
+            if (data.date === today) return data;
+        }
+    } catch (e) {}
+    // New day or fresh start — reset counter
+    return { date: new Date().toISOString().slice(0, 10), count: 0, phones: {} };
+}
+
+function saveDailyCount(data) {
+    try {
+        fs.writeFileSync(DAILY_COUNT_FILE, JSON.stringify(data), 'utf8');
+    } catch (e) {}
+}
+
+function recordSent(phone) {
+    const data = loadDailyCount();
+    data.count = (data.count || 0) + 1;
+    data.phones = data.phones || {};
+    const p = String(phone).replace(/\D/g, '');
+    data.phones[p] = (data.phones[p] || 0) + 1;
+    saveDailyCount(data);
+    return data;
+}
+
+function canSendToPhone(phone) {
+    const data = loadDailyCount();
+    const today = new Date().toISOString().slice(0, 10);
+    if (data.date !== today) return { ok: true, globalSent: 0, phoneSent: 0 };
+    const p = String(phone).replace(/\D/g, '');
+    const phoneSent = (data.phones || {})[p] || 0;
+    const globalSent = data.count || 0;
+    // Block if phone already got its daily limit
+    if (phoneSent >= WA_LIMITS.PER_PHONE_PER_DAY) {
+        return { ok: false, reason: `Already sent ${phoneSent} msg(s) to this number today (limit: ${WA_LIMITS.PER_PHONE_PER_DAY}/day per number)`, globalSent, phoneSent };
+    }
+    // Block if global daily cap reached
+    if (globalSent >= WA_LIMITS.GLOBAL_DAILY_CAP) {
+        return { ok: false, reason: `Daily limit reached: ${globalSent}/${WA_LIMITS.GLOBAL_DAILY_CAP} messages sent today. Resuming tomorrow.`, globalSent, phoneSent };
+    }
+    return { ok: true, globalSent, phoneSent };
+}
+
+function getDailyStats() {
+    const data = loadDailyCount();
+    const today = new Date().toISOString().slice(0, 10);
+    if (data.date !== today) return { sent: 0, remaining: WA_LIMITS.GLOBAL_DAILY_CAP, cap: WA_LIMITS.GLOBAL_DAILY_CAP, percent: 0 };
+    const sent = data.count || 0;
+    const remaining = Math.max(0, WA_LIMITS.GLOBAL_DAILY_CAP - sent);
+    return { sent, remaining, cap: WA_LIMITS.GLOBAL_DAILY_CAP, percent: Math.round((sent / WA_LIMITS.GLOBAL_DAILY_CAP) * 100) };
+}
+
 function getSessionDir(companyId) {
     if (companyId) {
         return path.join(__dirname, 'wa_sessions', companyId.toString());
@@ -99,11 +169,37 @@ async function sendLocalWA(ids, isFollowup = false, options = {}) {
 
         emit({ type: 'status', message: '✅ WhatsApp ready! Automating safe human-like sending...' });
 
+        // ── Daily limit check before starting ──────────────────
+        const statsBeforeStart = getDailyStats();
+        if (statsBeforeStart.remaining <= 0) {
+            emit({ type: 'error', message: `🛡️ Daily WhatsApp limit reached (${statsBeforeStart.sent}/${statsBeforeStart.cap} sent today). Will resume tomorrow automatically. This protects your account from being banned.` });
+            await browser.close();
+            return { sent: 0, failed: 0, total: leads.length };
+        }
+        if (statsBeforeStart.percent >= WA_LIMITS.WARN_AT_PERCENT) {
+            emit({ type: 'status', message: `⚠️ Warning: You've used ${statsBeforeStart.percent}% of today's WhatsApp limit (${statsBeforeStart.sent}/${statsBeforeStart.cap})` });
+        }
+        emit({ type: 'status', message: `📊 Daily WA budget: ${statsBeforeStart.remaining} messages remaining today (limit: ${statsBeforeStart.cap}/day)` });
+
         let sent = 0, failed = 0;
         const today = new Date().toISOString().slice(0,10);
 
         for (let i = 0; i < leads.length; i++) {
             const lead = leads[i];
+
+            // ── Global daily cap check ──────────────────────────
+            const globalStats = getDailyStats();
+            if (globalStats.remaining <= 0) {
+                emit({ type: 'status', message: `🛡️ Daily limit of ${globalStats.cap} messages reached. Stopping to protect your WhatsApp account. Remaining ${leads.length - i} lead(s) queued for tomorrow.` });
+                break;
+            }
+
+            // ── Per-phone-number daily limit check ──────────────
+            const phoneCheck = canSendToPhone(lead.phone);
+            if (!phoneCheck.ok) {
+                emit({ type: 'skipped', name: lead.name, reason: `🛡️ Skipped: ${phoneCheck.reason}` });
+                continue;
+            }
 
             // Skip already-sent leads if toggle is ON
             if (!isFollowup && skipWaSent && lead.wa_sent) {
@@ -202,7 +298,16 @@ async function sendLocalWA(ids, isFollowup = false, options = {}) {
 
                 sent++;
                 finalSent = sent;
-                emit({ type: 'sent', name: lead.name, sent, failed, total });
+                // ── Record in daily counter (persisted to disk) ───
+                const dailyData = recordSent(lead.phone);
+                const remaining = Math.max(0, WA_LIMITS.GLOBAL_DAILY_CAP - dailyData.count);
+                emit({ type: 'sent', name: lead.name, sent, failed, total,
+                    dailyStats: { sent: dailyData.count, cap: WA_LIMITS.GLOBAL_DAILY_CAP, remaining }
+                });
+                // Warn when approaching daily limit
+                if (remaining > 0 && remaining <= 10) {
+                    emit({ type: 'status', message: `⚠️ Only ${remaining} messages left in today's daily limit (${dailyData.count}/${WA_LIMITS.GLOBAL_DAILY_CAP})` });
+                }
 
                 if (i < leads.length - 1) {
                     const delay = getDelay(i);
@@ -558,5 +663,5 @@ async function sendLocalWA_Draft(ids, isFollowup = false, options = {}) {
     }
 }
 
-module.exports = { sendLocalWA, sendLocalWA_Manual, sendLocalWA_Draft, registerSSE, removeSSE };
+module.exports = { sendLocalWA, sendLocalWA_Manual, sendLocalWA_Draft, registerSSE, removeSSE, getDailyStats, WA_LIMITS };
 

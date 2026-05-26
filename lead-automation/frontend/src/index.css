@@ -2190,3 +2190,61 @@ button {
   align-items: center;
   gap: var(--space-2);
 }
+
+/* ============================================================
+   SOCIAL LEADS PAGE — Lead Intelligence Module
+   ============================================================ */
+
+.social-leads-page .stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-xl);
+  transition: all var(--transition-base);
+}
+
+.social-leads-page .stat-card:hover {
+  border-color: rgba(99, 102, 241, 0.3);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+/* Form controls in social page — use existing input styles */
+.social-leads-page .form-control {
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-input);
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  transition: border-color var(--transition-base), box-shadow var(--transition-base);
+  outline: none;
+  appearance: none;
+}
+
+.social-leads-page .form-control:focus {
+  border-color: var(--border-input-focus);
+  background: var(--bg-input-focus);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+}
+
+.social-leads-page .form-control::placeholder {
+  color: var(--text-placeholder);
+}
+
+.social-leads-page .card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-xl);
+  transition: border-color var(--transition-base), box-shadow var(--transition-base);
+}
+
+.social-leads-page .card:hover {
+  border-color: rgba(99, 102, 241, 0.2);
+}
+
+/* Pulse animation for live scanning indicator */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
