@@ -1884,7 +1884,7 @@ app.post('/api/social/generate-preview', async (req, res) => {
         
         const { scrapeWebsite, generateSocialPosts } = require('./services/social-poster');
         const webData = await scrapeWebsite(website_url);
-        const posts = await generateSocialPosts(webData, topic, title, custom_content);
+        const posts = await generateSocialPosts(webData, topic, title, custom_content, { userId: uid(req) });
         res.json({ success: true, posts, webData });
     } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -1915,7 +1915,7 @@ app.post('/api/social/post-now', async (req, res) => {
         };
 
         const webData = await scrapeWebsite(webUrl);
-        const posts = await generateSocialPosts(webData, tempSettings.topic, tempSettings.title, tempSettings.custom_content);
+        const posts = await generateSocialPosts(webData, tempSettings.topic, tempSettings.title, tempSettings.custom_content, { userId });
         const postDoc = await postToSocial(posts, tempSettings);
         
         res.json({ success: true, post: postDoc });

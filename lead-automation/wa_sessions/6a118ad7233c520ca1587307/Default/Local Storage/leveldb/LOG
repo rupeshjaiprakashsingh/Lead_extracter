@@ -1,3 +1,21 @@
-2026/05/26-15:00:00.493 2a04 Reusing MANIFEST C:\Users\Admin\Documents\GitHub\Lead_extracter\lead-automation\wa_sessions\6a118ad7233c520ca1587307\Default\Local Storage\leveldb/MANIFEST-000001
-2026/05/26-15:00:00.518 2a04 Recovering log #100
-2026/05/26-15:00:00.531 2a04 Reusing old log C:\Users\Admin\Documents\GitHub\Lead_extracter\lead-automation\wa_sessions\6a118ad7233c520ca1587307\Default\Local Storage\leveldb/000100.log 
+2026/05/28-16:57:40.240 2824 Reusing MANIFEST C:\Users\Admin\Documents\GitHub\Lead_extracter\lead-automation\wa_sessions\6a118ad7233c520ca1587307\Default\Local Storage\leveldb/MANIFEST-000001
+2026/05/28-16:57:40.289 2824 Recovering log #141
+2026/05/28-16:57:40.308 2824 Reusing old log C:\Users\Admin\Documents\GitHub\Lead_extracter\lead-automation\wa_sessions\6a118ad7233c520ca1587307\Default\Local Storage\leveldb/000141.log 
+2026/05/28-16:58:16.535 4fb0 Level-0 table #145: started
+2026/05/28-16:58:16.540 4fb0 Level-0 table #145: 16353 bytes OK
+2026/05/28-16:58:16.543 4fb0 Delete type=0 #141
+2026/05/28-17:02:40.888 4fb0 Level-0 table #147: started
+2026/05/28-17:02:40.895 4fb0 Level-0 table #147: 20026 bytes OK
+2026/05/28-17:02:40.897 4fb0 Delete type=0 #144
+2026/05/28-17:06:41.049 4fb0 Level-0 table #149: started
+2026/05/28-17:06:41.062 4fb0 Level-0 table #149: 19045 bytes OK
+2026/05/28-17:06:41.066 4fb0 Delete type=0 #146
+2026/05/28-17:06:41.067 4fb0 Compacting 4@0 + 1@1 files
+2026/05/28-17:06:41.084 4fb0 Generated table #150@0: 2782 keys, 138987 bytes
+2026/05/28-17:06:41.084 4fb0 Compacted 4@0 + 1@1 files => 138987 bytes
+2026/05/28-17:06:41.086 4fb0 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/05/28-17:06:41.088 4fb0 Delete type=2 #140
+2026/05/28-17:06:41.088 4fb0 Delete type=2 #142
+2026/05/28-17:06:41.088 4fb0 Delete type=2 #145
+2026/05/28-17:06:41.088 4fb0 Delete type=2 #147
+2026/05/28-17:06:41.089 4fb0 Delete type=2 #149

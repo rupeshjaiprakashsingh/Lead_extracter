@@ -13,6 +13,12 @@ import LoginPage from './pages/LoginPage'
 import ForgotPasswordPage from './pages/ForgotPasswordPage'
 import ResetPasswordPage from './pages/ResetPasswordPage'
 
+// ── Public Pages ─────────────────────────────────────────────
+import PricingPage from './pages/PricingPage'
+import ServiceStarterPage from './pages/ServiceStarterPage'
+import ServiceGrowthPage from './pages/ServiceGrowthPage'
+import ServiceProPage from './pages/ServiceProPage'
+
 // ── SuperAdmin Pages ─────────────────────────────────────────
 import SuperAdminDashboard from './pages/superadmin/SuperAdminDashboard'
 import CompaniesPage from './pages/superadmin/CompaniesPage'
@@ -70,6 +76,12 @@ function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
+
+        {/* Public Pricing & Services */}
+        <Route path="/pricing" element={<PricingPage />} />
+        <Route path="/services/starter" element={<ServiceStarterPage />} />
+        <Route path="/services/growth" element={<ServiceGrowthPage />} />
+        <Route path="/services/pro" element={<ServiceProPage />} />
 
         {/* SuperAdmin */}
         <Route

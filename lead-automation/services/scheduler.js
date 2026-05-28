@@ -12,10 +12,42 @@ let _socialJob  = null;
 const _isSendingUsers = new Set();  // prevent overlapping sends per user
 
 // ── Lazy model getters ────────────────────────────────────────
-const getSchedule = () => mongoose.model('Schedule');
-const getLead     = () => mongoose.model('Lead');
-const getSocialSettings = () => mongoose.model('SocialSettings');
-const getSocialPost     = () => mongoose.model('SocialPost');
+const getSchedule = () => {
+    try {
+        return mongoose.model('Schedule');
+    } catch(e) {
+        return require('../models/Schedule');
+    }
+};
+const getLead = () => {
+    try {
+        return mongoose.model('Lead');
+    } catch(e) {
+        return require('../models/Lead');
+    }
+};
+const getSocialSettings = () => {
+    try {
+        return mongoose.model('SocialSettings');
+    } catch(e) {
+        try {
+            return require('../models/SocialSettings');
+        } catch(err) {
+            return require('../backend/models/SocialSettings');
+        }
+    }
+};
+const getSocialPost = () => {
+    try {
+        return mongoose.model('SocialPost');
+    } catch(e) {
+        try {
+            return require('../models/SocialPost');
+        } catch(err) {
+            return require('../backend/models/SocialPost');
+        }
+    }
+};
 
 // ── Drop unique index and migrate existing records ───────────
 async function dropUniqueIndex() {
@@ -348,26 +380,46 @@ async function runScheduledSocialPost() {
                 const currentHour = parseInt(now.toLocaleTimeString('en-US', { hour12: false, hour: 'numeric', timeZone: 'Asia/Kolkata' }));
                 const todayStr = now.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata' });
 
-                if (settings.frequency === 'daily' && currentHour !== settings.time_hour) {
-                    continue;
+                const logIdentifier = settings.companyId ? `company ${settings.companyId}` : `user ${settings.userId}`;
+
+                const query = {};
+                if (settings.companyId) {
+                    query.companyId = settings.companyId;
+                } else if (settings.userId) {
+                    query.userId = settings.userId;
                 }
 
                 if (settings.frequency === 'daily') {
-                    const lastPost = await SocialPost.findOne({ userId: settings.userId }).sort({ createdAt: -1 });
-                    if (lastPost && new Date(lastPost.createdAt).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata' }) === todayStr) {
-                        console.log(`⏰ Social Scheduler: Already posted today for user ${settings.userId}, skipping.`);
+                    if (currentHour !== settings.time_hour) {
                         continue;
+                    }
+                    const lastPost = await SocialPost.findOne(query).sort({ createdAt: -1 });
+                    if (lastPost && new Date(lastPost.createdAt).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata' }) === todayStr) {
+                        continue;
+                    }
+                } else if (settings.frequency === 'hourly') {
+                    const lastPost = await SocialPost.findOne(query).sort({ createdAt: -1 });
+                    if (lastPost) {
+                        const diffMs = now - new Date(lastPost.createdAt);
+                        const diffMins = diffMs / (1000 * 60);
+                        if (diffMins < 50) {
+                            continue;
+                        }
                     }
                 }
 
-                console.log(`⏰ Social Scheduler: Running scheduled social posting (${settings.frequency}) for user ${settings.userId}...`);
+                console.log(`⏰ Social Scheduler: Running scheduled social posting (${settings.frequency}) for ${logIdentifier}...`);
                 const { scrapeWebsite, generateSocialPosts, postToSocial } = require('./social-poster');
                 const webData = await scrapeWebsite(settings.website_url);
-                const generated = await generateSocialPosts(webData, settings.topic, settings.title, settings.custom_content);
+                const generated = await generateSocialPosts(webData, settings.topic, settings.title, settings.custom_content, {
+                    companyId: settings.companyId,
+                    userId: settings.userId
+                });
                 const postDoc = await postToSocial(generated, settings);
-                console.log(`✅ Social Scheduler: Posting completed for user ${settings.userId}. Post ID: ${postDoc._id}`);
+                console.log(`✅ Social Scheduler: Posting completed for ${logIdentifier}. Post ID: ${postDoc._id}`);
             } catch (innerErr) {
-                console.error(`❌ Social Scheduler Error for user ${settings.userId}: ${innerErr.message}`);
+                const logId = settings.companyId || settings.userId || 'unknown';
+                console.error(`❌ Social Scheduler Error for ${logId}: ${innerErr.message}`);
             }
         }
     } catch (err) {
@@ -377,11 +429,11 @@ async function runScheduledSocialPost() {
 
 function startSocialScheduler() {
     stopSocialScheduler();
-    _socialJob = cron.schedule('0 * * * *', () => {
+    _socialJob = cron.schedule('*/5 * * * *', () => {
         console.log('\n⏰ Social scheduler check triggered...');
         runScheduledSocialPost().catch(e => console.error('Social scheduler cron error:', e.message));
     }, { timezone: 'Asia/Kolkata' });
-    console.log('  ⏰ Social Auto-Poster Scheduler ACTIVE (Checks hourly)');
+    console.log('  ⏰ Social Auto-Poster Scheduler ACTIVE (Checks every 5 mins)');
 }
 
 function stopSocialScheduler() {

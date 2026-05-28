@@ -239,13 +239,19 @@ export default function SocialPage() {
                       onChange={(e) => handleChannelConfigChange(ch, 'token', e.target.value)}
                     />
                     {ch === 'linkedin' ? (
-                      <input
-                        type="text"
-                        placeholder="LinkedIn URN (e.g., urn:li:organization:123)"
-                        className="form-control"
-                        value={settings.channels[ch]?.urn || ''}
-                        onChange={(e) => handleChannelConfigChange(ch, 'urn', e.target.value)}
-                      />
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <input
+                          type="text"
+                          placeholder="Your profile URL (e.g. https://www.linkedin.com/in/yourname) — leave blank to auto-detect"
+                          className="form-control"
+                          value={settings.channels[ch]?.urn || ''}
+                          onChange={(e) => handleChannelConfigChange(ch, 'urn', e.target.value)}
+                        />
+                        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                          💡 <strong>Personal profile:</strong> Paste your LinkedIn profile URL (linkedin.com/in/...) or leave blank — it will auto-detect from your token.<br />
+                          🏢 <strong>Company page:</strong> Paste your company page URL (linkedin.com/company/...) — requires "Organization Pages" permission in your LinkedIn app.
+                        </span>
+                      </div>
                     ) : ch === 'facebook' ? (
                       <input
                         type="text"
