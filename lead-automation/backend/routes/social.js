@@ -12,5 +12,6 @@ router.post('/settings', ctrl.saveSettings);
 router.get('/posts',     ctrl.getPosts);
 router.post('/preview',  ctrl.generatePreview);
 router.post('/post',     ctrl.postNow);
+router.post('/test-connections', ctrl.testConnections);
 
 module.exports = router;

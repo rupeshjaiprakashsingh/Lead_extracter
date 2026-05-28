@@ -33,7 +33,7 @@ exports.getSettings = async (req, res, next) => {
 exports.saveSettings = async (req, res, next) => {
     try {
         const companyId = req.user.companyId;
-        const { enabled, frequency, time_hour, website_url, topic, title, custom_content, channels } = req.body;
+        const { enabled, frequency, time_hour, website_url, topic, title, custom_content, channels, categories } = req.body;
         let s = await SocialSettings.findOne({ companyId });
         if (!s) {
             s = new SocialSettings({ companyId, userId: req.user._id });
@@ -46,6 +46,7 @@ exports.saveSettings = async (req, res, next) => {
         s.topic = topic || '';
         s.title = title || '';
         s.custom_content = custom_content || '';
+        s.categories = categories || [];
 
         if (channels) {
             for (const [ch, config] of Object.entries(channels)) {
@@ -111,7 +112,8 @@ exports.generatePreview = async (req, res, next) => {
         const webData = await scrapeWebsite(website_url);
         const posts = await generateSocialPosts(webData, topic, title, custom_content, {
             companyId: req.user?.companyId,
-            userId: req.user?._id
+            userId: req.user?._id,
+            websiteUrl: website_url
         });
         res.json({ success: true, data: { posts, webData } });
     } catch(err) {
@@ -150,11 +152,101 @@ exports.postNow = async (req, res, next) => {
         const webData = await scrapeWebsite(webUrl);
         const posts = await generateSocialPosts(webData, tempSettings.topic, tempSettings.title, tempSettings.custom_content, {
             companyId: tempSettings.companyId,
-            userId: tempSettings.userId
+            userId: tempSettings.userId,
+            websiteUrl: tempSettings.website_url
         });
         const postDoc = await postToSocial(posts, tempSettings);
         
         res.json({ success: true, data: postDoc });
+    } catch(err) {
+        next(err);
+    }
+};
+
+// ── POST /api/social/test-connections ──────────────────────────────
+exports.testConnections = async (req, res, next) => {
+    try {
+        const companyId = req.user.companyId;
+        const { channels } = req.body;
+        
+        let settings = await SocialSettings.findOne({ companyId });
+        
+        const results = {};
+        const list = ['linkedin', 'facebook', 'instagram', 'twitter', 'pinterest', 'threads', 'youtube'];
+        
+        for (const ch of list) {
+            const config = channels[ch] || {};
+            if (!config.enabled) continue;
+            
+            let token = config.token;
+            if (token === '••••••••' || !token) {
+                token = (settings && settings.channels && settings.channels[ch]) ? settings.channels[ch].token : '';
+            }
+            
+            if (ch === 'linkedin') {
+                const urnInput = config.urn || ((settings && settings.channels && settings.channels.linkedin) ? settings.channels.linkedin.urn : '');
+                const { isPersonalProfile, formatOrganizationUrn, fetchLinkedInPersonUrn } = require('../../services/social-poster');
+                
+                if (!token || token === '••••••••') {
+                    results[ch] = { success: false, message: 'Access Token is missing' };
+                    continue;
+                }
+                
+                const isPersonal = !urnInput || isPersonalProfile(urnInput);
+                if (isPersonal) {
+                    try {
+                        const resolved = await fetchLinkedInPersonUrn(token);
+                        if (resolved && resolved.urn) {
+                            results[ch] = { success: true, message: `Connected as Personal Profile (${resolved.urn})` };
+                        } else {
+                            results[ch] = { success: false, message: 'Could not resolve personal profile. Token may be expired or lacks permissions.' };
+                        }
+                    } catch (e) {
+                        results[ch] = { success: false, message: `Personal profile query failed: ${e.message}` };
+                    }
+                } else {
+                    try {
+                        const orgUrn = formatOrganizationUrn(urnInput);
+                        const orgId = orgUrn.replace('urn:li:organization:', '');
+                        
+                        const response = await fetch(`https://api.linkedin.com/rest/organizations/${orgId}`, {
+                            headers: {
+                                'Authorization': `Bearer ${token}`,
+                                'X-Restli-Protocol-Version': '2.0.0',
+                                'LinkedIn-Version': '202605'
+                            }
+                        });
+                        
+                        if (response.ok) {
+                            const orgData = await response.json();
+                            results[ch] = { success: true, message: `Connected to Company Page: "${orgData.localizedName || orgUrn}"` };
+                        } else {
+                            const responseV2 = await fetch(`https://api.linkedin.com/v2/organizations/${orgId}`, {
+                                headers: {
+                                    'Authorization': `Bearer ${token}`,
+                                    'X-Restli-Protocol-Version': '2.0.0'
+                                }
+                            });
+                            if (responseV2.ok) {
+                                const orgData = await responseV2.json();
+                                results[ch] = { success: true, message: `Connected to Company Page: "${orgData.localizedName || orgUrn}"` };
+                            } else {
+                                results[ch] = { success: false, message: `Company Page access denied (Status ${responseV2.status})` };
+                            }
+                        }
+                    } catch (e) {
+                        results[ch] = { success: false, message: `Company Page validation failed: ${e.message}` };
+                    }
+                }
+            } else {
+                if (!token) {
+                    results[ch] = { success: false, message: 'API Token/Key is missing' };
+                } else {
+                    results[ch] = { success: true, message: 'Mock connection successful (Simulated integration active)' };
+                }
+            }
+        }
+        res.json({ success: true, results });
     } catch(err) {
         next(err);
     }

@@ -9,6 +9,13 @@ const socialSettingsSchema = new mongoose.Schema({
   topic:          { type: String, default: '' },
   title:          { type: String, default: '' },
   custom_content: { type: String, default: '' },
+  categories: [{
+    name: { type: String, default: '' },
+    keywords: { type: String, default: '' },
+    topic: { type: String, default: '' },
+    custom_content: { type: String, default: '' }
+  }],
+  current_category_index: { type: Number, default: 0 },
   channels: {
     facebook: {
       enabled: { type: Boolean, default: false },

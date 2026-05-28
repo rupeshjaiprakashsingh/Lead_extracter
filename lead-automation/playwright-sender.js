@@ -211,9 +211,9 @@ async function sendLocalWA(ids, isFollowup = false, options = {}) {
             let followupNum = (lead.followup_count || 0) + 1;
             
             if (isFollowup) {
-                msg = await buildFollowupWA(lead, followupNum);
+                msg = await buildFollowupWA(lead, followupNum, options.companyId);
             } else {
-                msg = await buildInitialWA(lead);
+                msg = await buildInitialWA(lead, options.companyId);
             }
 
             emit({ type: 'sending', current: i + 1, total, name: lead.name, phone: lead.phone, sent, failed });
@@ -407,9 +407,9 @@ async function sendLocalWA_Manual(ids, isFollowup = false, options = {}) {
             let msg = '';
             let followupNum = (lead.followup_count || 0) + 1;
             if (isFollowup) {
-                msg = await buildFollowupWA(lead, followupNum);
+                msg = await buildFollowupWA(lead, followupNum, options.companyId);
             } else {
-                msg = await buildInitialWA(lead);
+                msg = await buildInitialWA(lead, options.companyId);
             }
 
             emit({ type: 'sending', current: i + 1, total, name: lead.name, phone: lead.phone, sent, failed });
@@ -583,9 +583,9 @@ async function sendLocalWA_Draft(ids, isFollowup = false, options = {}) {
             let msg = '';
             let followupNum = (lead.followup_count || 0) + 1;
             if (isFollowup) {
-                msg = await buildFollowupWA(lead, followupNum);
+                msg = await buildFollowupWA(lead, followupNum, options.companyId);
             } else {
-                msg = await buildInitialWA(lead);
+                msg = await buildInitialWA(lead, options.companyId);
             }
 
             emit({ type: 'sending', current: i + 1, total, name: lead.name, phone: lead.phone, sent: drafted, failed });

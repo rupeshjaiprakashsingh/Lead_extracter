@@ -137,6 +137,7 @@ export const socialAPI = {
   getPosts: (params) => api.get('/social/posts', { params }),
   generatePreview: (data) => api.post('/social/preview', data),
   postNow: (data) => api.post('/social/post', data),
+  testConnections: (data) => api.post('/social/test-connections', data),
 }
 
 // ═══════════════════════════════════════════════════════════

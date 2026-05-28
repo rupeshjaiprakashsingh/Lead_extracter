@@ -15,6 +15,7 @@ export default function SocialPage() {
     topic: '',
     title: '',
     custom_content: '',
+    categories: [],
     channels: {
       facebook: { enabled: false, token: '', pageId: '' },
       instagram: { enabled: false, token: '', accountId: '' },
@@ -22,9 +23,134 @@ export default function SocialPage() {
       twitter: { enabled: false, token: '', apiKey: '' }
     }
   })
+
+  const [newCat, setNewCat] = useState({ name: '', keywords: '', topic: '', custom_content: '' })
+
+  const handleAddCategory = () => {
+    if (!newCat.name.trim()) {
+      toast.error('Category Name is required')
+      return
+    }
+    setSettings(s => ({
+      ...s,
+      categories: [...(s.categories || []), newCat]
+    }))
+    setNewCat({ name: '', keywords: '', topic: '', custom_content: '' })
+    toast.success('Category added locally! Make sure to Save Configuration.')
+  }
+
+  const handleDeleteCategory = (index) => {
+    setSettings(s => ({
+      ...s,
+      categories: (s.categories || []).filter((_, i) => i !== index)
+    }))
+    toast.success('Category removed locally! Save Configuration to apply.')
+  }
+
+  const handleLoadDefaults = () => {
+    const defaults = [
+      {
+        name: "Actionable Value Hacks",
+        keywords: "leads, productivity, CRM, automation",
+        topic: "Simple steps to save 10 hours a week in lead management",
+        custom_content: "Provide 3 simple productivity hacks for outreach, then introduce Innvoque's automation tools to handle it for them."
+      },
+      {
+        name: "Value-First Outreach",
+        keywords: "sales, conversion, marketing, trust",
+        topic: "Why cold calling is dead and value-first messaging converts better",
+        custom_content: "Debunk the myth that cold outreach must be pushy. Explain the value-first approach (giving a tip first) and how we help."
+      },
+      {
+        name: "Common Mistakes to Avoid",
+        keywords: "local SEO, Google Maps, lead generation",
+        topic: "Mistakes local businesses make that lose them 10-20 customers monthly",
+        custom_content: "Point out the mistake of a slow response time or not showing up on Google Maps. Highlight how our CRM automates immediate responses."
+      },
+      {
+        name: "The 5-Minute Reply Rule",
+        keywords: "lead decay, customer response, conversion",
+        topic: "Why waiting 30 minutes to reply to a lead kills 80% of sales",
+        custom_content: "Explain the science of lead decay. Explain how immediate follow-ups build trust and showcase our auto-whatsapp tools."
+      },
+      {
+        name: "WhatsApp vs Email Open Rates",
+        keywords: "whatsapp marketing, open rates, outreach",
+        topic: "Why WhatsApp has a 98% open rate compared to 20% for email",
+        custom_content: "Explain the shift in customer communication behavior. Showcase how our WhatsApp automation helps businesses reach customers where they actually look."
+      },
+      {
+        name: "Google Maps Traffic Goldmine",
+        keywords: "local SEO, google business profile, local business",
+        topic: "The hidden traffic source 90% of local businesses ignore",
+        custom_content: "Reveal how map rankings drive high-intent calls. Explain how to extract these leads and sync them to close more sales."
+      },
+      {
+        name: "Founder Time Management",
+        keywords: "time-saving, delegation, business automation",
+        topic: "What I learned saving 15 hours a week by automating lead gen",
+        custom_content: "Share a breakdown of manual task time vs automated time. Pitch Innvoque as the founder's time-saving secret."
+      },
+      {
+        name: "Personalized AI Outreach",
+        keywords: "artificial intelligence, automation, email marketing",
+        topic: "How personalized AI messaging generated 50+ meetings",
+        custom_content: "Detail a story of using AI to research prospects before emailing them, showing our automated lead scraper in action."
+      },
+      {
+        name: "Follow-Up Retention Advantage",
+        keywords: "CRM, customer retention, follow up",
+        topic: "Getting leads is easy. Retaining them is where the money is.",
+        custom_content: "Explain that follow-up determines profitability. Show how automated follow-up cycles turn single inquiries into lifetime buyers."
+      },
+      {
+        name: "The Cost of Manual Lead Syncing",
+        keywords: "automation, lead sync, efficiency",
+        topic: "Stop copy-pasting lead details between systems manually",
+        custom_content: "Highlight the error rates and time wasted on manual data entry. Explain how automatic CRM syncing saves time and energy."
+      },
+      {
+        name: "Mobile-Friendly Conversions",
+        keywords: "web design, mobile conversion, customer experience",
+        topic: "Why local businesses lose customers from outdated mobile sites",
+        custom_content: "Discuss how mobile-unfriendly sites turn customers away. Pitch our responsive web design and landing page solutions."
+      },
+      {
+        name: "B2B Trust Building",
+        keywords: "trust, b2b sales, relationship building",
+        topic: "The secret to building instant trust with B2B decision makers",
+        custom_content: "Explain that giving free, helpful audits builds instant B2B trust. Connect it to our personalized maps outreach templates."
+      },
+      {
+        name: "Local SEO Ranking Myths",
+        keywords: "local SEO, google maps ranking, business profile",
+        topic: "Debunking 3 common myths about ranking #1 on Google",
+        custom_content: "Clarify that reviews, proximity, and details matter more than keywords. Show how our tool helps businesses audit local listings."
+      },
+      {
+        name: "Customer Experience Speed",
+        keywords: "customer experience, response speed, brand value",
+        topic: "Speed is the new marketing: Why fast response times win markets",
+        custom_content: "Explain that clients buy from whoever answers first. Pitch Innvoque's automatic WhatsApp responder as the speed winner."
+      },
+      {
+        name: "Scaling Without Hiring",
+        keywords: "scaling, leverage, technology, hiring",
+        topic: "How to scale your sales outreach without doubling your headcount",
+        custom_content: "Discuss using software as a force multiplier. Explain how automated lead extraction and follow-up does the work of a 3-person team."
+      }
+    ]
+    setSettings(s => ({
+      ...s,
+      categories: [...(s.categories || []), ...defaults]
+    }))
+    toast.success('Pre-loaded 15 default value-first categories! Make sure to Save Configuration.')
+  }
   
   const [posts, setPosts] = useState([])
   const [previews, setPreviews] = useState(null) // holds generated draft content
+  const [testing, setTesting] = useState(false)
+  const [testResults, setTestResults] = useState(null)
 
   useEffect(() => {
     loadSocialData()
@@ -53,6 +179,24 @@ export default function SocialPage() {
       loadSocialData()
     } catch (err) {
       toast.error('Failed to save configuration')
+    }
+  }
+
+  const handleTestConnections = async () => {
+    setTesting(true)
+    setTestResults(null)
+    try {
+      const res = await socialAPI.testConnections({ channels: settings.channels })
+      if (res.data?.success) {
+        setTestResults(res.data.results)
+        toast.success('Social media API validation completed!')
+      } else {
+        toast.error('Test connections failed: ' + (res.data?.error || 'Server error'))
+      }
+    } catch (err) {
+      toast.error('Test connections error: ' + (err.response?.data?.error || err.message))
+    } finally {
+      setTesting(false)
     }
   }
 
@@ -163,8 +307,41 @@ export default function SocialPage() {
                 onChange={(e) => setSettings(s => ({ ...s, enabled: e.target.checked }))}
               />
               <label htmlFor="enabled" className="form-label" style={{ marginBottom: 0, fontWeight: 600 }}>
-                Enable Automatic Daily Posting
+                Enable Automatic Posting
               </label>
+            </div>
+
+            <div className="grid grid-2" style={{ marginBottom: '1rem' }}>
+              <div className="form-group">
+                <label className="form-label">Posting Frequency</label>
+                <select
+                  className="form-control"
+                  style={{ background: 'var(--bg-glass-light)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)' }}
+                  value={settings.frequency || 'daily'}
+                  onChange={(e) => setSettings(s => ({ ...s, frequency: e.target.value }))}
+                >
+                  <option value="daily">Every Day (Daily)</option>
+                  <option value="hourly">Every Hour (Hourly)</option>
+                  <option value="thirty_minutes">Every 30 Minutes</option>
+                </select>
+              </div>
+              {settings.frequency === 'daily' && (
+                <div className="form-group">
+                  <label className="form-label">Time of Day (IST Hour)</label>
+                  <select
+                    className="form-control"
+                    style={{ background: 'var(--bg-glass-light)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)' }}
+                    value={settings.time_hour !== undefined ? settings.time_hour : 10}
+                    onChange={(e) => setSettings(s => ({ ...s, time_hour: parseInt(e.target.value) }))}
+                  >
+                    {Array.from({ length: 24 }).map((_, h) => (
+                      <option key={h} value={h}>
+                        {h === 0 ? '12:00 AM' : h === 12 ? '12:00 PM' : h < 12 ? `${h}:00 AM` : `${h - 12}:00 PM`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
 
             <div className="form-group">
@@ -212,6 +389,100 @@ export default function SocialPage() {
               />
             </div>
 
+            <h3 style={{ fontSize: '0.875rem', fontWeight: 700, margin: '1.5rem 0 1rem 0', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>📋 Content Categories & Keywords (Cycles on Schedule)</span>
+              <button type="button" className="btn btn-sm btn-secondary" style={{ padding: '2px 8px', fontSize: '0.75rem' }} onClick={handleLoadDefaults}>
+                ⚡ Load Defaults
+              </button>
+            </h3>
+
+            {/* List of current categories */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1rem' }}>
+              {(!settings.categories || settings.categories.length === 0) ? (
+                <div style={{ padding: '0.75rem', border: '1px dashed var(--border-color)', borderRadius: 'var(--radius-md)', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                  No custom categories defined. Auto-poster will rotate only using the global topic above.
+                </div>
+              ) : (
+                settings.categories.map((cat, idx) => (
+                  <div key={idx} style={{ padding: '0.75rem', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)', background: 'rgba(255,255,255,0.01)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <div style={{ flex: 1, paddingRight: '0.5rem' }}>
+                      <div style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: '0.875rem' }}>{cat.name}</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                        <strong>Keywords:</strong> {cat.keywords || 'None'}
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                        <strong>Topic Focus:</strong> {cat.topic || 'None'}
+                      </div>
+                      {cat.custom_content && (
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px', fontStyle: 'italic', background: 'rgba(255,255,255,0.02)', padding: '4px', borderRadius: '4px' }}>
+                          "{cat.custom_content}"
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      style={{ background: '#7f1d1d', color: '#fca5a5', border: '1px solid #991b1b', padding: '2px 8px', fontSize: '0.75rem' }}
+                      onClick={() => handleDeleteCategory(idx)}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Add Category Sub-form */}
+            <div style={{ padding: '0.75rem', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)', background: 'var(--bg-glass-light)', marginBottom: '1.5rem' }}>
+              <div style={{ fontWeight: 700, fontSize: '0.8rem', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>➕ Add New Category Message</div>
+              <div className="form-group" style={{ marginBottom: '0.5rem' }}>
+                <input
+                  type="text"
+                  placeholder="Category Name (e.g. Case Study)"
+                  className="form-control form-control-sm"
+                  style={{ padding: '4px 8px', fontSize: '0.8rem', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-color)', color: 'var(--text-primary)' }}
+                  value={newCat.name}
+                  onChange={(e) => setNewCat(c => ({ ...c, name: e.target.value }))}
+                />
+              </div>
+              <div className="grid grid-2" style={{ gap: '0.5rem', marginBottom: '0.5rem' }}>
+                <input
+                  type="text"
+                  placeholder="Keywords (e.g. CRM, leads)"
+                  className="form-control form-control-sm"
+                  style={{ padding: '4px 8px', fontSize: '0.8rem', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-color)', color: 'var(--text-primary)' }}
+                  value={newCat.keywords}
+                  onChange={(e) => setNewCat(c => ({ ...c, keywords: e.target.value }))}
+                />
+                <input
+                  type="text"
+                  placeholder="Topic Focus (Optional)"
+                  className="form-control form-control-sm"
+                  style={{ padding: '4px 8px', fontSize: '0.8rem', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-color)', color: 'var(--text-primary)' }}
+                  value={newCat.topic}
+                  onChange={(e) => setNewCat(c => ({ ...c, topic: e.target.value }))}
+                />
+              </div>
+              <div className="form-group" style={{ marginBottom: '0.5rem' }}>
+                <textarea
+                  placeholder="Help-then-sell Instructions (e.g. Give 3 tips to fix response times, then sell our CRM...)"
+                  className="form-control form-control-sm"
+                  style={{ padding: '4px 8px', fontSize: '0.8rem', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-color)', color: 'var(--text-primary)' }}
+                  rows="2"
+                  value={newCat.custom_content}
+                  onChange={(e) => setNewCat(c => ({ ...c, custom_content: e.target.value }))}
+                />
+              </div>
+              <button
+                type="button"
+                className="btn btn-sm btn-primary"
+                style={{ width: '100%', padding: '4px', fontSize: '0.8rem' }}
+                onClick={handleAddCategory}
+              >
+                Add Category to Settings
+              </button>
+            </div>
+
             <h3 style={{ fontSize: '0.875rem', fontWeight: 700, margin: '1.5rem 0 1rem 0', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '1rem' }}>
               Connected Channels Config
             </h3>
@@ -235,6 +506,7 @@ export default function SocialPage() {
                       type="password"
                       placeholder="API Access Token"
                       className="form-control"
+                      autoComplete="new-password"
                       value={settings.channels[ch]?.token || ''}
                       onChange={(e) => handleChannelConfigChange(ch, 'token', e.target.value)}
                     />
@@ -274,12 +546,29 @@ export default function SocialPage() {
               </div>
             ))}
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem', flexWrap: 'wrap' }}>
               <button type="submit" className="btn btn-secondary">Save Configuration</button>
+              <button type="button" className="btn" onClick={handleTestConnections} disabled={testing} style={{ background: '#7c3aed', color: '#fff', border: 'none' }}>
+                {testing ? '🔌 Testing...' : '🔌 Test Connections'}
+              </button>
               <button type="button" className="btn btn-primary" onClick={handleGeneratePreview} disabled={generating}>
                 {generating ? 'Drafting...' : '✨ Generate AI Previews'}
               </button>
             </div>
+            {testResults && (
+              <div style={{ marginTop: '1rem', padding: '1rem', background: 'rgba(255,255,255,0.02)', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(255,255,255,0.05)' }}>
+                <strong style={{ color: '#fff', display: 'block', marginBottom: '8px', fontSize: '0.875rem' }}>🔌 Connection Test Results:</strong>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.8125rem' }}>
+                  {Object.entries(testResults).map(([ch, outcome]) => (
+                    <div key={ch} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span>{outcome.success ? '✅' : '❌'}</span>
+                      <span style={{ fontWeight: 600, textTransform: 'capitalize', color: 'var(--text-primary)' }}>{ch}:</span>
+                      <span style={{ color: outcome.success ? 'var(--color-success)' : 'var(--color-danger)' }}>{outcome.message}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </form>
         </div>
 
@@ -293,15 +582,24 @@ export default function SocialPage() {
                   {posting ? 'Sending simulation...' : '🚀 Publish Previews Now'}
                 </button>
               </h2>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxHeight: '400px', overflowY: 'auto' }}>
-                {Object.entries(previews).map(([ch, content]) => (
-                  <div key={ch} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '0.75rem' }}>
-                    <span style={{ fontWeight: 700, textTransform: 'capitalize', fontSize: '0.875rem', display: 'block', marginBottom: '4px', color: 'var(--text-primary)' }}>{ch}</span>
-                    <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', whiteSpace: 'pre-wrap', lineHeight: 1.5, background: 'rgba(255,255,255,0.02)', padding: '0.5rem', borderRadius: 'var(--radius-sm)' }}>
-                      {content || 'No content drafted for this channel.'}
-                    </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxHeight: '500px', overflowY: 'auto' }}>
+                {previews.image_url && (
+                  <div style={{ marginBottom: '1rem', background: 'rgba(255,255,255,0.02)', padding: '0.75rem', borderRadius: 'var(--radius-sm)', border: '1px dashed rgba(255,255,255,0.1)', textAlign: 'center' }}>
+                    <span style={{ fontWeight: 700, fontSize: '0.875rem', display: 'block', marginBottom: '8px', color: 'var(--text-primary)', textAlign: 'left' }}>🎨 Generated AI Post Image</span>
+                    <img src={previews.image_url} alt="AI Generated Graphic" style={{ maxWidth: '100%', maxHeight: '240px', borderRadius: 'var(--radius-sm)', objectFit: 'cover' }} />
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginTop: '6px', fontStyle: 'italic', textAlign: 'left' }}>Prompt: "{previews.image_prompt}"</span>
                   </div>
-                ))}
+                )}
+                {Object.entries(previews)
+                  .filter(([ch]) => ch !== 'image_url' && ch !== 'image_prompt')
+                  .map(([ch, content]) => (
+                    <div key={ch} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '0.75rem' }}>
+                      <span style={{ fontWeight: 700, textTransform: 'capitalize', fontSize: '0.875rem', display: 'block', marginBottom: '4px', color: 'var(--text-primary)' }}>{ch}</span>
+                      <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', whiteSpace: 'pre-wrap', lineHeight: 1.5, background: 'rgba(255,255,255,0.02)', padding: '0.5rem', borderRadius: 'var(--radius-sm)' }}>
+                        {content || 'No content drafted for this channel.'}
+                      </p>
+                    </div>
+                  ))}
               </div>
             </div>
           ) : null}

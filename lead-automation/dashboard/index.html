@@ -531,6 +531,7 @@
                 <select id="soc-frequency" onchange="toggleSocialTimeSelect()" style="width:100%">
                   <option value="daily">Every Day</option>
                   <option value="hourly">Every Hour</option>
+                  <option value="thirty_minutes">Every 30 Minutes</option>
                 </select>
               </div>
               <div class="ig" id="soc-time-wrap">
@@ -566,6 +567,29 @@
           </div>
         </div>
 
+        <!-- Section 2.5: Categories & Keywords Rotation -->
+        <div class="config-section" style="margin-bottom:0">
+          <h3 style="margin-bottom:14px;border-bottom:1px solid #2d3748;padding-bottom:8px;font-size:13px;text-transform:uppercase;letter-spacing:.03em;color:#94a3b8;display:flex;justify-content:space-between;align-items:center">
+            <span>📋 Category Messages & Keywords</span>
+            <button class="btn b-blue" style="padding:2px 8px;font-size:10px" onclick="loadDefaultSocialCategories(event)">⚡ Load Defaults</button>
+          </h3>
+          <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px" id="soc-categories-container">
+            <!-- Rendered by JS -->
+          </div>
+          <div style="background:#1e293b;border-radius:8px;padding:12px;border:1px solid #2d3748">
+            <h4 style="margin:0 0 8px;font-size:11px;color:#fff;font-weight:700">➕ Add Category Message</h4>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <input type="text" id="add-soc-cat-name" placeholder="Category Name (e.g. Value Hack)" style="width:100%;font-size:11px;padding:6px 10px;background:#0d111a;border:1px solid #334155;border-radius:6px;color:#fff">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                <input type="text" id="add-soc-cat-keywords" placeholder="Keywords (e.g. crm, outreach)" style="width:100%;font-size:11px;padding:6px 10px;background:#0d111a;border:1px solid #334155;border-radius:6px;color:#fff">
+                <input type="text" id="add-soc-cat-topic" placeholder="Topic Focus" style="width:100%;font-size:11px;padding:6px 10px;background:#0d111a;border:1px solid #334155;border-radius:6px;color:#fff">
+              </div>
+              <textarea id="add-soc-cat-instructions" placeholder="Help-then-sell instructions (e.g. Give 3 tips to speed up replies, then pitch Innvoque CRM...)" rows="2" style="width:100%;font-size:11px;padding:6px 10px;background:#0d111a;border:1px solid #334155;border-radius:6px;color:#fff;resize:vertical"></textarea>
+              <button class="btn b-green" style="padding:6px;font-size:11px;width:100%" onclick="addSocialCategory(event)">Add Category to Settings</button>
+            </div>
+          </div>
+        </div>
+
         <!-- Section 3: Channels Credentials Table -->
         <div class="config-section" style="margin-bottom:0">
           <h3 style="margin-bottom:14px;border-bottom:1px solid #2d3748;padding-bottom:8px;font-size:13px;text-transform:uppercase;letter-spacing:.03em;color:#94a3b8">🔑 Social Media Channels</h3>
@@ -579,81 +603,81 @@
                 </tr>
               </thead>
               <tbody id="soc-channels-list">
-                <!-- LinkedIn -->
-                <tr>
-                  <td style="font-weight:600"><span style="color:#0a66c2;font-size:14px;margin-right:4px">💼</span>LinkedIn</td>
-                  <td>
-                    <input type="password" id="ch-linkedin-token" placeholder="Access Token" style="width:100%;margin-bottom:4px;padding:4px 8px;font-size:10px">
-                    <input type="text" id="ch-linkedin-urn" placeholder="Person/Company URN (e.g. urn:li:organization:123)" style="width:100%;padding:4px 8px;font-size:10px">
-                  </td>
-                  <td style="text-align:center">
-                    <input type="checkbox" id="ch-linkedin-enabled" style="width:16px;height:16px;accent-color:#7c3aed">
-                  </td>
-                </tr>
-                <!-- Facebook -->
-                <tr>
-                  <td style="font-weight:600"><span style="color:#1877f2;font-size:14px;margin-right:4px">👤</span>Facebook</td>
-                  <td>
-                    <input type="password" id="ch-facebook-token" placeholder="Page Access Token" style="width:100%;margin-bottom:4px;padding:4px 8px;font-size:10px">
-                    <input type="text" id="ch-facebook-pageId" placeholder="Page ID" style="width:100%;padding:4px 8px;font-size:10px">
-                  </td>
-                  <td style="text-align:center">
-                    <input type="checkbox" id="ch-facebook-enabled" style="width:16px;height:16px;accent-color:#7c3aed">
-                  </td>
-                </tr>
-                <!-- Instagram -->
-                <tr>
-                  <td style="font-weight:600"><span style="color:#e1306c;font-size:14px;margin-right:4px">📸</span>Instagram</td>
-                  <td>
-                    <input type="password" id="ch-instagram-token" placeholder="Access Token" style="width:100%;margin-bottom:4px;padding:4px 8px;font-size:10px">
-                    <input type="text" id="ch-instagram-accountId" placeholder="Business Account ID" style="width:100%;padding:4px 8px;font-size:10px">
-                  </td>
-                  <td style="text-align:center">
-                    <input type="checkbox" id="ch-instagram-enabled" style="width:16px;height:16px;accent-color:#7c3aed">
-                  </td>
-                </tr>
-                <!-- Twitter/X -->
-                <tr>
-                  <td style="font-weight:600"><span style="color:#fff;font-size:14px;margin-right:4px">🐦</span>Twitter/X</td>
-                  <td>
-                    <input type="password" id="ch-twitter-token" placeholder="Bearer Token" style="width:100%;margin-bottom:4px;padding:4px 8px;font-size:10px">
-                    <input type="text" id="ch-twitter-apiKey" placeholder="API Key" style="width:100%;padding:4px 8px;font-size:10px">
-                  </td>
-                  <td style="text-align:center">
-                    <input type="checkbox" id="ch-twitter-enabled" style="width:16px;height:16px;accent-color:#7c3aed">
-                  </td>
-                </tr>
-                <!-- Pinterest -->
-                <tr>
-                  <td style="font-weight:600"><span style="color:#bd081c;font-size:14px;margin-right:4px">📌</span>Pinterest</td>
-                  <td>
-                    <input type="password" id="ch-pinterest-token" placeholder="Access Token" style="width:100%;margin-bottom:4px;padding:4px 8px;font-size:10px">
-                    <input type="text" id="ch-pinterest-boardId" placeholder="Board ID" style="width:100%;padding:4px 8px;font-size:10px">
-                  </td>
-                  <td style="text-align:center">
-                    <input type="checkbox" id="ch-pinterest-enabled" style="width:16px;height:16px;accent-color:#7c3aed">
-                  </td>
-                </tr>
-                <!-- Threads -->
-                <tr>
-                  <td style="font-weight:600"><span style="color:#e2e8f0;font-size:14px;margin-right:4px">🧵</span>Threads</td>
-                  <td>
-                    <input type="password" id="ch-threads-token" placeholder="Access Token / Bearer Key" style="width:100%;padding:4px 8px;font-size:10px">
-                  </td>
-                  <td style="text-align:center">
-                    <input type="checkbox" id="ch-threads-enabled" style="width:16px;height:16px;accent-color:#7c3aed">
-                  </td>
-                </tr>
-                <!-- YouTube -->
-                <tr>
-                  <td style="font-weight:600"><span style="color:#ff0000;font-size:14px;margin-right:4px">🎥</span>YouTube</td>
-                  <td>
-                    <input type="password" id="ch-youtube-token" placeholder="YouTube Data API Key" style="width:100%;padding:4px 8px;font-size:10px">
-                  </td>
-                  <td style="text-align:center">
-                    <input type="checkbox" id="ch-youtube-enabled" style="width:16px;height:16px;accent-color:#7c3aed">
-                  </td>
-                </tr>
+                 <!-- LinkedIn -->
+                 <tr>
+                   <td style="font-weight:600"><span style="color:#0a66c2;font-size:14px;margin-right:4px">💼</span>LinkedIn</td>
+                   <td>
+                     <input type="password" id="ch-linkedin-token" placeholder="Access Token" autocomplete="new-password" style="width:100%;margin-bottom:4px;padding:4px 8px;font-size:10px">
+                     <input type="text" id="ch-linkedin-urn" placeholder="Person/Company URN (e.g. urn:li:organization:123)" style="width:100%;padding:4px 8px;font-size:10px">
+                   </td>
+                   <td style="text-align:center">
+                     <input type="checkbox" id="ch-linkedin-enabled" style="width:16px;height:16px;accent-color:#7c3aed">
+                   </td>
+                 </tr>
+                 <!-- Facebook -->
+                 <tr>
+                   <td style="font-weight:600"><span style="color:#1877f2;font-size:14px;margin-right:4px">👤</span>Facebook</td>
+                   <td>
+                     <input type="password" id="ch-facebook-token" placeholder="Page Access Token" autocomplete="new-password" style="width:100%;margin-bottom:4px;padding:4px 8px;font-size:10px">
+                     <input type="text" id="ch-facebook-pageId" placeholder="Page ID" style="width:100%;padding:4px 8px;font-size:10px">
+                   </td>
+                   <td style="text-align:center">
+                     <input type="checkbox" id="ch-facebook-enabled" style="width:16px;height:16px;accent-color:#7c3aed">
+                   </td>
+                 </tr>
+                 <!-- Instagram -->
+                 <tr>
+                   <td style="font-weight:600"><span style="color:#e1306c;font-size:14px;margin-right:4px">📸</span>Instagram</td>
+                   <td>
+                     <input type="password" id="ch-instagram-token" placeholder="Access Token" autocomplete="new-password" style="width:100%;margin-bottom:4px;padding:4px 8px;font-size:10px">
+                     <input type="text" id="ch-instagram-accountId" placeholder="Business Account ID" style="width:100%;padding:4px 8px;font-size:10px">
+                   </td>
+                   <td style="text-align:center">
+                     <input type="checkbox" id="ch-instagram-enabled" style="width:16px;height:16px;accent-color:#7c3aed">
+                   </td>
+                 </tr>
+                 <!-- Twitter/X -->
+                 <tr>
+                   <td style="font-weight:600"><span style="color:#fff;font-size:14px;margin-right:4px">🐦</span>Twitter/X</td>
+                   <td>
+                     <input type="password" id="ch-twitter-token" placeholder="Bearer Token" autocomplete="new-password" style="width:100%;margin-bottom:4px;padding:4px 8px;font-size:10px">
+                     <input type="text" id="ch-twitter-apiKey" placeholder="API Key" style="width:100%;padding:4px 8px;font-size:10px">
+                   </td>
+                   <td style="text-align:center">
+                     <input type="checkbox" id="ch-twitter-enabled" style="width:16px;height:16px;accent-color:#7c3aed">
+                   </td>
+                 </tr>
+                 <!-- Pinterest -->
+                 <tr>
+                   <td style="font-weight:600"><span style="color:#bd081c;font-size:14px;margin-right:4px">📌</span>Pinterest</td>
+                   <td>
+                     <input type="password" id="ch-pinterest-token" placeholder="Access Token" autocomplete="new-password" style="width:100%;margin-bottom:4px;padding:4px 8px;font-size:10px">
+                     <input type="text" id="ch-pinterest-boardId" placeholder="Board ID" style="width:100%;padding:4px 8px;font-size:10px">
+                   </td>
+                   <td style="text-align:center">
+                     <input type="checkbox" id="ch-pinterest-enabled" style="width:16px;height:16px;accent-color:#7c3aed">
+                   </td>
+                 </tr>
+                 <!-- Threads -->
+                 <tr>
+                   <td style="font-weight:600"><span style="color:#e2e8f0;font-size:14px;margin-right:4px">🧵</span>Threads</td>
+                   <td>
+                     <input type="password" id="ch-threads-token" placeholder="Access Token / Bearer Key" autocomplete="new-password" style="width:100%;padding:4px 8px;font-size:10px">
+                   </td>
+                   <td style="text-align:center">
+                     <input type="checkbox" id="ch-threads-enabled" style="width:16px;height:16px;accent-color:#7c3aed">
+                   </td>
+                 </tr>
+                 <!-- YouTube -->
+                 <tr>
+                   <td style="font-weight:600"><span style="color:#ff0000;font-size:14px;margin-right:4px">🎥</span>YouTube</td>
+                   <td>
+                     <input type="password" id="ch-youtube-token" placeholder="YouTube Data API Key" autocomplete="new-password" style="width:100%;padding:4px 8px;font-size:10px">
+                   </td>
+                   <td style="text-align:center">
+                     <input type="checkbox" id="ch-youtube-enabled" style="width:16px;height:16px;accent-color:#7c3aed">
+                   </td>
+                 </tr>
               </tbody>
             </table>
           </div>
@@ -662,6 +686,7 @@
         <!-- Section 4: Trigger Buttons -->
         <div style="display:flex;gap:10px;flex-wrap:wrap">
           <button class="btn b-blue" style="flex:1.5;padding:12px;font-size:13px" onclick="saveSocialSettings()">💾 Save Configuration</button>
+          <button class="btn" style="flex:1.2;padding:12px;font-size:13px;background:#7c3aed;color:#fff;" onclick="testSocialConnections()" id="soc-test-btn">🔌 Test Connections</button>
           <button class="btn b-green" style="flex:1.2;padding:12px;font-size:13px" onclick="generateSocialPreview()" id="soc-preview-btn">🔍 Generate Preview</button>
           <button class="btn b-auto" style="flex:1;padding:12px;font-size:13px" onclick="runSocialPostNow()" id="soc-run-btn">🚀 Post Now</button>
         </div>
@@ -702,6 +727,9 @@
                 </div>
               </div>
               <div style="font-size:12px;color:#e2e8f0;line-height:1.6;white-space:pre-wrap" id="mock-li-body">Click "Generate Preview" to fetch website data and view LinkedIn post layout.</div>
+              <div id="mock-li-img-container" style="display:none;margin-top:10px;">
+                <img id="mock-li-img" style="width:100%;border-radius:6px;max-height:220px;object-fit:cover;" src="" />
+              </div>
             </div>
 
             <!-- Simulated Facebook Preview -->
@@ -714,6 +742,9 @@
                 </div>
               </div>
               <div style="font-size:12px;color:#e2e8f0;line-height:1.6;white-space:pre-wrap" id="mock-fb-body">Click "Generate Preview" to preview Facebook post layout.</div>
+              <div id="mock-fb-img-container" style="display:none;margin-top:10px;">
+                <img id="mock-fb-img" style="width:100%;border-radius:6px;max-height:220px;object-fit:cover;" src="" />
+              </div>
             </div>
 
             <!-- Simulated Instagram Preview -->
@@ -725,7 +756,10 @@
                   <div style="font-size:10px;color:#64748b">Original Audio</div>
                 </div>
               </div>
-              <div style="width:100%;height:140px;background:#1a2035;border-radius:6px;margin-bottom:10px;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:12px;border:1px dashed #334155" id="mock-ig-media">
+              <div style="width:100%;max-height:220px;overflow:hidden;border-radius:6px;margin-bottom:10px;display:none" id="mock-ig-media-container">
+                <img id="mock-ig-img" style="width:100%;object-fit:cover;" src="" />
+              </div>
+              <div style="width:100%;height:140px;background:#1a2035;border-radius:6px;margin-bottom:10px;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:12px;border:1px dashed #334155" id="mock-ig-media-placeholder">
                 📸 [AI Visual Post Media Placeholder]
               </div>
               <div style="font-size:12px;color:#e2e8f0;line-height:1.6;white-space:pre-wrap" id="mock-ig-body">Click "Generate Preview" to preview Instagram post layout.</div>
@@ -742,6 +776,9 @@
                     <span style="font-size:11px;color:#64748b">&bull; now</span>
                   </div>
                   <div style="font-size:12px;color:#e2e8f0;line-height:1.6;margin-top:4px;white-space:pre-wrap" id="mock-tw-body">Click "Generate Preview" to preview Twitter/X post layout (under 280 chars).</div>
+                  <div id="mock-tw-img-container" style="display:none;margin-top:10px;">
+                    <img id="mock-tw-img" style="width:100%;border-radius:6px;max-height:180px;object-fit:cover;" src="" />
+                  </div>
                 </div>
               </div>
             </div>
@@ -749,7 +786,10 @@
             <!-- Simulated Pinterest Preview -->
             <div id="mock-pinterest" class="mock-content" style="display:none">
               <div style="display:flex;gap:14px;align-items:flex-start">
-                <div style="width:120px;height:160px;background:#1a2035;border-radius:10px;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:11px;border:1px dashed #334155;flex-shrink:0">
+                <div id="mock-pin-img-container" style="width:120px;height:160px;overflow:hidden;border-radius:10px;flex-shrink:0;display:none;">
+                  <img id="mock-pin-img" style="width:100%;height:100%;object-fit:cover;" src="" />
+                </div>
+                <div id="mock-pin-placeholder" style="width:120px;height:160px;background:#1a2035;border-radius:10px;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:11px;border:1px dashed #334155;flex-shrink:0">
                   📌 Pin Visual
                 </div>
                 <div>

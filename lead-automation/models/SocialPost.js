@@ -14,6 +14,8 @@ const socialPostSchema = new mongoose.Schema({
         threads: { type: String, default: '' },
         youtube: { type: String, default: '' }
     },
+    image_url: { type: String, default: '' },
+    image_prompt: { type: String, default: '' },
     channels_posted: [String], // e.g. ['linkedin', 'facebook']
     status: { type: String, default: 'Simulated' }, // 'Success', 'Simulated', 'Failed'
     logs: { type: String, default: '' },

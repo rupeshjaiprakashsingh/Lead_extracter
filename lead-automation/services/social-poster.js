@@ -76,6 +76,177 @@ async function fetchLinkedInPersonUrn(token) {
     return null;
 }
 
+// Upload image to LinkedIn using versioned or legacy API
+async function uploadLinkedInImage(token, ownerUrn, imageUrl, isVersioned = true, apiVersion = '202605') {
+    const imgRes = await fetch(imageUrl);
+    if (!imgRes.ok) {
+        throw new Error(`Failed to fetch image from URL: ${imageUrl} (${imgRes.status})`);
+    }
+    const arrayBuffer = await imgRes.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    if (isVersioned) {
+        const initRes = await fetch('https://api.linkedin.com/rest/images?action=initializeUpload', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+                'X-Restli-Protocol-Version': '2.0.0',
+                'LinkedIn-Version': apiVersion
+            },
+            body: JSON.stringify({
+                initializeUploadRequest: {
+                    owner: ownerUrn
+                }
+            })
+        });
+
+        if (!initRes.ok) {
+            const errText = await initRes.text();
+            throw new Error(`initializeUpload failed (${initRes.status}): ${errText}`);
+        }
+
+        const data = await initRes.json();
+        const uploadUrl = data.value.uploadUrl;
+        const imageUrn = data.value.image;
+
+        const uploadRes = await fetch(uploadUrl, {
+            method: 'PUT',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/octet-stream'
+            },
+            body: buffer
+        });
+
+        if (!uploadRes.ok) {
+            const errText = await uploadRes.text();
+            throw new Error(`Binary upload failed (${uploadRes.status}): ${errText}`);
+        }
+
+        return imageUrn;
+    } else {
+        const regRes = await fetch('https://api.linkedin.com/v2/assets?action=registerUpload', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+                'X-Restli-Protocol-Version': '2.0.0'
+            },
+            body: JSON.stringify({
+                registerUploadRequest: {
+                    recipes: ['urn:li:digitalmediaRecipe:feedshare-image'],
+                    owner: ownerUrn,
+                    relationshipType: 'OWNER'
+                }
+            })
+        });
+
+        if (!regRes.ok) {
+            const errText = await regRes.text();
+            throw new Error(`registerUpload failed (${regRes.status}): ${errText}`);
+        }
+
+        const data = await regRes.json();
+        const uploadUrl = data.value.uploadMechanism['com.linkedin.digitalmedia.uploading.MediaUploadMechanism'].uploadUrl;
+        const assetUrn = data.value.asset;
+
+        const uploadRes = await fetch(uploadUrl, {
+            method: 'PUT',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/octet-stream'
+            },
+            body: buffer
+        });
+
+        if (!uploadRes.ok) {
+            const errText = await uploadRes.text();
+            throw new Error(`Legacy binary upload failed (${uploadRes.status}): ${errText}`);
+        }
+
+        return assetUrn;
+    }
+}
+
+// Select fallback template index in an LRU (least-recently-used) fashion over 30 days
+async function selectFallbackTemplateIndex(userId, companyId) {
+    const SocialPost = getSocialPost();
+    const query = {};
+    if (companyId) {
+        query.companyId = companyId;
+    } else if (userId) {
+        if (mongoose.Types.ObjectId.isValid(userId)) {
+            query.userId = new mongoose.Types.ObjectId(userId);
+        } else {
+            query.userId = userId;
+        }
+    }
+
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    
+    try {
+        const posts = await SocialPost.find({
+            ...query,
+            createdAt: { $gte: thirtyDaysAgo }
+        }).sort({ createdAt: -1 }).lean();
+
+        const lastUsed = { 0: null, 1: null, 2: null };
+
+        for (const post of posts) {
+            const liText = post.content?.linkedin || '';
+            if (!liText) continue;
+
+            let indexMatched = -1;
+            if (liText.includes("Value-First Business Strategy")) {
+                indexMatched = 0;
+            } else if (liText.includes("response times") || liText.includes("response rates")) {
+                indexMatched = 1;
+            } else if (liText.includes("Scaling your workflow") || liText.includes("balance between strategy")) {
+                indexMatched = 2;
+            }
+
+            if (indexMatched !== -1 && lastUsed[indexMatched] === null) {
+                lastUsed[indexMatched] = post.createdAt;
+            }
+        }
+
+        const unused = [0, 1, 2].filter(idx => lastUsed[idx] === null);
+        if (unused.length > 0) {
+            return unused[0];
+        }
+
+        let bestIndex = 0;
+        let oldestTime = lastUsed[0];
+        for (let i = 1; i <= 2; i++) {
+            if (lastUsed[i] < oldestTime) {
+                oldestTime = lastUsed[i];
+                bestIndex = i;
+            }
+        }
+
+        return bestIndex;
+    } catch (err) {
+        console.error('Error selecting fallback template index:', err.message);
+        return Math.floor(Math.random() * 3);
+    }
+}
+
+// Check if new post is too similar to any post from last 30 days
+function isDuplicatePost(newText, recentPosts) {
+    if (!newText || !recentPosts || recentPosts.length === 0) return false;
+    const cleanNew = newText.toLowerCase().replace(/[^a-z0-9]/g, '');
+    for (const post of recentPosts) {
+        const existingText = post.content?.linkedin || '';
+        if (!existingText) continue;
+        const cleanExisting = existingText.toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (cleanNew === cleanExisting) return true;
+        if (cleanNew.substring(0, 100) === cleanExisting.substring(0, 100)) return true;
+    }
+    return false;
+}
+
 // Scrape website content using fetch and playwright
 async function scrapeWebsite(url) {
     if (!url) return { title: '', description: '', text: '' };
@@ -163,29 +334,40 @@ async function scrapeWebsite(url) {
 // Generate platform-specific posts using Gemini
 async function generateSocialPosts(webData, topic, title, customContent, options = {}) {
     const geminiKey = process.env.GEMINI_API_KEY;
+    const targetWebsite = options.websiteUrl || webData.url || "";
 
+    const { companyId, userId } = options;
+    const query = {};
+    if (companyId) query.companyId = companyId;
+    else if (userId) {
+        if (mongoose.Types.ObjectId.isValid(userId)) {
+            query.userId = new mongoose.Types.ObjectId(userId);
+        } else {
+            query.userId = userId;
+        }
+    }
+
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    let recentPosts30Days = [];
     let recentPostsText = "";
     try {
-        const { companyId, userId } = options;
-        const query = {};
-        if (companyId) query.companyId = companyId;
-        else if (userId) query.userId = userId;
-
         if (companyId || userId) {
             const SocialPost = getSocialPost();
-            const recentPosts = await SocialPost.find(query)
-                .sort({ createdAt: -1 })
-                .limit(3)
-                .lean();
-            
-            if (recentPosts && recentPosts.length > 0) {
-                recentPostsText = recentPosts.map((p, idx) => {
+            recentPosts30Days = await SocialPost.find({
+                ...query,
+                createdAt: { $gte: thirtyDaysAgo }
+            }).sort({ createdAt: -1 }).lean();
+
+            if (recentPosts30Days && recentPosts30Days.length > 0) {
+                recentPostsText = recentPosts30Days.slice(0, 5).map((p, idx) => {
                     return `Post ${idx + 1}:\n- LinkedIn: "${p.content?.linkedin || ''}"\n- Facebook: "${p.content?.facebook || ''}"\n- Twitter: "${p.content?.twitter || ''}"`;
                 }).join("\n\n");
             }
         }
     } catch (e) {
-        console.error('Error fetching recent posts for prompt variation:', e.message);
+        console.error('Error fetching recent posts for prompt variation & duplicate check:', e.message);
     }
 
     const angles = [
@@ -204,34 +386,62 @@ async function generateSocialPosts(webData, topic, title, customContent, options
             const genAI = new GoogleGenerativeAI(geminiKey);
             const aiModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
             
-            const prompt = `You are a world-class social media manager and content creator.
-Your goal is to generate engaging, unique social media posts for a company based on their website content and additional details.
+            const prompt = `You are a world-class social media copywriter, viral marketing consultant, and expert content creator.
+Your goal is to generate highly engaging, reaction-inducing, and viral social media posts for a company based on their website content, category topic, and guidelines.
 
 COMPANY WEBSITE INFO:
 - Title: "${webData.title || ''}"
 - Description: "${webData.description || ''}"
 - Context/Text: "${webData.text || ''}"
+- Target Website URL / Product Link: "${targetWebsite}"
 
 USER INSTRUCTIONS (Guiding Topic/Theme):
 - Topic Focus: "${topic || 'Brand Promotion'}"
-- Specific Title: "${title || ''}"
+- Specific Title/Category Name: "${title || ''}"
 - Custom instructions/direction: "${customContent || ''}"
 
-SPECIFIC POST ANGLE/STYLE FOR THIS RUN (You must write the post focusing on this style to ensure variety):
+SPECIFIC POST ANGLE/STYLE FOR THIS RUN (Focus on this style to ensure variety):
 - Style Focus: ${randomAngle}
 
 ${recentPostsText ? `AVOID REPETITION: Here are the texts of our recently published posts. DO NOT repeat the same concepts, hooks, phrasing, or structures:
 ${recentPostsText}
 ` : ''}
 
+CRITICAL RULES FOR VIRAL ENGAGEMENT & REACTION-INDUCING COPY:
+You must strictly follow this value-first, high-engagement copywriting structure for all channels (adapted for character limits):
+
+1. THE VIRAL HOOK (Line 1): Start with an extremely compelling, contrarian, shocking, or deeply relatable first line. 
+   Examples: 
+   - "I stopped doing [Common Practice] and my business grew by 300%."
+   - "95% of founders make this outreach mistake (it cost us $10,000)."
+   - "Here is the uncomfortable truth about [Industry Topic] that nobody wants to admit."
+   NEVER start with generic self-promotion (e.g. do NOT say "We are excited to launch...", "At our company...", or "Check out...").
+
+2. READABILITY & FORMATTING (The "LinkedIn Broetry" Style):
+   - Use short, punchy, single-sentence paragraphs.
+   - Leave a double line break after almost every sentence.
+   - Keep sentences under 12 words. High readability on mobile screen is vital.
+   - Use bullet points and emojis to break up text visually.
+
+3. ACTIONABLE VALUE: Provide 3 high-impact, actionable tips, a checklist, or a simple "how-to" that teaches the reader something immediately useful without leaving the platform.
+
+4. SOFT PITCH: Seamlessly tie the value back to the company's product/services as the ultimate automated way to save time/money or scale results.
+
+5. ALGORITHM-BOOSTING COMMENT CTA: End the post with a thought-provoking, interactive question that practically forces readers to reply in the comments (drives the viral algorithm).
+   Examples:
+   - "What is your #1 strategy for this? Let me know in the comments."
+   - "Have you faced this challenge too? Share below."
+   - "Do you agree with this approach, or do you prefer the old way?"
+   Followed by: "P.S. Learn how to automate this entire process here: ${targetWebsite}"
+
 Generate customized posts for the following social media channels:
-1. "facebook": Highly engaging, friendly/informal, uses emojis, lists benefits, ends with a clear Call to Action (CTA) and 3-5 hashtags.
-2. "instagram": Visually descriptive, highly engaging hook, uses emojis, space breaks, ends with a call to link-in-bio and 5-10 hashtags.
-3. "linkedin": Professional, informative, business-oriented. Uses bullet points, structured spacing, professional tone, adds 3-5 relevant hashtags.
-4. "twitter": Short, punchy, under 280 characters, includes 1-2 hashtags, clear message.
-5. "pinterest": Image description focus, highly descriptive, uses search-friendly keywords, clear call to action.
-6. "threads": Conversational, interactive, invites comments, under 500 characters.
-7. "youtube": A short video script outline or video description (100-200 words), uses keywords, tells viewers to subscribe.
+1. "facebook": Highly engaging, friendly/informal, uses emojis, lists value points with space breaks, ends with a soft pitch, comments CTA, and 3-5 hashtags.
+2. "instagram": Visually descriptive, highly engaging hook, uses emojis, space breaks for readability, ends with a comments CTA + bio CTA, and 5-10 hashtags.
+3. "linkedin": Professional, informative, business-oriented. Uses bullet points, structured spacing, professional tone, lists value/checklists, ends with a soft pitch, algorithm comment question, and 3-5 relevant hashtags.
+4. "twitter": Short, punchy, under 280 characters, starts with a value hook, ends with a short pitch & CTA/link: "${targetWebsite}".
+5. "pinterest": Highly descriptive, uses search-friendly keywords, lists tips, includes a clear call to action pointing to the link.
+6. "threads": Conversational, interactive, invites comments, value-first, under 500 characters.
+7. "youtube": A short video script outline or video description (100-200 words), uses keywords, structured as Hook -> Tips -> Pitch -> CTA to subscribe & visit the link.
 
 Strict Rules:
 - Return ONLY a valid JSON object matching this schema. Do not include markdown code block formatting (like \`\`\`json). Just the raw JSON string:
@@ -242,18 +452,46 @@ Strict Rules:
   "twitter": "string",
   "pinterest": "string",
   "threads": "string",
-  "youtube": "string"
+  "youtube": "string",
+  "image_prompt": "string"
 }
+- For "image_prompt", provide a highly detailed, professional visual description for an AI image generator representing the topic/theme of the posts (e.g. corporate modern scene, vector illustration of tech solutions, digital workflows, productivity boost). DO NOT include any text inside the image. Focus purely on visual descriptions.
 - Ensure strings are properly escaped for valid JSON.`;
 
-            const result = await aiModel.generateContent({
-                contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                generationConfig: { responseMimeType: 'application/json' }
-            });
-            
-            const rawText = result.response.text().trim();
-            const parsed = JSON.parse(rawText);
-            return parsed;
+            let parsed = null;
+            let retryCount = 0;
+            const maxRetries = 3;
+            let duplicateWarning = "";
+
+            while (retryCount < maxRetries) {
+                const finalPrompt = prompt + (duplicateWarning ? `\n\n${duplicateWarning}` : "");
+                const result = await aiModel.generateContent({
+                    contents: [{ role: 'user', parts: [{ text: finalPrompt }] }],
+                    generationConfig: { responseMimeType: 'application/json' }
+                });
+                
+                const rawText = result.response.text().trim();
+                parsed = JSON.parse(rawText);
+
+                const liPostText = parsed.linkedin || '';
+                if (isDuplicatePost(liPostText, recentPosts30Days)) {
+                    retryCount++;
+                    console.warn(`⚠️ Social Poster: Gemini generated a duplicate LinkedIn post (Retry ${retryCount}/${maxRetries}): "${liPostText.substring(0, 50)}..."`);
+                    duplicateWarning = `WARNING: The last generated LinkedIn post was: "${liPostText}". This is a duplicate of a post published in the last 30 days. You MUST write a completely new, uniquely phrased post. Do NOT reuse the same hooks, phrasing, or bullet points.`;
+                } else {
+                    break;
+                }
+            }
+
+            if (parsed && !isDuplicatePost(parsed.linkedin || '', recentPosts30Days)) {
+                // Dynamically generate the Pollinations AI URL based on the parsed image_prompt
+                const imagePrompt = parsed.image_prompt || `${topic || 'business'} ${title || 'solutions'} professional illustration graphic`;
+                parsed.image_url = `https://image.pollinations.ai/prompt/${encodeURIComponent(imagePrompt)}?width=800&height=600&nologo=true&seed=${Math.floor(Math.random() * 100000)}`;
+
+                return parsed;
+            } else {
+                console.warn(`⚠️ Social Poster: All AI retries returned duplicates. Falling back to LRU templates...`);
+            }
         } catch (e) {
             console.error('❌ Gemini social generation failed, using fallback:', e.message);
         }
@@ -261,61 +499,66 @@ Strict Rules:
 
     // Heuristic Fallback
     console.log('🤖 Social Poster: Using fallback content generator...');
-    return buildFallbackPosts(webData, topic, title, customContent);
+    return await buildFallbackPosts(webData, topic, title, customContent, targetWebsite, options);
 }
 
 // Build fallback posts when Gemini is not available
-function buildFallbackPosts(webData, topic, title, customContent) {
+async function buildFallbackPosts(webData, topic, title, customContent, websiteUrl = "", options = {}) {
     const company = title || webData.title || 'Our Company';
     const mainTopic = topic || 'Innovation & Excellence';
     const desc = webData.description || 'premium services and custom solutions';
+    const targetLink = websiteUrl || 'our website';
 
     const tags = `#business #growth #success #marketing`;
     
-    // Pick a random template index (0, 1, or 2)
-    const t = Math.floor(Math.random() * 3);
+    // Pick the least-recently-used template index (0, 1, or 2)
+    const t = await selectFallbackTemplateIndex(options.userId, options.companyId);
+    console.log(`🤖 Social Poster: Selected fallback template index: ${t} (LRU)`);
     
     const fbTemplates = [
-        `📢 EXCITING NEWS FROM ${company.toUpperCase()}! 📢\n\nWe are thrilled to highlight our focus on: **${mainTopic}**.\n\nAt ${company}, we are dedicated to helping our clients succeed by delivering ${desc}.\n\nCheck out our website to learn more about our services and how we can collaborate! 🚀\n\n👉 Visit us today! ${tags}`,
-        `💡 Looking to elevate your operations? At ${company}, we specialize in **${mainTopic}** to help you stay ahead of the competition.\n\nOur custom-tailored solutions for ${desc} are designed to deliver exceptional quality and reliability. Let's build something great together!\n\n🔗 Learn more on our website! ${tags}`,
-        `🚀 Innovate, scale, and grow with ${company}! Today, we're sharing insights on **${mainTopic}**.\n\nWhether you need support with ${desc} or want to optimize your workflows, our team has the expertise to guide you every step of the way.\n\n👉 Send us a message or visit our link to get started! ${tags}`
+        `💡 Did you know? Most businesses lose 10–20% of their clients just because of delayed follow-ups or lack of clear online visibility.\n\nHere are 3 quick tips to solve this:\n1️⃣ Automate your first outreach step.\n2️⃣ Follow up within 5 minutes of a query.\n3️⃣ Always provide upfront educational value.\n\nAt ${company}, we help you solve this by delivering high-impact **${mainTopic}** and ${desc}.\n\n👉 Learn more and scale your business: ${targetLink} ${tags}`,
+        `🔥 Want to build instant trust with your clients? Value-first outreach is the key. Try this checklist:\n✔️ Educate your leads instead of just hard selling.\n✔️ Share actionable checklists to show your expertise.\n✔️ Make access to your services simple and frictionless.\n\nWe specialize in custom **${mainTopic}** to make your operations seamless. Let's achieve your goals together!\n\n🔗 Visit us to learn how: ${targetLink} ${tags}`,
+        `🚀 Scale smarter, not harder. If your outreach and social media are completely manual, you are losing closing time. Here is a 3-step audit for your operations:\n🔹 Use templates to keep your messaging consistent.\n🔹 Pre-schedule your postings so your brand stays active 24/7.\n🔹 Automate tracking for all responses.\n\nAt ${company}, we handle the heavy lifting for ${desc}. Let us take care of the automation so you can close more clients.\n\n👉 Get started: ${targetLink} ${tags}`
     ];
 
     const liTemplates = [
-        `💼 Elevating Standards: ${company} focuses on ${mainTopic} 💼\n\nIn today's fast-paced market, businesses need reliable partners. At ${company}, we pride ourselves on offering ${desc} designed to drive real results.\n\nOur core values:\n🔹 Client Success First\n🔹 Cutting-Edge Technology\n🔹 Reliable & Professional Execution\n\nLet's connect and discuss how we can accelerate your progress. Visit our website for more information.\n\n${tags} #networking #professionalism`,
-        `💡 How is your organization addressing ${mainTopic} this year?\n\nAt ${company}, we help businesses optimize their workflows and implement custom ${desc} to unlock new growth channels.\n\nHere is what makes our approach different:\n✔️ Customized project roadmaps\n✔️ Transparent communication\n✔️ Focus on long-term scalability\n\nConnect with us or visit our website to explore our services. Let's discuss in the comments!\n\n${tags} #innovation #leadership`,
-        `📈 Scaling your business requires the right technology and strategy. At ${company}, we are committed to delivering top-tier solutions in **${mainTopic}**.\n\nFrom consulting to final deployment of ${desc}, we partner with you to turn complex challenges into simple, efficient workflows.\n\n👉 Read our latest updates or visit our site to schedule a consultation.\n\n${tags} #businesssolutions #b2b`
+        `💼 Value-First Business Strategy: Help Before You Sell 💼\n\nIn today's B2B environment, clients don't want sales pitches—they want solutions. Here is a simple 3-step value checklist you can implement today:\n\n1️⃣ Share high-value industry tips rather than product features.\n2️⃣ Teach your prospects something that saves them time or money.\n3️⃣ Connect them to a reliable, automated platform when they are ready to scale.\n\nAt ${company}, we focus on **${mainTopic}** to deliver exactly these results for our partners.\n\nLet's connect or visit our site to see how we can assist: ${targetLink}\n\n${tags} #b2b #networking #automation`,
+        `💡 Is your business struggling with response times or outreach consistency?\n\nStudies show that response rates drop by 391% if you wait more than 5 minutes to follow up. To fix this immediately:\n✔️ Implement automated template builders.\n✔️ Use CRM tools to centralize user queries.\n✔️ Outsource non-core data extraction.\n\nAt ${company}, we deliver custom ${desc} so your team never misses an opportunity.\n\n👉 Explore our services: ${targetLink}\n\n${tags} #productivity #businesssolutions`,
+        `📈 Scaling your workflow requires a clear balance between strategy and automation.\n\nIf you want to optimize your marketing and sales outreach:\n🔹 Create educational content that answers client FAQs.\n🔹 Automate your posting schedule to keep engagement high.\n🔹 Base your campaigns on real data insights.\n\nWe help businesses achieve this with top-tier **${mainTopic}** and dedicated support.\n\n🔗 Let's collaborate: ${targetLink}\n\n${tags} #leadership #salespipeline`
     ];
 
     const twTemplates = [
-        `Looking to grow? ${company} has you covered! We specialize in ${mainTopic} to help you achieve your goals. Visit our website to learn more! 🚀 ${tags.split(' ').slice(0, 2).join(' ')}`,
-        `How does your team handle ${mainTopic}? At ${company}, we deliver premium ${desc} to streamline your operations and maximize ROI. Let's connect! ⚡ ${tags.split(' ').slice(0, 2).join(' ')}`,
-        `Ready to scale? ${company} specializes in custom ${desc} and **${mainTopic}** designed for your business needs. Visit our website today! 🔗 ${tags.split(' ').slice(0, 2).join(' ')}`
+        `Delayed follow-ups cost sales. Fix it in 3 steps:\n1. Automate initial contact\n2. Share value-first templates\n3. Track response rates\n\nAt ${company}, we specialize in ${mainTopic} to automate this workflow. Learn more! 🚀 ${targetLink} ${tags.split(' ').slice(0, 2).join(' ')}`,
+        `Value-first content builds trust. Don't just sell—help your audience first, then introduce your services. ${company} handles your customized ${desc} so you can focus on growth. Check us out: ${targetLink} ⚡`,
+        `Struggling to scale your outreach? Automate the process! Save time by scheduling updates & tracking leads. We build custom ${desc} & **${mainTopic}** to streamline your operations. 🔗 ${targetLink}`
     ];
 
     const igTemplates = [
-        `✨ Spotlighting ${company} ✨\n\nToday, we are talking about **${mainTopic}** and what it means for your business.\n\nOur team is committed to excellence, providing: \n✔️ Custom Tailored Services\n✔️ Exceptional Quality\n✔️ Local Support & Expertise\n\nRead more about how we help our clients grow. Click the link in our bio! 🔗\n\n${tags} #instabusiness #picoftheday`,
-        `💡 Elevate your vision with ${company}!\n\nWe specialize in **${mainTopic}** and custom ${desc} to help your brand stand out and grow.\n\nSwipe left to see our core offerings and tap the link in our bio to connect with our experts today! 🚀\n\n${tags} #growthmindset #agencylife`,
-        `🔥 Transforming ideas into reality with ${company}!\n\nOur focus on **${mainTopic}** ensures that your business gets the best-in-class ${desc}.\n\nReady to take the next step? Head to the link in our bio and let's get started! 📲\n\n${tags} #tech #solutions`
+        `✨ Spotlighting ${company}: Educate & Elevate ✨\n\nAre you struggling to convert outreach into active clients? Here is our 3-step checklist for high-conversion messaging:\n\n✔️ Offer a quick value hack immediately.\n✔️ Address a real pain point your client experiences daily.\n✔️ Introduce your solution as the ultimate time-saver.\n\nWe specialize in **${mainTopic}** to make this seamless for you. Tap the link in our bio to get started! 🔗\n\n${tags} #instabusiness #growthmindset`,
+        `💡 Elevate your workflow with ${company}!\n\nManual lead tracking and inconsistent posting are the biggest bottlenecks for growing brands. Solve this today:\n1️⃣ Pre-schedule your postings.\n2️⃣ Sync your contacts automatically.\n3️⃣ Focus on helping your clients succeed first.\n\nWe provide custom ${desc} to make automation simple. Link in bio! 🚀\n\n${tags} #agencylife #b2b`,
+        `🔥 Value-First Marketing works. Here's why:\n\nPeople buy from those they trust. Share tips, solve problems, and then offer your premium services. At ${company}, we deliver first-class **${mainTopic}** and custom ${desc} to help you build that trust.\n\nReady to transform your brand? Click the link in our bio! 📲\n\n${tags} #tech #solutions`
     ];
 
     const pinTemplates = [
-        `Discover how ${company} is leading the way in ${mainTopic}. Creative ideas, professional execution, and premium results for your project. Click to visit our website. ${tags}`,
-        `Modern solutions for ${mainTopic} by ${company}. Elevate your business with custom ${desc}. Pin this and visit our website to learn more! ${tags}`,
-        `Get inspired by ${company}'s approach to ${mainTopic}. Quality, reliability, and custom-tailored ${desc} for your business. Click to visit. ${tags}`
+        `How to get more customers by helping them first. Simple value-first marketing templates by ${company}. Discover our customized ${mainTopic} services. Click to visit! ${targetLink} ${tags}`,
+        `3 steps to automate your outreach workflow. Stop wasting hours on manual tasks. We provide premium ${desc} to scale your brand. Pin this and visit our website: ${targetLink} ${tags}`,
+        `Value-first copywriting ideas that close deals. Learn how ${company} helps you implement custom **${mainTopic}** to elevate your B2B sales. Click to read: ${targetLink} ${tags}`
     ];
 
     const thrTemplates = [
-        `What's the biggest challenge your business is facing today? 💭 At ${company}, we focus on ${mainTopic} to solve your core problems. Let's discuss in the replies! 👇`,
-        `Thinking about how to optimize ${mainTopic} for your team? At ${company}, we build custom ${desc} to make workflows seamless. What tools do you use? Let us know below! 💬`,
-        `Scale smarter, not harder. At ${company}, we help brands focus on **${mainTopic}**. Share your thoughts or questions about it below! 👇`
+        `B2B sales tip: Don't start your outreach by asking for a call. Start by sharing a quick tip that solves an immediate problem. What's the #1 challenge you are facing in your business today? replies below! 👇 (Visit ${targetLink} to see how we help)`,
+        `Are you still manually posting every day? 💭 You are losing valuable hours that could be spent closing deals. Schedule your posts, cycle your keywords, and provide value first. Let us know how you automate your work below! 👇`,
+        `Help your audience, then pitch. Educate, then sell. That's the formula for high-converting marketing. At ${company}, we make automation around **${mainTopic}** simple. Share your thoughts or questions! 👇`
     ];
 
     const ytTemplates = [
-        `🎥 VIDEO OUTLINE: Introduction to ${company} - ${mainTopic}\n\n[0:00 - Intro] Highlight the core problem businesses face.\n[0:30 - Our Solution] Introduce ${company} and our specialization in ${mainTopic}.\n[1:15 - Key Services] Explain how we provide ${desc}.\n[2:00 - Call to Action] Visit our website, subscribe to the channel, and hit the bell icon!`,
-        `🎥 VIDEO OUTLINE: Why ${mainTopic} Matters for Your Business\n\n[0:00] The changing landscape of business today.\n[0:45] How ${company} helps you adapt through ${desc}.\n[1:30] Key benefits: scalability, support, and custom options.\n[2:15] Outro: Subscribe for more tips and visit our website link!`,
-        `🎥 VIDEO OUTLINE: Scaling with ${company}\n\n[0:00] Overview of scaling challenges.\n[0:30] Case study/examples of our specialization in ${mainTopic}.\n[1:20] How we implement ${desc} for our partners.\n[2:00] Call to action: Comment below, subscribe, and check the description link!`
+        `🎥 VIDEO OUTLINE: Value-First Outreach that Actually Converts\n\n[0:00 - Hook] Why standard sales pitches fail immediately.\n[0:30 - Value] 3 tips to educate your prospects first.\n[1:15 - Pitch] How ${company} automates value-first outreach with ${mainTopic}.\n[2:00 - CTA] Visit ${targetLink} to get our templates and subscribe!`,
+        `🎥 VIDEO OUTLINE: Automating Your Lead Flow & Social Postings\n\n[0:00] The hidden cost of manual outreach.\n[0:45] How ${company} helps you save 10+ hours a week via ${desc}.\n[1:30] Best practices for scheduled, value-first campaigns.\n[2:15] Outro: Visit ${targetLink} to start, and subscribe!`,
+        `🎥 VIDEO OUTLINE: Value Hacks for B2B Growth\n\n[0:00] Finding the bottlenecks in your operations.\n[0:30] How our specialization in ${mainTopic} resolves these issues.\n[1:20] Giving value first to build long-term client relationships.\n[2:00] Call to action: Check the link in the description (${targetLink}) & subscribe!`
     ];
+
+    const imagePrompt = `professional graphic illustration representing ${mainTopic} automation and business success`;
+    const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(imagePrompt)}?width=800&height=600&nologo=true&seed=${Math.floor(Math.random() * 100000)}`;
 
     return {
         facebook: fbTemplates[t],
@@ -324,12 +567,42 @@ function buildFallbackPosts(webData, topic, title, customContent) {
         instagram: igTemplates[t],
         pinterest: pinTemplates[t],
         threads: thrTemplates[t],
-        youtube: ytTemplates[t]
+        youtube: ytTemplates[t],
+        image_prompt: imagePrompt,
+        image_url: imageUrl
     };
 }
 
 // Simulate Posting to Enabled Channels
 async function postToSocial(generatedPosts, settings) {
+    // 2-minute double post cooldown check
+    const SocialPost = getSocialPost();
+    const query = {};
+    if (settings.companyId) {
+        query.companyId = settings.companyId;
+    } else if (settings.userId) {
+        if (mongoose.Types.ObjectId.isValid(settings.userId)) {
+            query.userId = new mongoose.Types.ObjectId(settings.userId);
+        } else {
+            query.userId = settings.userId;
+        }
+    }
+
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
+    try {
+        const recentDuplicate = await SocialPost.findOne({
+            ...query,
+            createdAt: { $gte: twoMinutesAgo },
+            status: { $in: ['Success', 'Simulated'] }
+        }).lean();
+        if (recentDuplicate) {
+            console.log(`⚠️ Social Poster: Concurrent run guard triggered. Post skipped to prevent double-posting.`);
+            return recentDuplicate;
+        }
+    } catch (e) {
+        console.error('Error checking duplicate posting cooldown:', e.message);
+    }
+
     const channelsPosted = [];
     let logString = `📝 Post Run Started: ${new Date().toLocaleString()}\n`;
     logString += `Website URL: ${settings.website_url}\n`;
@@ -386,28 +659,58 @@ async function postToSocial(generatedPosts, settings) {
                 let success = false;
                 let errorMsg = '';
 
+                // Try uploading image if image_url is present
+                let imageUrnVersioned = null;
+                let imageUrnLegacy = null;
+                const imageUrl = generatedPosts.image_url;
+
+                if (imageUrl) {
+                    logString += `   [LinkedIn] Attempting to upload image: ${imageUrl} ...\n`;
+                    try {
+                        imageUrnVersioned = await uploadLinkedInImage(channelConfig.token, finalUrn, imageUrl, true);
+                        logString += `   [LinkedIn] Image uploaded successfully (versioned): ${imageUrnVersioned}\n`;
+                    } catch (imgErr) {
+                        logString += `   ⚠️ Versioned image upload failed: ${imgErr.message}. Trying legacy upload...\n`;
+                        try {
+                            imageUrnLegacy = await uploadLinkedInImage(channelConfig.token, finalUrn, imageUrl, false);
+                            logString += `   [LinkedIn] Image uploaded successfully (legacy): ${imageUrnLegacy}\n`;
+                        } catch (legacyImgErr) {
+                            logString += `   ⚠️ Legacy image upload also failed: ${legacyImgErr.message}. Proceeding without image.\n`;
+                        }
+                    }
+                }
+
                 // ── Step 2a: Try new versioned Posts API (/rest/posts) ─────
                 try {
+                    const postPayload = {
+                        author: finalUrn,
+                        commentary: content,
+                        visibility: 'PUBLIC',
+                        distribution: {
+                            feedDistribution: 'MAIN_FEED',
+                            targetEntities: [],
+                            thirdPartyDistributionChannels: []
+                        },
+                        lifecycleState: 'PUBLISHED',
+                        isReshareDisabledByAuthor: false
+                    };
+                    if (imageUrnVersioned) {
+                        postPayload.content = {
+                            media: {
+                                id: imageUrnVersioned
+                            }
+                        };
+                    }
+
                     const response = await fetch('https://api.linkedin.com/rest/posts', {
                         method: 'POST',
                         headers: {
                             'Authorization': `Bearer ${channelConfig.token}`,
                             'Content-Type': 'application/json',
                             'X-Restli-Protocol-Version': '2.0.0',
-                            'LinkedIn-Version': '202404'
+                            'LinkedIn-Version': '202605'
                         },
-                        body: JSON.stringify({
-                            author: finalUrn,
-                            commentary: content,
-                            visibility: 'PUBLIC',
-                            distribution: {
-                                feedDistribution: 'MAIN_FEED',
-                                targetEntities: [],
-                                thirdPartyDistributionChannels: []
-                            },
-                            lifecycleState: 'PUBLISHED',
-                            isReshareDisabledByAuthor: false
-                        })
+                        body: JSON.stringify(postPayload)
                     });
 
                     if (response.ok) {
@@ -434,13 +737,23 @@ async function postToSocial(generatedPosts, settings) {
                             specificContent: {
                                 'com.linkedin.ugc.ShareContent': {
                                     shareCommentary: { text: content },
-                                    shareMediaCategory: 'NONE'
+                                    shareMediaCategory: imageUrnLegacy ? 'IMAGE' : 'NONE'
                                 }
                             },
                             visibility: {
                                 'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC'
                             }
                         };
+                        if (imageUrnLegacy) {
+                            ugcBody.specificContent['com.linkedin.ugc.ShareContent'].media = [
+                                {
+                                    status: 'READY',
+                                    description: { text: settings.title || 'Social Post Image' },
+                                    media: imageUrnLegacy,
+                                    title: { text: settings.topic || 'Social Post' }
+                                }
+                            ];
+                        }
 
                         const response = await fetch('https://api.linkedin.com/v2/ugcPosts', {
                             method: 'POST',
@@ -485,12 +798,13 @@ async function postToSocial(generatedPosts, settings) {
     logString += `🏁 Social Post Run Finished.\n`;
 
     // Save to Database
-    const SocialPost = getSocialPost();
     const docData = {
         topic: settings.topic || 'Auto Post',
         title: settings.title || 'Scheduled Update',
         website_url: settings.website_url,
         content: generatedPosts,
+        image_url: generatedPosts.image_url || '',
+        image_prompt: generatedPosts.image_prompt || '',
         channels_posted: channelsPosted,
         status: enabledChannels.length === channelsPosted.length && enabledChannels.length > 0 ? 'Success' : 'Simulated',
         logs: logString
@@ -499,8 +813,12 @@ async function postToSocial(generatedPosts, settings) {
     if (settings.companyId) {
         docData.companyId = settings.companyId;
     }
-    if (settings.userId && mongoose.Types.ObjectId.isValid(settings.userId)) {
-        docData.userId = new mongoose.Types.ObjectId(settings.userId);
+    if (settings.userId) {
+        if (mongoose.Types.ObjectId.isValid(settings.userId)) {
+            docData.userId = new mongoose.Types.ObjectId(settings.userId);
+        } else {
+            docData.userId = settings.userId;
+        }
     }
 
     const doc = await SocialPost.create(docData);
@@ -508,4 +826,4 @@ async function postToSocial(generatedPosts, settings) {
     return doc;
 }
 
-module.exports = { scrapeWebsite, generateSocialPosts, postToSocial };
+module.exports = { scrapeWebsite, generateSocialPosts, postToSocial, isPersonalProfile, formatOrganizationUrn, fetchLinkedInPersonUrn };

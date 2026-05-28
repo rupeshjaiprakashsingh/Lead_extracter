@@ -390,9 +390,9 @@ exports.getLeadMessage = async (req, res, next) => {
     if (!lead) return res.status(404).json({ success: false, error: 'Not found' });
     const type = req.query.type;
     let text = '';
-    if (type === 'wa')           text = await buildInitialWA(lead);
-    else if (type === 'email')   text = (await buildInitialEmail(lead)).html;
-    else if (type === 'followup_wa') text = await buildFollowupWA(lead, (lead.followup_count||0)+1);
+    if (type === 'wa')           text = await buildInitialWA(lead, companyId);
+    else if (type === 'email')   text = (await buildInitialEmail(lead, companyId)).html;
+    else if (type === 'followup_wa') text = await buildFollowupWA(lead, (lead.followup_count||0)+1, companyId);
     res.json({ success: true, data: { phone: lead.phone, text } });
   } catch (err) { next(err); }
 };

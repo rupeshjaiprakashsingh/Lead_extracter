@@ -835,9 +835,9 @@ app.get('/api/leads/:id/message', async (req, res) => {
         if(!lead) return res.status(404).json({error: 'Not found'});
         const type = req.query.type;
         let text = '';
-        if(type === 'wa') text = await buildInitialWA(lead);
-        else if(type === 'email') text = (await buildInitialEmail(lead)).html;
-        else if(type === 'followup_wa') text = await buildFollowupWA(lead, (lead.followup_count||0)+1);
+        if(type === 'wa') text = await buildInitialWA(lead, userId);
+        else if(type === 'email') text = (await buildInitialEmail(lead, userId)).html;
+        else if(type === 'followup_wa') text = await buildFollowupWA(lead, (lead.followup_count||0)+1, userId);
         
         res.json({ phone: lead.phone, text });
     } catch(e) { res.status(500).json({error: e.message}); }
@@ -1819,11 +1819,98 @@ app.get('/api/social/settings', async (req, res) => {
     } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Social Poster: TEST Connections ──────────────────────────
+app.post('/api/social/test-connections', async (req, res) => {
+    try {
+        const userId = uid(req);
+        const { channels } = req.body;
+        
+        let settings = await SocialSettings.findOne({ userId });
+        
+        const results = {};
+        const list = ['linkedin', 'facebook', 'instagram', 'twitter', 'pinterest', 'threads', 'youtube'];
+        
+        for (const ch of list) {
+            const config = channels[ch] || {};
+            if (!config.enabled) continue;
+            
+            let token = config.token;
+            if (token === '••••••••' || !token) {
+                token = (settings && settings.channels && settings.channels[ch]) ? settings.channels[ch].token : '';
+            }
+            
+            if (ch === 'linkedin') {
+                const urnInput = config.urn || ((settings && settings.channels && settings.channels.linkedin) ? settings.channels.linkedin.urn : '');
+                const { isPersonalProfile, formatOrganizationUrn, fetchLinkedInPersonUrn } = require('./services/social-poster');
+                
+                if (!token || token === '••••••••') {
+                    results[ch] = { success: false, message: 'Access Token is missing' };
+                    continue;
+                }
+                
+                const isPersonal = !urnInput || isPersonalProfile(urnInput);
+                if (isPersonal) {
+                    try {
+                        const resolved = await fetchLinkedInPersonUrn(token);
+                        if (resolved && resolved.urn) {
+                            results[ch] = { success: true, message: `Connected as Personal Profile (${resolved.urn})` };
+                        } else {
+                            results[ch] = { success: false, message: 'Could not resolve personal profile. Token may be expired or lacks permissions.' };
+                        }
+                    } catch (e) {
+                        results[ch] = { success: false, message: `Personal profile query failed: ${e.message}` };
+                    }
+                } else {
+                    try {
+                        const orgUrn = formatOrganizationUrn(urnInput);
+                        const orgId = orgUrn.replace('urn:li:organization:', '');
+                        
+                        const response = await fetch(`https://api.linkedin.com/rest/organizations/${orgId}`, {
+                            headers: {
+                                'Authorization': `Bearer ${token}`,
+                                'X-Restli-Protocol-Version': '2.0.0',
+                                'LinkedIn-Version': '202605'
+                            }
+                        });
+                        
+                        if (response.ok) {
+                            const orgData = await response.json();
+                            results[ch] = { success: true, message: `Connected to Company Page: "${orgData.localizedName || orgUrn}"` };
+                        } else {
+                            const responseV2 = await fetch(`https://api.linkedin.com/v2/organizations/${orgId}`, {
+                                headers: {
+                                    'Authorization': `Bearer ${token}`,
+                                    'X-Restli-Protocol-Version': '2.0.0'
+                                }
+                            });
+                            if (responseV2.ok) {
+                                const orgData = await responseV2.json();
+                                results[ch] = { success: true, message: `Connected to Company Page: "${orgData.localizedName || orgUrn}"` };
+                            } else {
+                                results[ch] = { success: false, message: `Company Page access denied (Status ${responseV2.status})` };
+                            }
+                        }
+                    } catch (e) {
+                        results[ch] = { success: false, message: `Company Page validation failed: ${e.message}` };
+                    }
+                }
+            } else {
+                if (!token) {
+                    results[ch] = { success: false, message: 'API Token/Key is missing' };
+                } else {
+                    results[ch] = { success: true, message: 'Mock connection successful (Simulated integration active)' };
+                }
+            }
+        }
+        res.json({ success: true, results });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Social Poster: SAVE Settings ─────────────────────────────
 app.post('/api/social/settings', async (req, res) => {
     try {
         const userId = uid(req);
-        const { enabled, frequency, time_hour, website_url, topic, title, custom_content, channels } = req.body;
+        const { enabled, frequency, time_hour, website_url, topic, title, custom_content, channels, categories } = req.body;
         let s = await SocialSettings.findOne({ userId });
         if (!s) s = new SocialSettings({ userId });
 
@@ -1834,6 +1921,7 @@ app.post('/api/social/settings', async (req, res) => {
         s.topic = topic || '';
         s.title = title || '';
         s.custom_content = custom_content || '';
+        s.categories = categories || [];
 
         if (channels) {
             for (const [ch, config] of Object.entries(channels)) {
@@ -1884,7 +1972,7 @@ app.post('/api/social/generate-preview', async (req, res) => {
         
         const { scrapeWebsite, generateSocialPosts } = require('./services/social-poster');
         const webData = await scrapeWebsite(website_url);
-        const posts = await generateSocialPosts(webData, topic, title, custom_content, { userId: uid(req) });
+        const posts = await generateSocialPosts(webData, topic, title, custom_content, { userId: uid(req), websiteUrl: website_url });
         res.json({ success: true, posts, webData });
     } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -1915,7 +2003,7 @@ app.post('/api/social/post-now', async (req, res) => {
         };
 
         const webData = await scrapeWebsite(webUrl);
-        const posts = await generateSocialPosts(webData, tempSettings.topic, tempSettings.title, tempSettings.custom_content, { userId });
+        const posts = await generateSocialPosts(webData, tempSettings.topic, tempSettings.title, tempSettings.custom_content, { userId, websiteUrl: tempSettings.website_url });
         const postDoc = await postToSocial(posts, tempSettings);
         
         res.json({ success: true, post: postDoc });

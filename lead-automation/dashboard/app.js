@@ -2447,6 +2447,7 @@ async function testEmailScheduleRuleReport() {
 // ── Social Poster Logic ──────────────────────────────────────
 let _socPreviewData = null;
 let _socSelectedLog = null;
+let _socCategories = [];
 
 async function loadSocial() {
   try {
@@ -2465,6 +2466,10 @@ async function loadSocial() {
     
     updateSocialEnabledVisual();
     toggleSocialTimeSelect();
+    
+    // Load categories
+    _socCategories = s.categories || [];
+    renderSocialCategories();
     
     // Channels
     const channels = s.channels || {};
@@ -2568,6 +2573,7 @@ async function saveSocialSettings() {
       topic: document.getElementById('soc-topic').value.trim(),
       title: document.getElementById('soc-title').value.trim(),
       custom_content: document.getElementById('soc-custom').value.trim(),
+      categories: _socCategories,
       channels
     };
 
@@ -2590,6 +2596,241 @@ async function saveSocialSettings() {
     msg.textContent = '❌ ' + e.message;
     msg.style.color = '#f87171';
   }
+}
+
+async function testSocialConnections() {
+  const btn = document.getElementById('soc-test-btn');
+  const msg = document.getElementById('soc-msg');
+  
+  btn.disabled = true;
+  btn.textContent = '⏳ Testing...';
+  msg.textContent = '🔌 Connecting and validating API credentials...';
+  msg.style.color = '#7c3aed';
+
+  try {
+    const list = ['linkedin', 'facebook', 'instagram', 'twitter', 'pinterest', 'threads', 'youtube'];
+    const channels = {};
+    
+    list.forEach(ch => {
+      const enabled = document.getElementById(`ch-${ch}-enabled`).checked;
+      let token = document.getElementById(`ch-${ch}-token`).value;
+      
+      // If empty but has saved placeholder, keep existing
+      if (!token && document.getElementById(`ch-${ch}-token`).placeholder.includes('saved')) {
+        token = '••••••••';
+      }
+      
+      channels[ch] = { enabled, token };
+      
+      if (ch === 'linkedin') channels[ch].urn = document.getElementById('ch-linkedin-urn').value.trim();
+      if (ch === 'facebook') channels[ch].pageId = document.getElementById('ch-facebook-pageId').value.trim();
+      if (ch === 'instagram') channels[ch].accountId = document.getElementById('ch-instagram-accountId').value.trim();
+      if (ch === 'twitter') channels[ch].apiKey = document.getElementById('ch-twitter-apiKey').value.trim();
+      if (ch === 'pinterest') channels[ch].boardId = document.getElementById('ch-pinterest-boardId').value.trim();
+    });
+
+    const res = await (await fetch('/api/social/test-connections', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channels })
+    })).json();
+
+    if (res.success) {
+      const results = res.results;
+      let successCount = 0;
+      let enabledCount = 0;
+      const details = [];
+
+      for (const [ch, outcome] of Object.entries(results)) {
+        enabledCount++;
+        if (outcome.success) {
+          successCount++;
+          details.push(`<span style="color:#34d399">✅ ${ch.toUpperCase()}: ${outcome.message}</span>`);
+        } else {
+          details.push(`<span style="color:#f87171">❌ ${ch.toUpperCase()}: ${outcome.message}</span>`);
+        }
+      }
+
+      if (enabledCount === 0) {
+        msg.textContent = '⚠️ No social media channels are enabled for testing.';
+        msg.style.color = '#fbbf24';
+      } else {
+        msg.innerHTML = `<div style="text-align:left;margin-top:10px;line-height:1.6;background:rgba(0,0,0,0.2);padding:10px;border-radius:6px;border:1px solid #1e293b">` + 
+          `<strong style="color:#fff;display:block;margin-bottom:6px">Test Results (${successCount}/${enabledCount} succeeded):</strong>` + 
+          details.join('<br/>') + 
+          `</div>`;
+        msg.style.color = '#fff';
+      }
+    } else {
+      msg.textContent = '❌ Test failed: ' + (res.error || 'Server error');
+      msg.style.color = '#f87171';
+    }
+  } catch(e) {
+    msg.textContent = '❌ Test Error: ' + e.message;
+    msg.style.color = '#f87171';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔌 Test Connections';
+  }
+}
+
+function renderSocialCategories() {
+  const container = document.getElementById('soc-categories-container');
+  if (!container) return;
+  
+  if (!_socCategories || _socCategories.length === 0) {
+    container.innerHTML = '<div style="color:#64748b;font-size:11px;text-align:center;padding:12px;border:1px dashed #2d3748;border-radius:6px">No categories defined. Rotating using global topic above.</div>';
+    return;
+  }
+  
+  container.innerHTML = _socCategories.map((cat, idx) => {
+    return `<div style="background:rgba(255,255,255,0.02);border:1px solid #2d3748;border-radius:8px;padding:10px;display:flex;justify-content:space-between;align-items:flex-start">
+      <div style="flex:1;padding-right:8px;text-align:left">
+        <div style="font-weight:700;font-size:12px;color:#fff">${cat.name}</div>
+        <div style="font-size:10px;color:#64748b;margin-top:2px"><b>Keywords:</b> ${cat.keywords || 'None'}</div>
+        <div style="font-size:10px;color:#64748b;margin-top:2px"><b>Topic Focus:</b> ${cat.topic || 'None'}</div>
+        ${cat.custom_content ? `<div style="font-size:10px;color:#94a3b8;margin-top:4px;font-style:italic">"${cat.custom_content}"</div>` : ''}
+      </div>
+      <button class="btn b-red" style="padding:2px 8px;font-size:10px;background:#7f1d1d;color:#fca5a5;border:1px solid #991b1b" onclick="deleteSocialCategory(${idx}, event)">Delete</button>
+    </div>`;
+  }).join('');
+}
+
+function addSocialCategory(e) {
+  if (e) e.preventDefault();
+  const nameInput = document.getElementById('add-soc-cat-name');
+  const keywordsInput = document.getElementById('add-soc-cat-keywords');
+  const topicInput = document.getElementById('add-soc-cat-topic');
+  const instructionsInput = document.getElementById('add-soc-cat-instructions');
+  
+  const name = nameInput.value.trim();
+  if (!name) {
+    alert('Please enter a Category Name.');
+    return;
+  }
+  
+  const cat = {
+    name,
+    keywords: keywordsInput.value.trim(),
+    topic: topicInput.value.trim(),
+    custom_content: instructionsInput.value.trim()
+  };
+  
+  _socCategories.push(cat);
+  
+  nameInput.value = '';
+  keywordsInput.value = '';
+  topicInput.value = '';
+  instructionsInput.value = '';
+  
+  renderSocialCategories();
+}
+
+function deleteSocialCategory(idx, e) {
+  if (e) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  _socCategories.splice(idx, 1);
+  renderSocialCategories();
+}
+
+function loadDefaultSocialCategories(e) {
+  if (e) e.preventDefault();
+  const defaults = [
+    {
+      name: "Actionable Value Hacks",
+      keywords: "leads, productivity, CRM, automation",
+      topic: "Simple steps to save 10 hours a week in lead management",
+      custom_content: "Provide 3 simple productivity hacks for outreach, then introduce Innvoque's automation tools to handle it for them."
+    },
+    {
+      name: "Value-First Outreach",
+      keywords: "sales, conversion, marketing, trust",
+      topic: "Why cold calling is dead and value-first messaging converts better",
+      custom_content: "Debunk the myth that cold outreach must be pushy. Explain the value-first approach (giving a tip first) and how we help."
+    },
+    {
+      name: "Common Mistakes to Avoid",
+      keywords: "local SEO, Google Maps, lead generation",
+      topic: "Mistakes local businesses make that lose them 10-20 customers monthly",
+      custom_content: "Point out the mistake of a slow response time or not showing up on Google Maps. Highlight how our CRM automates immediate responses."
+    },
+    {
+      name: "The 5-Minute Reply Rule",
+      keywords: "lead decay, customer response, conversion",
+      topic: "Why waiting 30 minutes to reply to a lead kills 80% of sales",
+      custom_content: "Explain the science of lead decay. Explain how immediate follow-ups build trust and showcase our auto-whatsapp tools."
+    },
+    {
+      name: "WhatsApp vs Email Open Rates",
+      keywords: "whatsapp marketing, open rates, outreach",
+      topic: "Why WhatsApp has a 98% open rate compared to 20% for email",
+      custom_content: "Explain the shift in customer communication behavior. Showcase how our WhatsApp automation helps businesses reach customers where they actually look."
+    },
+    {
+      name: "Google Maps Traffic Goldmine",
+      keywords: "local SEO, google business profile, local business",
+      topic: "The hidden traffic source 90% of local businesses ignore",
+      custom_content: "Reveal how map rankings drive high-intent calls. Explain how to extract these leads and sync them to close more sales."
+    },
+    {
+      name: "Founder Time Management",
+      keywords: "time-saving, delegation, business automation",
+      topic: "What I learned saving 15 hours a week by automating lead gen",
+      custom_content: "Share a breakdown of manual task time vs automated time. Pitch Innvoque as the founder's time-saving secret."
+    },
+    {
+      name: "Personalized AI Outreach",
+      keywords: "artificial intelligence, automation, email marketing",
+      topic: "How personalized AI messaging generated 50+ meetings",
+      custom_content: "Detail a story of using AI to research prospects before emailing them, showing our automated lead scraper in action."
+    },
+    {
+      name: "Follow-Up Retention Advantage",
+      keywords: "CRM, customer retention, follow up",
+      topic: "Getting leads is easy. Retaining them is where the money is.",
+      custom_content: "Explain that follow-up determines profitability. Show how automated follow-up cycles turn single inquiries into lifetime buyers."
+    },
+    {
+      name: "The Cost of Manual Lead Syncing",
+      keywords: "automation, lead sync, efficiency",
+      topic: "Stop copy-pasting lead details between systems manually",
+      custom_content: "Highlight the error rates and time wasted on manual data entry. Explain how automatic CRM syncing saves time and energy."
+    },
+    {
+      name: "Mobile-Friendly Conversions",
+      keywords: "web design, mobile conversion, customer experience",
+      topic: "Why local businesses lose customers from outdated mobile sites",
+      custom_content: "Discuss how mobile-unfriendly sites turn customers away. Pitch our responsive web design and landing page solutions."
+    },
+    {
+      name: "B2B Trust Building",
+      keywords: "trust, b2b sales, relationship building",
+      topic: "The secret to building instant trust with B2B decision makers",
+      custom_content: "Explain that giving free, helpful audits builds instant B2B trust. Connect it to our personalized maps outreach templates."
+    },
+    {
+      name: "Local SEO Ranking Myths",
+      keywords: "local SEO, google maps ranking, business profile",
+      topic: "Debunking 3 common myths about ranking #1 on Google",
+      custom_content: "Clarify that reviews, proximity, and details matter more than keywords. Show how our tool helps businesses audit local listings."
+    },
+    {
+      name: "Customer Experience Speed",
+      keywords: "customer experience, response speed, brand value",
+      topic: "Speed is the new marketing: Why fast response times win markets",
+      custom_content: "Explain that clients buy from whoever answers first. Pitch Innvoque's automatic WhatsApp responder as the speed winner."
+    },
+    {
+      name: "Scaling Without Hiring",
+      keywords: "scaling, leverage, technology, hiring",
+      topic: "How to scale your sales outreach without doubling your headcount",
+      custom_content: "Discuss using software as a force multiplier. Explain how automated lead extraction and follow-up does the work of a 3-person team."
+    }
+  ];
+  _socCategories = _socCategories.concat(defaults);
+  renderSocialCategories();
 }
 
 async function generateSocialPreview() {
@@ -2661,6 +2902,37 @@ function renderPreviewMockups(posts, webData) {
   document.getElementById('mock-tw-handle').textContent = handle;
   document.getElementById('mock-ig-title').textContent = handle.substring(1);
   document.getElementById('mock-th-title').textContent = handle.substring(1);
+
+  // Dynamic preview images rendering
+  if (posts.image_url) {
+    const imgUrl = posts.image_url;
+    
+    document.getElementById('mock-li-img').src = imgUrl;
+    document.getElementById('mock-li-img-container').style.display = 'block';
+    
+    document.getElementById('mock-fb-img').src = imgUrl;
+    document.getElementById('mock-fb-img-container').style.display = 'block';
+    
+    document.getElementById('mock-ig-img').src = imgUrl;
+    document.getElementById('mock-ig-media-container').style.display = 'block';
+    document.getElementById('mock-ig-media-placeholder').style.display = 'none';
+    
+    document.getElementById('mock-tw-img').src = imgUrl;
+    document.getElementById('mock-tw-img-container').style.display = 'block';
+    
+    document.getElementById('mock-pin-img').src = imgUrl;
+    document.getElementById('mock-pin-img-container').style.display = 'block';
+    document.getElementById('mock-pin-placeholder').style.display = 'none';
+  } else {
+    // Hide image elements & restore defaults
+    document.getElementById('mock-li-img-container').style.display = 'none';
+    document.getElementById('mock-fb-img-container').style.display = 'none';
+    document.getElementById('mock-ig-media-container').style.display = 'none';
+    document.getElementById('mock-ig-media-placeholder').style.display = 'flex';
+    document.getElementById('mock-tw-img-container').style.display = 'none';
+    document.getElementById('mock-pin-img-container').style.display = 'none';
+    document.getElementById('mock-pin-placeholder').style.display = 'flex';
+  }
 
   // Src indicator
   const indicator = document.getElementById('preview-src-indicator');

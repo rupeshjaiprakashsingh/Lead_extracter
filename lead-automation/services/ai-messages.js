@@ -86,8 +86,11 @@ Example style: "I can get [business name] to appear on the first page of Google 
 ];
 
 // ── Build Initial WhatsApp Message ───────────────────────────
-async function buildInitialWA(lead) {
-    const { wa_template } = await getTemplates(lead?.userId);
+// ── Build Initial WhatsApp Message ───────────────────────────
+async function buildInitialWA(lead, userOrCompanyId = null) {
+    // Use companyId (multi-tenant) or userId (legacy single-tenant) to look up saved templates
+    const templateId = userOrCompanyId || lead?.companyId || lead?.userId;
+    const { wa_template } = await getTemplates(templateId);
     const name     = cleanName(lead.name) || 'your business';
     const hasWeb   = !!(lead.website && !['facebook','instagram','whatsapp','wa.me','youtube'].some(s => (lead.website || '').includes(s)));
     const city     = lead.city || 'India';
@@ -178,6 +181,12 @@ WRITE THE MESSAGE:
         }
     }
 
+    // ── Fallback ──
+    if (wa_template && wa_template.trim()) {
+        console.log(`  📝 Fallback template used (no AI) → ${name}`);
+        return cleanTemplate(wa_template, name, city, category, specificInsight);
+    }
+
     // ── Smart fallback — 5 human-sounding templates ──────────────
     return buildFallbackWA(name, city, category, hasWeb, rating, style.name);
 }
@@ -200,7 +209,7 @@ function buildFallbackWA(name, city, category, hasWeb, rating, styleName) {
 }
 
 // ── Build Follow-Up WhatsApp Message ─────────────────────────
-async function buildFollowupWA(lead, followupNum) {
+async function buildFollowupWA(lead, followupNum, userOrCompanyId = null) {
     const name = cleanName(lead.name) || 'there';
 
     if (aiModel) {
@@ -242,8 +251,9 @@ Rules:
 }
 
 // ── Build Initial Email ───────────────────────────────────────
-async function buildInitialEmail(lead) {
-    const { email_subject, email_body } = await getTemplates(lead?.userId);
+async function buildInitialEmail(lead, userOrCompanyId = null) {
+    const templateId = userOrCompanyId || lead?.companyId || lead?.userId;
+    const { email_subject, email_body } = await getTemplates(templateId);
     const name     = cleanName(lead.name) || 'Business Owner';
     const hasWeb   = !!(lead.website && !['facebook','instagram','whatsapp','wa.me'].some(s => (lead.website || '').includes(s)));
     const city     = lead.city || '';

@@ -397,6 +397,15 @@ async function runScheduledSocialPost() {
                     if (lastPost && new Date(lastPost.createdAt).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata' }) === todayStr) {
                         continue;
                     }
+                } else if (settings.frequency === 'thirty_minutes') {
+                    const lastPost = await SocialPost.findOne(query).sort({ createdAt: -1 });
+                    if (lastPost) {
+                        const diffMs = now - new Date(lastPost.createdAt);
+                        const diffMins = diffMs / (1000 * 60);
+                        if (diffMins < 25) {
+                            continue;
+                        }
+                    }
                 } else if (settings.frequency === 'hourly') {
                     const lastPost = await SocialPost.findOne(query).sort({ createdAt: -1 });
                     if (lastPost) {
@@ -411,11 +420,36 @@ async function runScheduledSocialPost() {
                 console.log(`⏰ Social Scheduler: Running scheduled social posting (${settings.frequency}) for ${logIdentifier}...`);
                 const { scrapeWebsite, generateSocialPosts, postToSocial } = require('./social-poster');
                 const webData = await scrapeWebsite(settings.website_url);
-                const generated = await generateSocialPosts(webData, settings.topic, settings.title, settings.custom_content, {
+
+                let topic = settings.topic;
+                let title = settings.title;
+                let custom_content = settings.custom_content;
+
+                if (settings.categories && settings.categories.length > 0) {
+                    const idx = settings.current_category_index || 0;
+                    const cat = settings.categories[idx % settings.categories.length];
+                    topic = cat.topic || settings.topic;
+                    title = cat.name || settings.title;
+                    custom_content = `[Category: ${cat.name}] ${cat.custom_content || ''} (Focus keywords: ${cat.keywords || ''}). ${settings.custom_content || ''}`;
+                    
+                    settings.current_category_index = (idx + 1) % settings.categories.length;
+                    await settings.save();
+                    console.log(`⏰ Social Scheduler: Selected category "${cat.name}" (Index ${idx})`);
+                }
+
+                const generated = await generateSocialPosts(webData, topic, title, custom_content, {
                     companyId: settings.companyId,
-                    userId: settings.userId
+                    userId: settings.userId,
+                    websiteUrl: settings.website_url
                 });
-                const postDoc = await postToSocial(generated, settings);
+                
+                // Construct a temporary settings object to pass category topic/title info to post document
+                const settingsForDoc = settings.toObject ? settings.toObject() : { ...settings };
+                settingsForDoc.topic = topic;
+                settingsForDoc.title = title;
+                settingsForDoc.custom_content = custom_content;
+                
+                const postDoc = await postToSocial(generated, settingsForDoc);
                 console.log(`✅ Social Scheduler: Posting completed for ${logIdentifier}. Post ID: ${postDoc._id}`);
             } catch (innerErr) {
                 const logId = settings.companyId || settings.userId || 'unknown';

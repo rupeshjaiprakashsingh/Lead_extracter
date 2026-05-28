@@ -120,9 +120,11 @@ async function start() {
         });
 
         // Social scheduler
-        const SocialSettings = require('./models/SocialSettings');
-        const ss = await SocialSettings.find({ enabled: true }).lean();
-        if (ss.length > 0) scheduler.startSocialScheduler();
+        try {
+            scheduler.startSocialScheduler();
+        } catch (e) {
+            console.log('  ⚠️  Social Scheduler startup error:', e.message);
+        }
       } catch (e) {
         console.log('  ⚠️  Scheduler init error:', e.message);
       }
