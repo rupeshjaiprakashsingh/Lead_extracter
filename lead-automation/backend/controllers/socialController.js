@@ -197,7 +197,8 @@ exports.testConnections = async (req, res, next) => {
                     try {
                         const resolved = await fetchLinkedInPersonUrn(token);
                         if (resolved && resolved.urn) {
-                            results[ch] = { success: true, message: `Connected as Personal Profile (${resolved.urn})` };
+                            const nameStr = resolved.name ? `"${resolved.name}" ` : '';
+                            results[ch] = { success: true, message: `Connected as Personal Profile: ${nameStr}(${resolved.urn})` };
                         } else {
                             results[ch] = { success: false, message: 'Could not resolve personal profile. Token may be expired or lacks permissions.' };
                         }

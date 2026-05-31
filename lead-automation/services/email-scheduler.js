@@ -36,16 +36,28 @@ async function runScheduledSendForRule(schedule) {
         schedule.today_failed = 0;
     }
 
+    const SmtpAccount = mongoose.model('SmtpAccount');
+    const smtpAccounts = await SmtpAccount.find({ userId, isActive: true });
+    let totalSmtpRemaining = 0;
+    smtpAccounts.forEach(a => {
+        const sentToday = a.daily_date === today ? a.daily_sent : 0;
+        const isGmailHost = a.smtp_host && a.smtp_host.toLowerCase().includes('gmail.com');
+        const effectiveLimit = isGmailHost ? Math.min(a.daily_limit, 450) : a.daily_limit;
+        totalSmtpRemaining += Math.max(0, effectiveLimit - sentToday);
+    });
+
     const remaining = schedule.daily_limit - schedule.today_sent;
-    if (remaining <= 0) {
-        console.log(`⏰ Email Scheduler: daily limit already reached for rule "${schedule.name}"`);
+    let allowedBySmtp = smtpAccounts.length > 0 ? Math.min(remaining, totalSmtpRemaining) : remaining;
+
+    if (allowedBySmtp <= 0) {
+        console.log(`⏰ Email Scheduler: daily limit or SMTP capacity reached for rule "${schedule.name}"`);
         return { sent: 0, failed: 0, skipped: 0 };
     }
 
     // Split target limit by the number of scheduled hours per day
     const hourCount = schedule.send_hours?.length || 1;
     const targetBatchSize = Math.ceil(schedule.daily_limit / hourCount);
-    const toSend = Math.min(targetBatchSize, remaining);
+    const toSend = Math.min(targetBatchSize, allowedBySmtp);
 
     // Build lead filters
     const filter = { userId, email: { $exists: true, $ne: '' } };
@@ -93,12 +105,27 @@ async function runScheduledSendForRule(schedule) {
     console.log(`\n⏰ Running email schedule "${schedule.name}": sending ${leads.length} leads for user ${userId}`);
     _isSendingUsers.add(userId);
 
+    if (global.emit) {
+        global.emit({ type: 'start', total: leads.length });
+    }
+
     let sent = 0, failed = 0;
 
     try {
         for (let i = 0; i < leads.length; i++) {
             const lead = leads[i];
             
+            if (global.emit) {
+                global.emit({
+                    type: 'sending',
+                    current: i + 1,
+                    total: leads.length,
+                    name: lead.name || lead.email,
+                    sent,
+                    failed
+                });
+            }
+
             // Random delay to avoid spam/rate-limiting (2 to 5 seconds)
             if (i > 0) {
                 const delay = 2000 + Math.random() * 3000;
@@ -114,31 +141,91 @@ async function runScheduledSendForRule(schedule) {
                     $set:  { email_sent: true, email_last_date: today },
                     $push: { activity: { type: 'email_sent', message: `Initial email sent (automated schedule: "${schedule.name}")`, date: new Date() } }
                 });
+
+                // Update schedule stats in real-time in the DB
+                await EmailSchedule.updateOne({ _id: schedule._id }, {
+                    $inc: { today_sent: 1, total_sent: 1 },
+                    $set: { last_run: new Date() }
+                });
+
                 sent++;
+                if (global.emit) {
+                    global.emit({
+                        type: 'sent',
+                        name: lead.name || lead.email,
+                        sent,
+                        failed,
+                        total: leads.length
+                    });
+                }
             } catch (err) {
                 if (err.message && err.message.includes('daily sending limit')) {
                     console.error(`⏰ Email Scheduler: Daily limit reached for all SMTP accounts. Aborting batch.`);
-                    failed += (leads.length - sent - failed);
+                    const remainingLeads = leads.length - sent - failed;
+                    await EmailSchedule.updateOne({ _id: schedule._id }, {
+                        $inc: { today_failed: remainingLeads }
+                    });
+                    failed += remainingLeads;
+                    if (global.emit) {
+                        global.emit({
+                            type: 'failed',
+                            name: lead.name || lead.email,
+                            reason: `❌ SMTP Limit: ${err.message}`,
+                            sent,
+                            failed,
+                            total: leads.length
+                        });
+                    }
                     break;
                 }
+
+                // Update schedule failure stats in real-time in the DB
+                await EmailSchedule.updateOne({ _id: schedule._id }, {
+                    $inc: { today_failed: 1 }
+                });
+
                 failed++;
                 console.error(`⏰ Email Scheduler: Failed to send to ${lead.email}:`, err.message);
+                if (global.emit) {
+                    global.emit({
+                        type: 'failed',
+                        name: lead.name || lead.email,
+                        reason: err.message,
+                        sent,
+                        failed,
+                        total: leads.length
+                    });
+                }
             }
         }
     } catch(e) {
         console.error(`⏰ Scheduled email send error for rule "${schedule.name}":`, e.message);
-        failed += (leads.length - sent - failed);
+        const remainingLeads = leads.length - sent - failed;
+        if (remainingLeads > 0) {
+            await EmailSchedule.updateOne({ _id: schedule._id }, {
+                $inc: { today_failed: remainingLeads }
+            });
+            failed += remainingLeads;
+        }
     } finally {
         _isSendingUsers.delete(userId);
     }
 
-    // Update stats
+    // Set final run timestamp
     await EmailSchedule.updateOne({ _id: schedule._id }, {
-        $inc: { today_sent: sent, today_failed: failed, total_sent: sent },
         $set: { last_run: new Date() }
     });
 
     console.log(`⏰ Email Batch done for rule "${schedule.name}": ${sent} sent, ${failed} failed`);
+    if (global.emit) {
+        global.emit({
+            type: 'done',
+            sent,
+            failed,
+            total: leads.length,
+            message: `Batch done: ${sent} sent, ${failed} failed`
+        });
+    }
     return { sent, failed, skipped: leads.length - sent - failed };
 }
 

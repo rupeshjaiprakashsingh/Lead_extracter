@@ -807,8 +807,16 @@ function handleProgress(d){
     document.getElementById('prog-current').textContent=`[${d.current}/${d.total}] → ${d.name}`;
     plog(`→ ${d.name}`);
   }
-  if(d.type==='sent'){ document.getElementById('prog-sent').textContent=d.sent; plog(`✅ ${d.name}`,'ok'); }
-  if(d.type==='failed'){ document.getElementById('prog-failed').textContent=d.failed; plog(`❌ ${d.name}: ${d.reason}`,'er'); }
+  if(d.type==='sent'){
+    document.getElementById('prog-sent').textContent=d.sent;
+    plog(`✅ ${d.name}`,'ok');
+    refreshEmailScheduleStats();
+  }
+  if(d.type==='failed'){
+    document.getElementById('prog-failed').textContent=d.failed;
+    plog(`❌ ${d.name}: ${d.reason}`,'er');
+    refreshEmailScheduleStats();
+  }
   if(d.type==='skipped'){ plog(`⚠️ Skip: ${d.name} — ${d.reason}`,'wa'); }
   if(d.type==='waiting'){ document.getElementById('prog-current').textContent=`⏳ ${d.seconds}s...`; }
   if(d.type==='done'){
@@ -818,8 +826,15 @@ function handleProgress(d){
     document.getElementById('prog-title-txt').textContent=`Done! Sent: ${d.sent} | Failed: ${d.failed}`;
     plog(`🎉 Complete! Sent:${d.sent} Failed:${d.failed}`,'ok');
     fetchLeads(); stopSending();
+    refreshEmailScheduleStats();
   }
   if(d.type==='error'){ plog('❌ '+d.message,'er'); stopSending(); }
+}
+
+function refreshEmailScheduleStats() {
+  loadEmailScheduleData(true).catch(() => {});
+  loadStats().catch(() => {});
+  loadSmtpAccounts().catch(() => {});
 }
 
 function stopSending(){
@@ -2282,9 +2297,11 @@ function closeEmailSchedule() {
   document.getElementById('email-schedule-modal').style.display = 'none';
 }
 
-async function loadEmailScheduleData() {
+async function loadEmailScheduleData(silent = false) {
   const container = document.getElementById('esch-rules-container');
-  container.innerHTML = '<div style="text-align:center;padding:20px;color:#64748b">Loading schedules...</div>';
+  if (!silent) {
+    container.innerHTML = '<div style="text-align:center;padding:20px;color:#64748b">Loading schedules...</div>';
+  }
   try {
     const res = await fetch('/api/email-schedule');
     const data = await res.json();
@@ -2466,9 +2483,15 @@ async function adjustEmailScheduleLimitSlider(currentValue) {
   try {
     const r = await fetch('/api/smtp-accounts');
     const d = await r.json();
-    const accounts = d.accounts || [];
-    const count = accounts.length;
-    const maxLimit = Math.max(1, count) * 450;
+    const activeAccounts = accounts.filter(a => a.isActive);
+    let maxLimit = 0;
+    if (activeAccounts.length > 0) {
+      maxLimit = activeAccounts.reduce((sum, a) => sum + (a.daily_limit || 450), 0);
+    } else if (accounts.length > 0) {
+      maxLimit = accounts.reduce((sum, a) => sum + (a.daily_limit || 450), 0);
+    } else {
+      maxLimit = 450;
+    }
 
     slider.max = maxLimit;
     
@@ -3242,6 +3265,67 @@ async function testSocialConnections() {
     btn.textContent = '🔌 Test Connections';
   }
 }
+
+async function testLinkedInConnection() {
+  const tokenInput = document.getElementById('ch-linkedin-token');
+  const urnInput = document.getElementById('ch-linkedin-urn');
+  const testBtn = document.getElementById('btn-test-ch-linkedin');
+  const statusSpan = document.getElementById('status-ch-linkedin-test');
+  
+  if (!tokenInput) return;
+  
+  let token = tokenInput.value.trim();
+  let urn = urnInput ? urnInput.value.trim() : '';
+  
+  if (!token && tokenInput.placeholder.includes('saved')) {
+    token = '••••••••';
+  }
+  
+  if (!token) {
+    statusSpan.textContent = '❌ Please enter an access token first';
+    statusSpan.style.color = '#f87171';
+    return;
+  }
+  
+  testBtn.disabled = true;
+  const originalText = testBtn.textContent;
+  testBtn.textContent = '⏳ Testing...';
+  statusSpan.textContent = 'Connecting...';
+  statusSpan.style.color = '#e2e8f0';
+  
+  try {
+    const res = await (await fetch('/api/social/test-connections', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        channels: {
+          linkedin: { enabled: true, token, urn }
+        }
+      })
+    })).json();
+    
+    if (res.success && res.results && res.results.linkedin) {
+      const outcome = res.results.linkedin;
+      if (outcome.success) {
+        statusSpan.innerHTML = `✅ ${outcome.message}`;
+        statusSpan.style.color = '#34d399';
+      } else {
+        statusSpan.innerHTML = `❌ ${outcome.message}`;
+        statusSpan.style.color = '#f87171';
+      }
+    } else {
+      statusSpan.textContent = '❌ Test failed: ' + (res.error || 'Server error');
+      statusSpan.style.color = '#f87171';
+    }
+  } catch (e) {
+    statusSpan.textContent = '❌ Error: ' + e.message;
+    statusSpan.style.color = '#f87171';
+  } finally {
+    testBtn.disabled = false;
+    testBtn.textContent = originalText;
+  }
+}
+
 
 function renderSocialCategories() {
   const container = document.getElementById('soc-categories-container');

@@ -52,7 +52,8 @@ async function fetchLinkedInPersonUrn(token) {
         if (r1.ok) {
             const data = await r1.json();
             if (data.sub) {
-                return { urn: `urn:li:person:${data.sub}`, method: '/v2/userinfo' };
+                const name = data.name || (data.given_name && data.family_name ? `${data.given_name} ${data.family_name}` : '');
+                return { urn: `urn:li:person:${data.sub}`, method: '/v2/userinfo', name };
             }
         }
     } catch(e) { /* ignore */ }
@@ -68,13 +69,17 @@ async function fetchLinkedInPersonUrn(token) {
         if (r2.ok) {
             const data = await r2.json();
             if (data.id) {
-                return { urn: `urn:li:person:${data.id}`, method: '/v2/me' };
+                const name = (data.localizedFirstName && data.localizedLastName) 
+                    ? `${data.localizedFirstName} ${data.localizedLastName}` 
+                    : (data.localizedFirstName || '');
+                return { urn: `urn:li:person:${data.id}`, method: '/v2/me', name };
             }
         }
     } catch(e) { /* ignore */ }
 
     return null;
 }
+
 
 // Upload image to LinkedIn using versioned or legacy API
 async function uploadLinkedInImage(token, ownerUrn, imageUrl, isVersioned = true, apiVersion = '202605') {
@@ -525,64 +530,177 @@ async function buildFallbackPosts(webData, topic, title, customContent, websiteU
     const targetLink = websiteUrl || 'our website';
 
     const tags = `#business #growth #success #marketing`;
+
+    // Query SocialPost count to determine combinations
+    const SocialPost = getSocialPost();
+    const query = {};
+    if (options.companyId) {
+        query.companyId = options.companyId;
+    } else if (options.userId) {
+        if (mongoose.Types.ObjectId.isValid(options.userId)) {
+            query.userId = new mongoose.Types.ObjectId(options.userId);
+        } else {
+            query.userId = options.userId;
+        }
+    }
+
+    const count = await SocialPost.countDocuments(query).catch(() => 0);
+    const t = count % 100;
+
+    const hookIdx = Math.floor(t / 10) % 10;
+    const bodyIdx = t % 10;
+    const pitchIdx = (hookIdx + bodyIdx) % 10;
+    const ctaIdx = (hookIdx * 3 + bodyIdx * 7) % 10;
+
+    const hooks = [
+        `95% of founders make this outreach mistake (and it costs them thousands).`,
+        `I stopped doing manual follow-ups and our business grew by 300%.`,
+        `Here is the uncomfortable truth about B2B growth that nobody wants to admit.`,
+        `The best marketing doesn't feel like marketing. It feels like help.`,
+        `Why are you still wasting hours sending manual emails and postings?`,
+        `If you are not using value-first outreach, you are leaving client deals on the table.`,
+        `The secret to a 391% increase in conversion rates isn't a better sales pitch.`,
+        `We audited 100 B2B campaigns this quarter. The results were shocking.`,
+        `Stop hard selling in the first message. Start teaching instead.`,
+        `Scale your brand smarter, not harder. Here is what the data says.`
+    ];
+
+    const bodies = [
+        `Here are 3 quick tips to solve this:
+1️⃣ Automate your first outreach step.
+2️⃣ Follow up within 5 minutes of a query.
+3️⃣ Always provide upfront educational value.`,
+
+        `Try this quick outreach checklist:
+✔️ Educate your leads instead of just selling.
+✔️ Share actionable guides to show expertise.
+✔️ Keep access to your services frictionless.`,
+
+        `Here is a 3-step audit for your operations:
+🔹 Use templates to keep messaging consistent.
+🔹 Pre-schedule postings to stay active 24/7.
+🔹 Automate tracking for all responses.`,
+
+        `Implement this simple value-first checklist:
+1️⃣ Share high-value tips instead of product features.
+2️⃣ Teach prospects something that saves them time.
+3️⃣ Connect them to a reliable platform to scale.`,
+
+        `To improve your client acquisition immediately:
+✔️ Implement automated template builders.
+✔️ Use CRM tools to centralize user queries.
+✔️ Outsource non-core data extraction.`,
+
+        `Optimize your daily workflow with these steps:
+🔹 Create educational content answering FAQs.
+🔹 Automate your posting schedule.
+🔹 Base your campaigns on real data insights.`,
+
+        `Here is how to build instant trust:
+1️⃣ Address a real pain point your client experiences.
+2️⃣ Show a clear pathway to solve it.
+3️⃣ Offer value before asking for a call.`,
+
+        `Stop losing deals to slow follow-ups:
+✔️ Sync your contacts automatically to your CRM.
+✔️ Keep templates ready for standard responses.
+✔️ Always follow up within the same day.`,
+
+        `Create a self-sustaining marketing engine:
+🔹 Document your most successful workflows.
+🔹 Set up automated triggers for new leads.
+🔹 Focus on high-intent customer segments.`,
+
+        `3 rules for modern B2B customer engagement:
+1️⃣ No spammy cold pitches.
+2️⃣ Highly personalized context.
+3️⃣ Frictionless scaling mechanisms.`
+    ];
+
+    const pitches = [
+        `At ${company}, we help you solve this by delivering high-impact **${mainTopic}** and ${desc}.`,
+        `We specialize in custom **${mainTopic}** to make your operations seamless and successful.`,
+        `At ${company}, we handle the heavy lifting for ${desc} so you can focus on closing deals.`,
+        `Our team focuses on **${mainTopic}** to deliver exactly these results for our partners.`,
+        `At ${company}, we deliver custom ${desc} so your team never misses an opportunity.`,
+        `We help businesses achieve this with top-tier **${mainTopic}** and dedicated support.`,
+        `At ${company}, we make it easy to streamline ${desc} and accelerate growth.`,
+        `Our custom solutions in **${mainTopic}** are designed to put your outreach on autopilot.`,
+        `We help you automate the busywork of ${desc} so you can scale efficiently.`,
+        `Partner with ${company} to integrate modern **${mainTopic}** into your daily stack.`
+    ];
+
+    const ctas = [
+        `What is your #1 strategy for this? Let me know in the comments below! 👇\n\nP.S. Learn how to automate this: ${targetLink}`,
+        `Have you faced this outreach challenge too? Share your thoughts below! 👇\n\n🔗 Get started: ${targetLink}`,
+        `Do you agree with this approach, or do you prefer the old way? Let's discuss! 👇\n\n👉 Details: ${targetLink}`,
+        `What is the biggest bottleneck in your business right now? Comment below! 👇\n\n🔗 Visit us to learn how: ${targetLink}`,
+        `How do you handle follow-ups? Share your tips in the comments! 👇\n\n👉 Explore our services: ${targetLink}`,
+        `Would this save your team time? Let's talk in the replies! 👇\n\n🔗 Let's collaborate: ${targetLink}`,
+        `What's your go-to outreach channel? Share below! 👇\n\n👉 Learn more: ${targetLink}`,
+        `Agree or disagree? I'd love to hear your perspective! 👇\n\n🔗 Check it out: ${targetLink}`,
+        `How much time does your team spend on manual tasks? Comment below! 👇\n\n👉 Start now: ${targetLink}`,
+        `Ready to transform your brand? Let me know in the comments! 👇\n\n🔗 Visit: ${targetLink}`
+    ];
+
+    const imgThemes = [
+        "realistic professional photo of a team discussing on a laptop in a modern brightly lit office, DSLR, 35mm lens, natural lighting",
+        "realistic photo of a professional workspace with a clean desk, a laptop showing charts, and a coffee mug, modern office setting, depth of field",
+        "realistic photo of a business meeting in a modern glass conference room, people collaborating, sunlight streaming in, professional attire",
+        "realistic shot of a focused entrepreneur working on a desktop computer in a sleek home office, warm lighting, high quality",
+        "realistic photo of hands typing on a laptop keyboard with blurred office background, clean corporate aesthetic, soft shadows",
+        "realistic photo of a creative marketing team writing ideas on a whiteboard in a bright modern studio, authentic interaction",
+        "realistic photo of a modern corporate building facade during golden hour, professional design, clear blue sky, wide angle",
+        "realistic photo of a desk with a smartphone, tablet, and notebook, organized productivity layout, top-down view, minimal style",
+        "realistic shot of business partners shaking hands in a bright, modern lobby, professional relationship, warm welcoming atmosphere",
+        "realistic photo of a server rack room or sleek tech environment with soft blue indicator lights, clean modern hosting infrastructure"
+    ];
+
+    const hook = hooks[hookIdx];
+    const body = bodies[bodyIdx];
+    const pitch = pitches[pitchIdx];
+    const cta = ctas[ctaIdx];
+
+    // Build specific contents
+    const facebook = `💡 ${hook}\n\n${body}\n\n${pitch}\n\n${cta}\n\n${tags}`;
+    const linkedin = `💼 ${hook}\n\n${body}\n\n${pitch}\n\n${cta}\n\n${tags} #b2b #networking #automation`;
+    const instagram = `✨ ${hook} ✨\n\n${body}\n\n${pitch}\n\nTap the link in our bio to get started! 🔗\n\n${cta}\n\n${tags} #instabusiness #growthmindset`;
     
-    // Pick the least-recently-used template index (0, 1, or 2)
-    const t = await selectFallbackTemplateIndex(options.userId, options.companyId);
-    console.log(`🤖 Social Poster: Selected fallback template index: ${t} (LRU)`);
+    let twitter = `${hook}\n\n${body.substring(0, 100)}...\n\n🔗 ${targetLink}`;
+    if (twitter.length > 275) {
+        twitter = `${hook.substring(0, 120)}\n\n💡 Automate it with ${company}!\n\n🔗 ${targetLink}`;
+    }
+
+    const pinterest = `How to: ${hook}\n\n${body}\n\nDiscover how ${company} helps you implement custom solutions. Click to visit: ${targetLink} ${tags}`;
     
-    const fbTemplates = [
-        `💡 Did you know? Most businesses lose 10–20% of their clients just because of delayed follow-ups or lack of clear online visibility.\n\nHere are 3 quick tips to solve this:\n1️⃣ Automate your first outreach step.\n2️⃣ Follow up within 5 minutes of a query.\n3️⃣ Always provide upfront educational value.\n\nAt ${company}, we help you solve this by delivering high-impact **${mainTopic}** and ${desc}.\n\n👉 Learn more and scale your business: ${targetLink} ${tags}`,
-        `🔥 Want to build instant trust with your clients? Value-first outreach is the key. Try this checklist:\n✔️ Educate your leads instead of just hard selling.\n✔️ Share actionable checklists to show your expertise.\n✔️ Make access to your services simple and frictionless.\n\nWe specialize in custom **${mainTopic}** to make your operations seamless. Let's achieve your goals together!\n\n🔗 Visit us to learn how: ${targetLink} ${tags}`,
-        `🚀 Scale smarter, not harder. If your outreach and social media are completely manual, you are losing closing time. Here is a 3-step audit for your operations:\n🔹 Use templates to keep your messaging consistent.\n🔹 Pre-schedule your postings so your brand stays active 24/7.\n🔹 Automate tracking for all responses.\n\nAt ${company}, we handle the heavy lifting for ${desc}. Let us take care of the automation so you can close more clients.\n\n👉 Get started: ${targetLink} ${tags}`
-    ];
+    let threads = `${hook}\n\n${body.substring(0, 180)}...\n\n${cta.substring(0, 150)}`;
+    if (threads.length > 490) {
+        threads = `${hook}\n\n${cta.substring(0, 200)}`;
+    }
 
-    const liTemplates = [
-        `💼 Value-First Business Strategy: Help Before You Sell 💼\n\nIn today's B2B environment, clients don't want sales pitches—they want solutions. Here is a simple 3-step value checklist you can implement today:\n\n1️⃣ Share high-value industry tips rather than product features.\n2️⃣ Teach your prospects something that saves them time or money.\n3️⃣ Connect them to a reliable, automated platform when they are ready to scale.\n\nAt ${company}, we focus on **${mainTopic}** to deliver exactly these results for our partners.\n\nLet's connect or visit our site to see how we can assist: ${targetLink}\n\n${tags} #b2b #networking #automation`,
-        `💡 Is your business struggling with response times or outreach consistency?\n\nStudies show that response rates drop by 391% if you wait more than 5 minutes to follow up. To fix this immediately:\n✔️ Implement automated template builders.\n✔️ Use CRM tools to centralize user queries.\n✔️ Outsource non-core data extraction.\n\nAt ${company}, we deliver custom ${desc} so your team never misses an opportunity.\n\n👉 Explore our services: ${targetLink}\n\n${tags} #productivity #businesssolutions`,
-        `📈 Scaling your workflow requires a clear balance between strategy and automation.\n\nIf you want to optimize your marketing and sales outreach:\n🔹 Create educational content that answers client FAQs.\n🔹 Automate your posting schedule to keep engagement high.\n🔹 Base your campaigns on real data insights.\n\nWe help businesses achieve this with top-tier **${mainTopic}** and dedicated support.\n\n🔗 Let's collaborate: ${targetLink}\n\n${tags} #leadership #salespipeline`
-    ];
+    const youtube = `🎥 VIDEO OUTLINE: ${hook}\n\n[0:00 - Hook] ${hook}\n\n[0:30 - Value] Tips/Checklist:\n${body}\n\n[1:15 - Pitch] ${pitch}\n\n[2:00 - CTA] ${cta} (Subscribe & visit the link!)`;
 
-    const twTemplates = [
-        `Delayed follow-ups cost sales. Fix it in 3 steps:\n1. Automate initial contact\n2. Share value-first templates\n3. Track response rates\n\nAt ${company}, we specialize in ${mainTopic} to automate this workflow. Learn more! 🚀 ${targetLink} ${tags.split(' ').slice(0, 2).join(' ')}`,
-        `Value-first content builds trust. Don't just sell—help your audience first, then introduce your services. ${company} handles your customized ${desc} so you can focus on growth. Check us out: ${targetLink} ⚡`,
-        `Struggling to scale your outreach? Automate the process! Save time by scheduling updates & tracking leads. We build custom ${desc} & **${mainTopic}** to streamline your operations. 🔗 ${targetLink}`
-    ];
+    let settings = null;
+    try {
+        const SocialSettings = mongoose.model('SocialSettings');
+        settings = await SocialSettings.findOne(query).lean();
+    } catch(e) {}
 
-    const igTemplates = [
-        `✨ Spotlighting ${company}: Educate & Elevate ✨\n\nAre you struggling to convert outreach into active clients? Here is our 3-step checklist for high-conversion messaging:\n\n✔️ Offer a quick value hack immediately.\n✔️ Address a real pain point your client experiences daily.\n✔️ Introduce your solution as the ultimate time-saver.\n\nWe specialize in **${mainTopic}** to make this seamless for you. Tap the link in our bio to get started! 🔗\n\n${tags} #instabusiness #growthmindset`,
-        `💡 Elevate your workflow with ${company}!\n\nManual lead tracking and inconsistent posting are the biggest bottlenecks for growing brands. Solve this today:\n1️⃣ Pre-schedule your postings.\n2️⃣ Sync your contacts automatically.\n3️⃣ Focus on helping your clients succeed first.\n\nWe provide custom ${desc} to make automation simple. Link in bio! 🚀\n\n${tags} #agencylife #b2b`,
-        `🔥 Value-First Marketing works. Here's why:\n\nPeople buy from those they trust. Share tips, solve problems, and then offer your premium services. At ${company}, we deliver first-class **${mainTopic}** and custom ${desc} to help you build that trust.\n\nReady to transform your brand? Click the link in our bio! 📲\n\n${tags} #tech #solutions`
-    ];
-
-    const pinTemplates = [
-        `How to get more customers by helping them first. Simple value-first marketing templates by ${company}. Discover our customized ${mainTopic} services. Click to visit! ${targetLink} ${tags}`,
-        `3 steps to automate your outreach workflow. Stop wasting hours on manual tasks. We provide premium ${desc} to scale your brand. Pin this and visit our website: ${targetLink} ${tags}`,
-        `Value-first copywriting ideas that close deals. Learn how ${company} helps you implement custom **${mainTopic}** to elevate your B2B sales. Click to read: ${targetLink} ${tags}`
-    ];
-
-    const thrTemplates = [
-        `B2B sales tip: Don't start your outreach by asking for a call. Start by sharing a quick tip that solves an immediate problem. What's the #1 challenge you are facing in your business today? replies below! 👇 (Visit ${targetLink} to see how we help)`,
-        `Are you still manually posting every day? 💭 You are losing valuable hours that could be spent closing deals. Schedule your posts, cycle your keywords, and provide value first. Let us know how you automate your work below! 👇`,
-        `Help your audience, then pitch. Educate, then sell. That's the formula for high-converting marketing. At ${company}, we make automation around **${mainTopic}** simple. Share your thoughts or questions! 👇`
-    ];
-
-    const ytTemplates = [
-        `🎥 VIDEO OUTLINE: Value-First Outreach that Actually Converts\n\n[0:00 - Hook] Why standard sales pitches fail immediately.\n[0:30 - Value] 3 tips to educate your prospects first.\n[1:15 - Pitch] How ${company} automates value-first outreach with ${mainTopic}.\n[2:00 - CTA] Visit ${targetLink} to get our templates and subscribe!`,
-        `🎥 VIDEO OUTLINE: Automating Your Lead Flow & Social Postings\n\n[0:00] The hidden cost of manual outreach.\n[0:45] How ${company} helps you save 10+ hours a week via ${desc}.\n[1:30] Best practices for scheduled, value-first campaigns.\n[2:15] Outro: Visit ${targetLink} to start, and subscribe!`,
-        `🎥 VIDEO OUTLINE: Value Hacks for B2B Growth\n\n[0:00] Finding the bottlenecks in your operations.\n[0:30] How our specialization in ${mainTopic} resolves these issues.\n[1:20] Giving value first to build long-term client relationships.\n[2:00] Call to action: Check the link in the description (${targetLink}) & subscribe!`
-    ];
-
-    const imagePrompt = '';
-    const imageUrl = '';
+    const shouldGenImage = settings ? (settings.gen_images !== false) : true;
+    const imagePrompt = shouldGenImage ? imgThemes[hookIdx] : '';
+    let imageUrl = '';
+    if (imagePrompt) {
+        imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(imagePrompt)}?width=800&height=600&nologo=true&seed=${Math.floor(Math.random() * 100000)}`;
+    }
 
     return {
-        facebook: fbTemplates[t],
-        linkedin: liTemplates[t],
-        twitter: twTemplates[t],
-        instagram: igTemplates[t],
-        pinterest: pinTemplates[t],
-        threads: thrTemplates[t],
-        youtube: ytTemplates[t],
+        facebook,
+        linkedin,
+        twitter,
+        instagram,
+        pinterest,
+        threads,
+        youtube,
         image_prompt: imagePrompt,
         image_url: imageUrl
     };
@@ -679,7 +797,7 @@ async function postToSocial(generatedPosts, settings) {
         logString += `   [Content] ${content.substring(0, 80)}...\n`;
         
         // Real API Call for LinkedIn, Fallback/Simulation for other channels
-        if (channel === 'linkedin' && channelConfig.token) {
+        if (channel === 'linkedin' && channelConfig.token && !channelConfig.token.toUpperCase().startsWith('MOCK')) {
             logString += `   [LinkedIn] Authenticating and preparing post...\n`;
             try {
                 let finalUrn = '';

@@ -40,7 +40,10 @@ function createTransport(cfg) {
             user: cfg.user || cfg.smtp_user,
             pass: cfg.pass || cfg.smtp_pass
         },
-        tls: { rejectUnauthorized: false }
+        tls: { rejectUnauthorized: false },
+        connectionTimeout: 10000,
+        greetingTimeout: 10000,
+        socketTimeout: 15000
     };
     if (!secure && port !== 25) transportOpts.requireTLS = true;
     return nodemailer.createTransport(transportOpts);

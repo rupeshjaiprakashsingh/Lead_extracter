@@ -298,6 +298,7 @@ let sseClients = [];
 function registerSSE(res) { sseClients.push(res); }
 function removeSSE(res)   { sseClients = sseClients.filter(c => c !== res); }
 function emit(data)       { const m = `data: ${JSON.stringify(data)}\n\n`; sseClients.forEach(c => { try { c.write(m); } catch(e){} }); }
+global.emit = emit;
 
 app.get('/api/progress', (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
@@ -2120,16 +2121,32 @@ app.post('/api/test-smtp', async (req, res) => {
 // ── SMTP Email Accounts (Multi-Account Load Balancer) ──────
 // ═══════════════════════════════════════════════════════════
 
+// Helper to calculate total SMTP daily limit for a user
+async function getDefaultScheduleLimitForUser(userId) {
+    try {
+        const accounts = await SmtpAccount.find({ userId, isActive: true });
+        if (accounts.length > 0) {
+            return accounts.reduce((sum, a) => sum + (a.daily_limit || 450), 0);
+        }
+        const all = await SmtpAccount.find({ userId });
+        if (all.length > 0) {
+            return all.reduce((sum, a) => sum + (a.daily_limit || 450), 0);
+        }
+        return 450;
+    } catch (e) {
+        return 450;
+    }
+}
+
 // Helper to scale EmailSchedule limits based on SmtpAccount count
 async function updateScheduleLimitsForUser(userId) {
     try {
-        const count = await SmtpAccount.countDocuments({ userId });
-        const newLimit = Math.max(1, count) * 450;
+        const newLimit = await getDefaultScheduleLimitForUser(userId);
         await EmailSchedule.updateMany(
             { userId },
             { $set: { daily_limit: newLimit } }
         );
-        logger.log(`[SMTP_LIMIT_SCALE] Updated all EmailSchedule limits to ${newLimit} for user ${userId} (${count} SMTP accounts)`, 'SMTP');
+        logger.log(`[SMTP_LIMIT_SCALE] Updated all EmailSchedule limits to ${newLimit} for user ${userId}`, 'SMTP');
     } catch (e) {
         logger.error(`[SMTP_LIMIT_SCALE] Failed to update EmailSchedule limits for user ${userId}:`, e);
     }
@@ -2515,8 +2532,7 @@ app.get('/api/email-schedule', async (req, res) => {
         const userId = uid(req);
         let list = await EmailSchedule.find({ userId }).sort({ createdAt: -1 });
         if (!list.length) {
-            const smtpCount = await SmtpAccount.countDocuments({ userId });
-            const defaultLimit = Math.max(1, smtpCount) * 450;
+            const defaultLimit = await getDefaultScheduleLimitForUser(userId);
             const defaultSched = await EmailSchedule.create({ 
                 userId, 
                 name: 'Default Email Schedule',
@@ -2533,8 +2549,7 @@ app.post('/api/email-schedule', async (req, res) => {
     try {
         const userId = uid(req);
         const { name, enabled, categories, cities, daily_limit, skip_sent, allow_resend, send_hours, report_email, temperatures, filter_no_website, filter_has_email, filter_min_rating } = req.body;
-        const smtpCount = await SmtpAccount.countDocuments({ userId });
-        const defaultLimit = Math.max(1, smtpCount) * 450;
+        const defaultLimit = await getDefaultScheduleLimitForUser(userId);
         const s = await EmailSchedule.create({
             userId,
             name: name || 'New Email Schedule',
@@ -2560,8 +2575,7 @@ app.put('/api/email-schedule/:id', async (req, res) => {
     try {
         const userId = uid(req);
         const { name, enabled, categories, cities, daily_limit, skip_sent, allow_resend, send_hours, report_email, temperatures, filter_no_website, filter_has_email, filter_min_rating } = req.body;
-        const smtpCount = await SmtpAccount.countDocuments({ userId });
-        const defaultLimit = Math.max(1, smtpCount) * 450;
+        const defaultLimit = await getDefaultScheduleLimitForUser(userId);
         const s = await EmailSchedule.findOneAndUpdate(
             { _id: req.params.id, userId },
             {
