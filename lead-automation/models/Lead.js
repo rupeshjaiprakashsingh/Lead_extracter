@@ -20,7 +20,7 @@ const leadSchema = new mongoose.Schema({
     city:       { type: String },
     address:    { type: String },
     place_id:   { type: String },
-    source:     { type: String, default: 'google_maps', enum: ['google_maps','manual','import','excel_import'] },
+    source:     { type: String, default: 'google_maps', enum: ['google_maps','manual','import','excel_import','google_maps_auto'] },
     status:     { type: String, default: 'new',
                   enum: ['new','contacted','followup','interested','converted','not_interested','lost'] },
 
@@ -33,12 +33,20 @@ const leadSchema = new mongoose.Schema({
     wa_sent_at:   { type: Date },
     wa_count:     { type: Number, default: 0 },
     wa_last_date: { type: String }, // YYYY-MM-DD for same-day check
+    wa_invalid:   { type: Boolean, default: false },
 
     // ── Email tracking ────────────────────────────────────
     email_sent:      { type: Boolean, default: false },
     email_sent_at:   { type: Date },
     email_count:     { type: Number, default: 0 },
     email_last_date: { type: String },
+
+    // ── Lead Temperature (CRM Qualification) ──────────────
+    temperature: {
+        type: String,
+        default: '',
+        enum: ['hot', 'warm', 'cold', '']
+    },
 
     // ── Follow-up ─────────────────────────────────────────────
     next_followup:        { type: Date },
@@ -53,12 +61,30 @@ const leadSchema = new mongoose.Schema({
     tags:     [String]
 }, { timestamps: true });
 
-// Deduplication indexes — scoped per user
+// Deduplication and query-optimized compound indexes — scoped per user
 leadSchema.index({ phone: 1, userId: 1 }, { unique: true, sparse: true });
-leadSchema.index({ name: 1, city: 1 });
-leadSchema.index({ category: 1 });
-leadSchema.index({ status: 1 });
-leadSchema.index({ wa_sent: 1 });
-leadSchema.index({ next_followup: 1 });
+leadSchema.index({ userId: 1, name: 1, city: 1 });
+leadSchema.index({ userId: 1, createdAt: -1 });
+leadSchema.index({ userId: 1, category: 1, createdAt: -1 });
+leadSchema.index({ userId: 1, city: 1, createdAt: -1 });
+leadSchema.index({ userId: 1, status: 1, createdAt: -1 });
+leadSchema.index({ userId: 1, wa_sent: 1, createdAt: -1 });
+leadSchema.index({ userId: 1, email_sent: 1, createdAt: -1 });
+leadSchema.index({ userId: 1, rating: -1, createdAt: 1, email: 1 });
+leadSchema.index({ userId: 1, temperature: 1, rating: -1, createdAt: 1, email: 1 });
+leadSchema.index({ userId: 1, next_followup: 1 });
+
+leadSchema.pre('save', async function() {
+    const hasPhone = !!(this.phone && this.phone.trim());
+    const hasEmail = !!(this.email && this.email.trim());
+    const rating = this.rating || 0;
+    if (rating >= 4 && hasPhone && hasEmail) {
+        this.temperature = 'hot';
+    } else if (rating >= 3 && (hasPhone || hasEmail)) {
+        this.temperature = 'warm';
+    } else {
+        this.temperature = 'cold';
+    }
+});
 
 module.exports = mongoose.model('Lead', leadSchema);

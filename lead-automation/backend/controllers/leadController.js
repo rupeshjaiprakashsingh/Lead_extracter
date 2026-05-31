@@ -32,6 +32,9 @@ exports.getStats = async (req, res, next) => {
       ]
     });
     const followup = await Lead.countDocuments({ companyId, next_followup: { $lte: new Date() } });
+    const today = todayStr();
+    const waToday = await Lead.countDocuments({ companyId, wa_last_date: today });
+    const emailToday = await Lead.countDocuments({ companyId, email_last_date: today });
 
     const catAgg = await Lead.aggregate([
       { $match: { companyId: require('mongoose').Types.ObjectId.createFromHexString(companyId.toString()) } },
@@ -41,7 +44,7 @@ exports.getStats = async (req, res, next) => {
     ]);
     const categoryBreakdown = catAgg.map(c => ({ name: c._id || 'Uncategorized', count: c.count }));
 
-    res.json({ success: true, data: { total, pending, waSent, emailSent, noSite, followup, categoryBreakdown } });
+    res.json({ success: true, data: { total, pending, waSent, emailSent, noSite, followup, waToday, emailToday, categoryBreakdown } });
   } catch (err) { next(err); }
 };
 

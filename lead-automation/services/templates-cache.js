@@ -4,16 +4,7 @@
 //  Supports both multi-tenant (companyId) and legacy (userId) modes
 // ============================================================
 
-// Use the appropriate Settings model based on which is available
-let Settings;
-try {
-    // Try the multi-tenant backend model first (has companyId)
-    Settings = require('../backend/models/Settings');
-} catch (e) {
-    // Fall back to legacy root model (has userId)
-    Settings = require('../models/Settings');
-}
-
+// Use the appropriate Settings model dynamically from the active mongoose connection
 async function getTemplates(idValue) {
     const templates = {
         wa_template:   '',
@@ -22,22 +13,39 @@ async function getTemplates(idValue) {
     };
 
     try {
+        const activeMongoose = global.activeMongoose || require('mongoose');
+        const Settings = activeMongoose.models.Settings;
+        if (!Settings) {
+            console.warn('  ⚠️  Settings model not registered on mongoose instance yet');
+            return templates;
+        }
+
         let rows = [];
         if (idValue) {
-            const hasCompanyId = Settings.schema && Settings.schema.paths && Settings.schema.paths.hasOwnProperty('companyId');
-            if (hasCompanyId) {
-                // Query by companyId (multi-tenant backend)
-                rows = await Settings.find({
-                    companyId: idValue,
-                    key: { $in: ['wa_template', 'email_subject', 'email_body'] }
-                }).catch(() => []);
-            } else {
-                // Query by userId (legacy single-tenant path)
-                rows = await Settings.find({
-                    userId: idValue,
-                    key: { $in: ['wa_template', 'email_subject', 'email_body'] }
-                }).catch(() => []);
+            const paths = Settings.schema ? Settings.schema.paths : {};
+            const query = { key: { $in: ['wa_template', 'email_subject', 'email_body'] } };
+
+            if (paths.hasOwnProperty('companyId') && paths.hasOwnProperty('userId')) {
+                let castedId = idValue;
+                if (activeMongoose.Types.ObjectId.isValid(idValue)) {
+                    castedId = new activeMongoose.Types.ObjectId(idValue.toString());
+                }
+                query.$or = [ { companyId: castedId }, { userId: castedId } ];
+            } else if (paths.hasOwnProperty('companyId')) {
+                let castedId = idValue;
+                if (activeMongoose.Types.ObjectId.isValid(idValue)) {
+                    castedId = new activeMongoose.Types.ObjectId(idValue.toString());
+                }
+                query.companyId = castedId;
+            } else if (paths.hasOwnProperty('userId')) {
+                let castedId = idValue;
+                if (activeMongoose.Types.ObjectId.isValid(idValue)) {
+                    castedId = new activeMongoose.Types.ObjectId(idValue.toString());
+                }
+                query.userId = castedId;
             }
+
+            rows = await Settings.find(query).catch(() => []);
         }
 
         // If still nothing found (or idValue is empty), fetch the first available settings (global/any fallback)

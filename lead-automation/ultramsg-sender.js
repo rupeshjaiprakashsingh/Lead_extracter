@@ -1,18 +1,45 @@
 // ============================================================
 //  ultramsg-sender.js — WhatsApp sender via UltraMsg REST API
 //  No browser. No Playwright. Just HTTP calls.
-//  Sign up free at ultramsg.com to get instanceId + token
+//  Multi-Tenant ready. Reads credentials from MongoDB per-user.
 // ============================================================
 const https = require('https');
 const http  = require('http');
 const fs    = require('fs');
 const path  = require('path');
-const { loadLeads, saveLeads } = require('./scraper');
-const { buildWhatsAppMessage }  = require('./message-builder');
+const mongoose = require('mongoose');
+const { buildInitialWA, buildFollowupWA } = require('./services/ai-messages');
 
 const CONFIG_FILE = path.join(__dirname, 'ultramsg-config.json');
 const DELAY_MS    = 5000;   // 5 seconds between messages (UltraMsg safe limit)
 const MAX_PER_RUN = 500;
+
+function isPotentialLandlineOrInvalid(phone) {
+    if (!phone) return { invalid: true, reason: 'Empty phone number' };
+    const cleaned = String(phone).replace(/\D/g, '');
+    if (cleaned.length < 10) {
+        return { invalid: true, reason: 'Too short (less than 10 digits)' };
+    }
+    // Indian numbers logic
+    if (cleaned.startsWith('91')) {
+        if (cleaned.length !== 12) {
+            return { invalid: true, reason: 'Indian number must be 12 digits (with 91 prefix)' };
+        }
+        const firstNationalDigit = cleaned.charAt(2);
+        if (!['6', '7', '8', '9'].includes(firstNationalDigit)) {
+            return { invalid: true, reason: 'Indian landline or invalid mobile prefix' };
+        }
+    } else {
+        // If 10 digits without prefix (assuming Indian national number)
+        if (cleaned.length === 10) {
+            const firstDigit = cleaned.charAt(0);
+            if (!['6', '7', '8', '9'].includes(firstDigit)) {
+                return { invalid: true, reason: 'Indian landline or invalid mobile prefix (10 digits)' };
+            }
+        }
+    }
+    return { invalid: false };
+}
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -25,7 +52,7 @@ function emit(data) {
     sseClients.forEach(c => { try { c.write(msg); } catch(e) {} });
 }
 
-// ── Load/Save config ────────────────────────────────────────
+// ── Load/Save config (Legacy fallback) ───────────────────────
 function loadConfig() {
     if (fs.existsSync(CONFIG_FILE)) {
         try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); }
@@ -123,10 +150,23 @@ async function sendMessage(instanceId, token, phone, message) {
     throw new Error(res.data?.error || res.data?.message || `HTTP ${res.status}`);
 }
 
-// ── Auto-send to all pending leads ─────────────────────────
-async function sendWhatsAppMessages(leadIds = null) {
-    const cfg = loadConfig();
-    if (!cfg.instanceId || !cfg.token) {
+// ── Send WhatsApp Campaign (MongoDB Multi-Tenant) ──────────
+async function sendWhatsAppMessages(leadIds = null, isFollowup = false, options = {}) {
+    const userId = options.companyId;
+    if (!userId) {
+        emit({ type: 'error', message: '❌ Internal Error: No companyId (userId) provided for UltraMsg sender.' });
+        emit({ type: 'done', sent: 0, failed: 0, total: 0 });
+        return { sent: 0, failed: 0 };
+    }
+
+    const Settings = mongoose.model('Settings');
+    const instRow = await Settings.findOne({ userId, key: 'ultramsg_instance_id' });
+    const tokRow = await Settings.findOne({ userId, key: 'ultramsg_token' });
+
+    const instanceId = instRow ? instRow.value : '';
+    const token = tokRow ? tokRow.value : '';
+
+    if (!instanceId || !token) {
         emit({ type: 'error', message: '❌ UltraMsg not configured. Enter Instance ID & Token in Settings.' });
         emit({ type: 'done', sent: 0, failed: 0, total: 0 });
         return { sent: 0, failed: 0 };
@@ -134,7 +174,7 @@ async function sendWhatsAppMessages(leadIds = null) {
 
     // Test connection first
     emit({ type: 'status', message: '🔌 Checking UltraMsg connection...' });
-    const test = await testConnection(cfg.instanceId, cfg.token);
+    const test = await testConnection(instanceId, token);
     if (!test.success) {
         emit({ type: 'error', message: `❌ Connection failed: ${test.error}` });
         emit({ type: 'done', sent: 0, failed: 0, total: 0 });
@@ -146,60 +186,122 @@ async function sendWhatsAppMessages(leadIds = null) {
         return { sent: 0, failed: 0 };
     }
 
-    const leads  = loadLeads();
-    let toSend   = leads.filter(b =>
-        b.phone && !b.wa_sent &&
-        (!leadIds || leadIds.map(String).includes(String(b.id)))
-    ).slice(0, MAX_PER_RUN);
+    const Lead = mongoose.model('Lead');
+    const leads = await Lead.find({ _id: { $in: leadIds }, phone: { $exists: true, $ne: '' } });
 
-    if (!toSend.length) {
+    if (!leads.length) {
         emit({ type: 'done', sent: 0, failed: 0, total: 0, message: 'No pending leads.' });
         return { sent: 0, failed: 0 };
     }
 
-    const total = toSend.length;
+    const total = leads.length;
     emit({ type: 'start', total });
     emit({ type: 'status', message: `✅ UltraMsg connected! Sending to ${total} leads...` });
-    console.log(`\n📤 Sending to ${total} leads via UltraMsg API...\n`);
+    console.log(`\n📤 Sending to ${total} leads via UltraMsg API for user ${userId}...\n`);
 
     let sent = 0, failed = 0;
+    const today = new Date().toISOString().slice(0, 10);
 
-    for (let i = 0; i < toSend.length; i++) {
-        const biz     = toSend[i];
-        const message = buildWhatsAppMessage(biz);
-        const phone   = biz.phone;
+    for (let i = 0; i < leads.length; i++) {
+        const lead = leads[i];
 
-        emit({ type: 'sending', current: i + 1, total, name: biz.name, phone: biz.raw_phone || phone, sent, failed });
-        console.log(`  [${i+1}/${total}] → ${biz.name} (${biz.raw_phone || phone})`);
+        // Skip already-sent leads if toggle is ON (only for initial campaign send)
+        if (!isFollowup && options.skipWaSent && lead.wa_sent) {
+            emit({ type: 'skipped', name: lead.name, reason: 'WA already sent (Skip ON)' });
+            continue;
+        }
+
+        // Skip if known invalid
+        if (lead.wa_invalid) {
+            emit({ type: 'skipped', name: lead.name, reason: 'Known invalid WhatsApp number' });
+            continue;
+        }
+
+        // Run pre-validation (landlines/formatting)
+        const preCheck = isPotentialLandlineOrInvalid(lead.phone);
+        if (preCheck.invalid) {
+            await Lead.findByIdAndUpdate(lead._id, {
+                $set: { wa_invalid: true },
+                $push: { activity: { type: 'wa_invalid', message: `Pre-check failed: ${preCheck.reason}`, date: new Date() } }
+            }).catch(() => {});
+
+            emit({ type: 'failed', name: lead.name, reason: `Skipped: ${preCheck.reason}`, sent, failed });
+            failed++;
+            continue;
+        }
+
+        let msg = '';
+        let followupNum = (lead.followup_count || 0) + 1;
 
         try {
-            await sendMessage(cfg.instanceId, cfg.token, phone, message);
+            if (isFollowup) {
+                msg = await buildFollowupWA(lead, followupNum, userId);
+            } else {
+                msg = await buildInitialWA(lead, userId);
+            }
+        } catch (err) {
+            console.error(`Gemini build message error for lead ${lead.name}:`, err.message);
+            failed++;
+            emit({ type: 'failed', name: lead.name, reason: 'AI personalization failed', sent, failed });
+            continue;
+        }
 
-            // Mark as sent
-            const idx = leads.findIndex(b => String(b.id) === String(biz.id));
-            if (idx !== -1) { leads[idx].wa_sent = true; leads[idx].wa_sent_at = new Date().toISOString(); }
-            saveLeads(leads);
+        const phone = lead.phone;
+        emit({ type: 'sending', current: i + 1, total, name: lead.name, phone: lead.raw_phone || phone, sent, failed });
+        console.log(`  [${i+1}/${total}] → ${lead.name} (${lead.raw_phone || phone})`);
+
+        try {
+            await sendMessage(instanceId, token, phone, msg);
+
+            // Update Mongoose Lead Document
+            if (isFollowup) {
+                await Lead.findByIdAndUpdate(lead._id, {
+                    $inc:  { wa_count: 1, followup_count: 1 },
+                    $set:  { wa_last_date: today, next_followup: new Date(Date.now() + 7*24*60*60*1000), status: 'followup' },
+                    $push: { activity: { type: 'wa_sent', message: `Followup #${followupNum} WA sent via UltraMsg`, date: new Date() } }
+                });
+            } else {
+                await Lead.findByIdAndUpdate(lead._id, {
+                    $set:  { wa_sent: true, wa_sent_at: new Date(), wa_last_date: today, status: 'contacted' },
+                    $inc:  { wa_count: 1 },
+                    $push: { activity: { type: 'wa_sent', message: options.isScheduled ? 'WA sent via Auto-Scheduler (UltraMsg)' : 'Initial WA sent via UltraMsg', date: new Date() } }
+                });
+            }
 
             sent++;
-            emit({ type: 'sent', name: biz.name, sent, failed, total });
+            emit({ type: 'sent', name: lead.name, sent, failed, total });
             console.log(`  ✅ Sent! (${sent}/${total})`);
 
-            if (i < toSend.length - 1) {
-                emit({ type: 'waiting', seconds: Math.round(DELAY_MS / 1000), next: toSend[i + 1]?.name });
+            if (i < leads.length - 1) {
+                emit({ type: 'waiting', seconds: Math.round(DELAY_MS / 1000), next: leads[i + 1]?.name });
                 await sleep(DELAY_MS);
             }
 
         } catch(err) {
             const reason = err.message || 'Send failed';
-            console.log(`  ❌ ${biz.name}: ${reason}`);
+            console.log(`  ❌ ${lead.name}: ${reason}`);
             failed++;
-            emit({ type: 'failed', name: biz.name, reason, sent, failed });
+
+            // Mark as invalid if the UltraMsg error indicates unregistered number or invalid format
+            const isUnregistered = reason.toLowerCase().includes('register') || 
+                                   reason.toLowerCase().includes('invalid') || 
+                                   reason.toLowerCase().includes('not exist') ||
+                                   reason.toLowerCase().includes('not exist on whatsapp');
+            if (isUnregistered) {
+                await Lead.findByIdAndUpdate(lead._id, {
+                    $set: { wa_invalid: true },
+                    $push: { activity: { type: 'wa_invalid', message: `UltraMsg reported invalid: ${reason}`, date: new Date() } }
+                }).catch(() => {});
+            }
+
+            emit({ type: 'failed', name: lead.name, reason, sent, failed });
             await sleep(1000); // Short pause on error before next
         }
     }
 
     emit({ type: 'done', sent, failed, total });
     console.log(`\n🎉 Done! Sent: ${sent} | Failed: ${failed}\n`);
+    if (options.onComplete) options.onComplete(sent, failed);
     return { sent, failed };
 }
 
@@ -212,4 +314,3 @@ async function sendSingleMessage(cfg, phone, message) {
 }
 
 module.exports = { sendWhatsAppMessages, sendSingleMessage, testConnection, loadConfig, saveConfig, registerSSE, removeSSE };
-

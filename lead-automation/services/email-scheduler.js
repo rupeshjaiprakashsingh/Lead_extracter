@@ -59,13 +59,29 @@ async function runScheduledSendForRule(schedule) {
         filter.city = { $in: cityRegexes };
     }
 
+    if (schedule.temperatures?.length) {
+        filter.temperature = { $in: schedule.temperatures };
+    }
+
+    if (schedule.filter_no_website) {
+        filter.$or = [
+            { website: { $exists: false } },
+            { website: '' },
+            { website: null }
+        ];
+    }
+
+    if (schedule.filter_min_rating && schedule.filter_min_rating > 0) {
+        filter.rating = { $gte: schedule.filter_min_rating };
+    }
+
     // Skip already sent
     if (schedule.skip_sent && !schedule.allow_resend) {
         filter.email_sent = { $ne: true };
     }
 
     const leads = await Lead.find(filter)
-        .sort({ createdAt: 1 })   // FIFO
+        .sort({ rating: -1, createdAt: 1 })   // Prioritize HOT leads (highest rating) first, then FIFO
         .limit(toSend)
         .lean();
 
@@ -100,6 +116,11 @@ async function runScheduledSendForRule(schedule) {
                 });
                 sent++;
             } catch (err) {
+                if (err.message && err.message.includes('daily sending limit')) {
+                    console.error(`⏰ Email Scheduler: Daily limit reached for all SMTP accounts. Aborting batch.`);
+                    failed += (leads.length - sent - failed);
+                    break;
+                }
                 failed++;
                 console.error(`⏰ Email Scheduler: Failed to send to ${lead.email}:`, err.message);
             }

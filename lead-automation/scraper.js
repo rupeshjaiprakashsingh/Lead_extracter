@@ -88,7 +88,7 @@ async function waitForCaptchaIfNeeded(page, label = '') {
     return false; // no captcha
 }
 
-async function scrapeGoogleMaps(keyword, city, maxResults = 9999) {
+async function scrapeGoogleMaps(keyword, city, maxResults = 9999, onLeadScraped = null) {
     console.log(`\n🔍 Searching: "${keyword}" in ${city} | Target: ${maxResults} leads\n`);
 
     // ── Use persistent profile (avoids repeated CAPTCHA) ──────
@@ -452,6 +452,13 @@ async function scrapeGoogleMaps(keyword, city, maxResults = 9999) {
             if (biz.name.trim()) {
                 newLeads.push(biz);
                 console.log(`  ✅ [${newLeads.length}] ${biz.name} | ☎ ${biz.raw_phone || 'No phone'} | 🌐 ${biz.website || 'NO WEBSITE'}`);
+                if (typeof onLeadScraped === 'function') {
+                    try {
+                        await onLeadScraped(biz);
+                    } catch (e) {
+                        console.error('Error in onLeadScraped callback:', e.message);
+                    }
+                }
             }
 
         } catch(err) {

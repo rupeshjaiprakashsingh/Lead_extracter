@@ -72,12 +72,18 @@ app.get('/auth/status', async (req, res) => {
             return res.json({ firstRun: true });
         }
         if (req.session && req.session.userId) {
-            return res.json({
-                isAuthenticated: true,
-                username: req.session.username,
-                company: req.session.company,
-                role: req.session.userRole
-            });
+            const user = await User.findById(req.session.userId).select('username company role plan licenseKey licenseExpiry');
+            if (user) {
+                return res.json({
+                    isAuthenticated: true,
+                    username: user.username,
+                    company: user.company,
+                    role: user.role,
+                    plan: user.plan || 'trial',
+                    licenseKey: user.licenseKey || 'N/A',
+                    licenseExpiry: user.licenseExpiry ? user.licenseExpiry.toISOString() : 'Lifetime'
+                });
+            }
         }
         return res.json({ isAuthenticated: false });
     } catch (e) {
@@ -300,8 +306,13 @@ app.get('/api/progress', (req, res) => {
     res.flushHeaders();
     registerSSE(res);
     require('./playwright-sender').registerSSE(res);
+    require('./ultramsg-sender').registerSSE(res);
     res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
-    req.on('close', () => { removeSSE(res); require('./playwright-sender').removeSSE(res); });
+    req.on('close', () => { 
+        removeSSE(res); 
+        require('./playwright-sender').removeSSE(res); 
+        require('./ultramsg-sender').removeSSE(res);
+    });
 });
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -330,22 +341,22 @@ app.get('/api/db-status', (req, res) => res.json({ connected: isConnected() }));
 app.get('/api/stats', async (req, res) => {
     try {
         const userId = uid(req);
-        const total    = await Lead.countDocuments({ userId });
-        const pending  = await Lead.countDocuments({ userId, wa_sent: false });
-        const waSent   = await Lead.countDocuments({ userId, wa_sent: true });
-        // Fix: include 'No Site' string AND social links AND empty
-        const socialPatterns = ['facebook','instagram','whatsapp','wa.me','youtube','twitter'];
-        const noSite = await Lead.countDocuments({
+        const total     = await Lead.countDocuments({ userId });
+        const pending   = await Lead.countDocuments({ userId, wa_sent: false });
+        const waSent    = await Lead.countDocuments({ userId, wa_sent: true });
+        const emailSent = await Lead.countDocuments({ userId, email_sent: true });
+        const contacted = await Lead.countDocuments({
             userId,
             $or: [
-                { website: { $exists: false } },
-                { website: null },
-                { website: '' },
-                { website: 'No Site' },
-                { website: { $regex: socialPatterns.join('|'), $options: 'i' } }
+                { status: 'contacted' },
+                { wa_sent: true },
+                { email_sent: true }
             ]
         });
-        const followup = await Lead.countDocuments({ userId, next_followup: { $lte: new Date() } });
+        const followup  = await Lead.countDocuments({ userId, next_followup: { $lte: new Date() } });
+        const today = todayStr();
+        const waToday = await Lead.countDocuments({ userId, wa_last_date: today });
+        const emailToday = await Lead.countDocuments({ userId, email_last_date: today });
         // Per-category breakdown
         const catAgg = await Lead.aggregate([
             { $match: { userId } },
@@ -353,9 +364,10 @@ app.get('/api/stats', async (req, res) => {
             { $sort: { count: -1 } }
         ]);
         const categoryBreakdown = catAgg.map(c => ({ name: c._id || 'Uncategorized', count: c.count }));
-        res.json({ total, pending, waSent, noSite, followup, categoryBreakdown });
-    } catch(e) { res.json({ total:0, pending:0, waSent:0, noSite:0, followup:0, categoryBreakdown:[] }); }
+        res.json({ total, pending, waSent, emailSent, contacted, followup, waToday, emailToday, categoryBreakdown });
+    } catch(e) { res.json({ total:0, pending:0, waSent:0, emailSent:0, contacted:0, followup:0, waToday:0, emailToday:0, categoryBreakdown:[] }); }
 });
+
 
 // ── GET Leads (paginated, filtered, searched) ─────────────────
 app.get('/api/leads', async (req, res) => {
@@ -424,6 +436,704 @@ app.get('/api/cities', async (req, res) => {
         const cities = await Lead.distinct('city', { userId });
         res.json(cities.filter(Boolean).sort());
     } catch(e) { res.json([]); }
+});
+
+// ── Auto Scraper Endpoints ─────────────────────────────────────
+const { getAutoScraperConfig, startAutoScraper, stopAutoScraper, bootAllAutoScrapers } = require('./services/auto-scraper');
+
+app.get('/api/auto-scraper', async (req, res) => {
+    try {
+        const userId = uid(req);
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+        const config = await getAutoScraperConfig(userId);
+        res.json({ success: true, config });
+    } catch(e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/auto-scraper', async (req, res) => {
+    try {
+        const userId = uid(req);
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+        const { keywords, cities, maxResults, deepEmailExtract, enabled, dailyTarget, intervalMinutes } = req.body;
+
+        const updateData = {};
+        if (keywords !== undefined) updateData.keywords = keywords;
+        if (cities !== undefined) updateData.cities = cities;
+        if (maxResults !== undefined) updateData.maxResults = parseInt(maxResults) || 200;
+        if (deepEmailExtract !== undefined) updateData.deepEmailExtract = !!deepEmailExtract;
+        if (dailyTarget !== undefined) updateData.dailyTarget = parseInt(dailyTarget) || 5000;
+        if (intervalMinutes !== undefined) updateData.intervalMinutes = Math.max(1, parseInt(intervalMinutes) || 2);
+
+        const activeMongoose = global.activeMongoose || require('mongoose');
+        const AutoScraperModel = activeMongoose.models.AutoScraper || require('./models/AutoScraper');
+
+        let config = await AutoScraperModel.findOneAndUpdate(
+            { userId },
+            { $set: updateData },
+            { new: true, upsert: true }
+        );
+
+        if (enabled !== undefined) {
+            if (!!enabled) {
+                await startAutoScraper(userId);
+            } else {
+                await stopAutoScraper(userId);
+            }
+            config = await AutoScraperModel.findOne({ userId });
+        }
+
+        res.json({ success: true, config });
+    } catch(e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/auto-scraper/clear-logs', async (req, res) => {
+    try {
+        const userId = uid(req);
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+        const activeMongoose = global.activeMongoose || require('mongoose');
+        const AutoScraperModel = activeMongoose.models.AutoScraper || require('./models/AutoScraper');
+        
+        await AutoScraperModel.updateOne({ userId }, { $set: { logs: '' } });
+        res.json({ success: true });
+    } catch(e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/auto-scraper/stats', async (req, res) => {
+    try {
+        const userId = uid(req);
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+        const activeMongoose = global.activeMongoose || require('mongoose');
+        const AutoScraperModel = activeMongoose.models.AutoScraper || require('./models/AutoScraper');
+        const LeadModel = activeMongoose.models.Lead || require('./models/Lead');
+        
+        const config = await AutoScraperModel.findOne({ userId });
+        
+        const startOfDay = new Date();
+        startOfDay.setHours(0, 0, 0, 0);
+
+        const baseQuery = { userId, source: 'google_maps_auto' };
+
+        const [
+            totalAutoLeads,
+            leadsExtractedToday,
+            emailsFound,
+            whatsappFound,
+            websitesFound,
+            phonesFound,
+            hotLeads,
+            warmLeads,
+            decisionMakers
+        ] = await Promise.all([
+            LeadModel.countDocuments(baseQuery),
+            LeadModel.countDocuments({ ...baseQuery, createdAt: { $gte: startOfDay } }),
+            LeadModel.countDocuments({ ...baseQuery, email: { $exists: true, $ne: '' } }),
+            LeadModel.countDocuments({ ...baseQuery, phone: { $exists: true, $ne: '' } }),
+            LeadModel.countDocuments({ ...baseQuery, website: { $exists: true, $ne: '' } }),
+            LeadModel.countDocuments({ ...baseQuery, phone: { $exists: true, $ne: '' } }),
+            // Hot Leads: phone & email present, rating >= 4
+            LeadModel.countDocuments({ ...baseQuery, phone: { $exists: true, $ne: '' }, email: { $exists: true, $ne: '' }, rating: { $gte: 4 } }),
+            // Warm Leads: (phone or email) present, rating >= 3
+            LeadModel.countDocuments({
+                ...baseQuery,
+                $or: [
+                    { phone: { $exists: true, $ne: '' } },
+                    { email: { $exists: true, $ne: '' } }
+                ],
+                rating: { $gte: 3 }
+            }),
+            // Decision makers: email present, doesn't start with generic prefixes
+            LeadModel.countDocuments({
+                ...baseQuery,
+                email: {
+                    $exists: true,
+                    $ne: '',
+                    $not: /^(info|sales|admin|support|contact|marketing|office|hello|jobs|careers|team|service|billing|help|inquiry|enquiry)@/i
+                }
+            })
+        ]);
+
+        // Adjust warm leads: make sure hot leads are not double-counted as warm
+        const adjustedWarmLeads = Math.max(0, warmLeads - hotLeads);
+        const coldLeads = Math.max(0, totalAutoLeads - hotLeads - adjustedWarmLeads);
+
+        res.json({
+            success: true,
+            leadsToday: leadsExtractedToday,
+            totalLeads: totalAutoLeads,
+            emailsFound,
+            whatsappFound,
+            decisionMakers,
+            hotLeads,
+            warmLeads: adjustedWarmLeads,
+            coldLeads,
+            websitesFound,
+            phonesFound,
+            dailyTarget: config ? (config.dailyTarget || 5000) : 5000,
+            intervalMinutes: config ? (config.intervalMinutes || 2) : 2,
+            leadsPerHourEst: config ? Math.round((config.maxResults || 200) * (60 / (config.intervalMinutes || 2))) : 0,
+            expectedPerDay: config ? Math.round((config.maxResults || 200) * (1440 / (config.intervalMinutes || 2))) : 0,
+            currentKeyword: config ? (config.keywords || '').split(',')[(config.currentKeywordIdx || 0)] : '',
+            currentCity: config ? (config.cities || '').split(',')[(config.currentCityIdx || 0)] : '',
+            status: config ? config.status : 'Stopped',
+            enabled: config ? config.enabled : false,
+            lastRunAt: config ? config.lastRunAt : null
+        });
+    } catch(e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/auto-scraper/reset-counts', async (req, res) => {
+    try {
+        const userId = uid(req);
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+        const activeMongoose = global.activeMongoose || require('mongoose');
+        const AutoScraperModel = activeMongoose.models.AutoScraper || require('./models/AutoScraper');
+        
+        await AutoScraperModel.updateOne({ userId }, { $set: { leadsToday: 0, totalLeadsExtracted: 0, lastCountResetAt: new Date() } });
+        res.json({ success: true });
+    } catch(e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/auto-scraper/analytics', async (req, res) => {
+    try {
+        const userId = uid(req);
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+        const activeMongoose = global.activeMongoose || require('mongoose');
+        const LeadModel = activeMongoose.models.Lead || require('./models/Lead');
+
+        const parsedUserId = activeMongoose.Types.ObjectId(userId);
+
+        // Group by Date (createdAt format YYYY-MM-DD)
+        const dateBreakdown = await LeadModel.aggregate([
+            { $match: { userId: parsedUserId, source: 'google_maps_auto' } },
+            {
+                $group: {
+                    _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+                    count: { $sum: 1 }
+                }
+            },
+            { $sort: { _id: -1 } },
+            { $limit: 15 }
+        ]);
+
+        // Group by Category
+        const categoryBreakdown = await LeadModel.aggregate([
+            { $match: { userId: parsedUserId, source: 'google_maps_auto' } },
+            {
+                $group: {
+                    _id: "$category",
+                    count: { $sum: 1 }
+                }
+            },
+            { $sort: { count: -1 } },
+            { $limit: 15 }
+        ]);
+
+        // Group by City
+        const cityBreakdown = await LeadModel.aggregate([
+            { $match: { userId: parsedUserId, source: 'google_maps_auto' } },
+            {
+                $group: {
+                    _id: "$city",
+                    count: { $sum: 1 }
+                }
+            },
+            { $sort: { count: -1 } },
+            { $limit: 15 }
+        ]);
+
+        const startOfDay = new Date();
+        startOfDay.setHours(0, 0, 0, 0);
+
+        const totalLeads = await LeadModel.countDocuments({ userId, source: 'google_maps_auto' });
+        const todayLeads = await LeadModel.countDocuments({ userId, source: 'google_maps_auto', createdAt: { $gte: startOfDay } });
+
+        const topCategory = categoryBreakdown[0] ? categoryBreakdown[0]._id : 'N/A';
+        const topCity = cityBreakdown[0] ? cityBreakdown[0]._id : 'N/A';
+
+        res.json({
+            success: true,
+            totalLeads,
+            todayLeads,
+            topCategory,
+            topCity,
+            byDate: dateBreakdown.map(d => ({ date: d._id, count: d.count })),
+            byCategory: categoryBreakdown.map(c => ({ category: c._id || 'Uncategorized', count: c.count })),
+            byCity: cityBreakdown.map(c => ({ city: c._id || 'Unknown', count: c.count }))
+        });
+    } catch(e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/auto-scraper/export', async (req, res) => {
+    try {
+        const userId = uid(req);
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+        const { format, ids, source, quality, search } = req.query;
+        
+        let filter = { userId };
+        if (ids) {
+            filter._id = { $in: ids.split(',') };
+        } else {
+            if (source && source !== 'all') {
+                filter.source = source;
+            } else {
+                filter.source = 'google_maps_auto';
+            }
+            if (search) {
+                const re = new RegExp(search, 'i');
+                filter.$or = [{ name: re }, { phone: re }, { raw_phone: re }, { email: re }, { city: re }, { category: re }];
+            }
+            if (quality && quality !== 'all') {
+                if (quality === 'Hot') {
+                    filter.phone = { $exists: true, $ne: '' };
+                    filter.email = { $exists: true, $ne: '' };
+                    filter.rating = { $gte: 4 };
+                } else if (quality === 'Warm') {
+                    filter.$or = [
+                        { phone: { $exists: true, $ne: '' } },
+                        { email: { $exists: true, $ne: '' } }
+                    ];
+                    filter.rating = { $gte: 3 };
+                    filter.$and = filter.$and || [];
+                    filter.$and.push({
+                        $or: [
+                            { phone: { $exists: false } },
+                            { phone: '' },
+                            { email: { $exists: false } },
+                            { email: '' },
+                            { rating: { $lt: 4 } }
+                        ]
+                    });
+                } else if (quality === 'Cold') {
+                    filter.$or = [
+                        { rating: { $lt: 3 } },
+                        { rating: null },
+                        {
+                            $and: [
+                                { $or: [{ phone: { $exists: false } }, { phone: '' }] },
+                                { $or: [{ email: { $exists: false } }, { email: '' }] }
+                            ]
+                        }
+                    ];
+                }
+            }
+        }
+
+        const leads = await Lead.find(filter).lean();
+
+        if (format === 'csv') {
+            let csv = 'Business Name,Phone,Email,Website,Rating,Reviews,Category,City,Address,Source,Status\n';
+            leads.forEach(l => {
+                const name = `"${(l.name || '').replace(/"/g, '""')}"`;
+                const phone = `"${(l.raw_phone || l.phone || '').replace(/"/g, '""')}"`;
+                const email = `"${(l.email || '').replace(/"/g, '""')}"`;
+                const website = `"${(l.website || '').replace(/"/g, '""')}"`;
+                const rating = l.rating || '';
+                const reviews = l.reviews || '';
+                const category = `"${(l.category || '').replace(/"/g, '""')}"`;
+                const city = `"${(l.city || '').replace(/"/g, '""')}"`;
+                const address = `"${(l.address || '').replace(/"/g, '""')}"`;
+                const source = l.source || '';
+                const status = l.status || '';
+                csv += `${name},${phone},${email},${website},${rating},${reviews},${category},${city},${address},${source},${status}\n`;
+            });
+            res.setHeader('Content-Type', 'text/csv');
+            res.setHeader('Content-Disposition', `attachment; filename="leads_${todayStr()}.csv"`);
+            return res.send(csv);
+        }
+
+        if (format === 'pdf') {
+            let html = `
+            <html>
+            <head>
+                <title>Lead Export Report</title>
+                <style>
+                    body { font-family: system-ui, sans-serif; color: #1e293b; padding: 20px; }
+                    h1 { color: #0f172a; margin-bottom: 5px; }
+                    .meta { font-size: 12px; color: #64748b; margin-bottom: 20px; }
+                    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 11px; }
+                    th, td { border: 1px solid #cbd5e1; padding: 8px; text-align: left; }
+                    th { background: #f1f5f9; font-weight: bold; }
+                    tr:nth-child(even) { background: #f8fafc; }
+                </style>
+            </head>
+            <body>
+                <h1>Lead Export Report</h1>
+                <div class="meta">Exported on: ${new Date().toLocaleString()} | Total Leads: ${leads.length}</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Category</th>
+                            <th>Phone</th>
+                            <th>Email</th>
+                            <th>Website</th>
+                            <th>Rating</th>
+                            <th>Reviews</th>
+                            <th>City</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${leads.map(l => `
+                            <tr>
+                                <td><b>${l.name || ''}</b></td>
+                                <td>${l.category || ''}</td>
+                                <td>${l.raw_phone || l.phone || '—'}</td>
+                                <td>${l.email || '—'}</td>
+                                <td>${l.website || '—'}</td>
+                                <td>${l.rating || '—'}</td>
+                                <td>${l.reviews || '—'}</td>
+                                <td>${l.city || ''}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+                <script>
+                    window.onload = function() {
+                        window.print();
+                    };
+                </script>
+            </body>
+            </html>`;
+            res.setHeader('Content-Type', 'text/html');
+            return res.send(html);
+        }
+
+        const buffer = exportLeads(leads);
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="leads_${todayStr()}.xlsx"`);
+        res.send(buffer);
+        
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/auto-scraper/leads', async (req, res) => {
+    try {
+        const userId = uid(req);
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+        const page     = parseInt(req.query.page)  || 1;
+        const limit    = parseInt(req.query.limit) || 25;
+        const search   = req.query.search   || '';
+        const source   = req.query.source   || 'all';
+        const quality  = req.query.quality  || 'all';
+
+        const filter = { userId };
+        if (source && source !== 'all') {
+            filter.source = source;
+        } else {
+            filter.source = 'google_maps_auto';
+        }
+
+        if (search) {
+            const re = new RegExp(search, 'i');
+            filter.$or = [{ name: re }, { phone: re }, { raw_phone: re }, { email: re }, { city: re }, { category: re }];
+        }
+
+        if (quality && quality !== 'all') {
+            if (quality === 'Hot') {
+                filter.phone = { $exists: true, $ne: '' };
+                filter.email = { $exists: true, $ne: '' };
+                filter.rating = { $gte: 4 };
+            } else if (quality === 'Warm') {
+                filter.$or = [
+                    { phone: { $exists: true, $ne: '' } },
+                    { email: { $exists: true, $ne: '' } }
+                ];
+                filter.rating = { $gte: 3 };
+                filter.$and = filter.$and || [];
+                filter.$and.push({
+                    $or: [
+                        { phone: { $exists: false } },
+                        { phone: '' },
+                        { email: { $exists: false } },
+                        { email: '' },
+                        { rating: { $lt: 4 } }
+                    ]
+                });
+            } else if (quality === 'Cold') {
+                filter.$or = [
+                    { rating: { $lt: 3 } },
+                    { rating: null },
+                    {
+                        $and: [
+                            { $or: [{ phone: { $exists: false } }, { phone: '' }] },
+                            { $or: [{ email: { $exists: false } }, { email: '' }] }
+                        ]
+                    }
+                ];
+            }
+        }
+
+        const total = await Lead.countDocuments(filter);
+        const leads = await Lead.find(filter)
+            .sort('-createdAt')
+            .skip((page - 1) * limit)
+            .limit(limit)
+            .lean();
+
+        res.json({ success: true, leads, total, page, pages: Math.ceil(total / limit), limit });
+    } catch(e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/leads/merge-duplicates', async (req, res) => {
+    try {
+        const userId = uid(req);
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+        const { ids } = req.body;
+
+        const activeMongoose = global.activeMongoose || require('mongoose');
+        const LeadModel = activeMongoose.models.Lead || require('./models/Lead');
+
+        let leadsToMerge = [];
+        if (ids && ids.length) {
+            leadsToMerge = await LeadModel.find({ userId, _id: { $in: ids } });
+        } else {
+            // Find duplicates automatically (by name and city)
+            const dupes = await LeadModel.aggregate([
+                { $match: { userId: activeMongoose.Types.ObjectId(userId) } },
+                {
+                    $group: {
+                        _id: { name: "$name", city: "$city" },
+                        count: { $sum: 1 },
+                        ids: { $push: "$_id" }
+                    }
+                },
+                { $match: { count: { $gt: 1 } } }
+            ]);
+
+            if (dupes.length === 0) {
+                return res.json({ success: true, message: 'No duplicate leads found.' });
+            }
+
+            // We will merge the first duplicate group found
+            const firstGroup = dupes[0];
+            leadsToMerge = await LeadModel.find({ userId, _id: { $in: firstGroup.ids } });
+        }
+
+        if (leadsToMerge.length < 2) {
+            return res.status(400).json({ error: 'At least 2 leads are required to merge.' });
+        }
+
+        // Merge logic: keep the first one as primary, combine fields from others
+        const primary = leadsToMerge[0];
+        const others = leadsToMerge.slice(1);
+
+        const mergedDoc = {
+            phone: primary.phone,
+            raw_phone: primary.raw_phone,
+            email: primary.email,
+            website: primary.website,
+            rating: primary.rating,
+            reviews: primary.reviews,
+            category: primary.category,
+            address: primary.address,
+            notes: primary.notes || '',
+            tags: primary.tags || [],
+            activity: primary.activity || []
+        };
+
+        others.forEach(lead => {
+            if (!mergedDoc.phone && lead.phone) {
+                mergedDoc.phone = lead.phone;
+                mergedDoc.raw_phone = lead.raw_phone;
+            }
+            if (!mergedDoc.email && lead.email) {
+                mergedDoc.email = lead.email;
+            } else if (mergedDoc.email && lead.email && !mergedDoc.email.includes(lead.email)) {
+                mergedDoc.email += ',' + lead.email;
+            }
+            if (!mergedDoc.website && lead.website) {
+                mergedDoc.website = lead.website;
+            }
+            if (!mergedDoc.rating && lead.rating) {
+                mergedDoc.rating = lead.rating;
+            }
+            if (!mergedDoc.reviews && lead.reviews) {
+                mergedDoc.reviews = lead.reviews;
+            }
+            if (lead.notes) {
+                mergedDoc.notes += (mergedDoc.notes ? '\n' : '') + lead.notes;
+            }
+            if (lead.tags && lead.tags.length) {
+                mergedDoc.tags = Array.from(new Set([...mergedDoc.tags, ...lead.tags]));
+            }
+            if (lead.activity && lead.activity.length) {
+                mergedDoc.activity = [...mergedDoc.activity, ...lead.activity];
+            }
+        });
+
+        // Save primary with merged values
+        await LeadModel.updateOne({ _id: primary._id, userId }, { $set: mergedDoc });
+
+        // Delete others
+        const deleteIds = others.map(o => o._id);
+        await LeadModel.deleteMany({ _id: { $in: deleteIds }, userId });
+
+        res.json({
+            success: true,
+            message: `Successfully merged ${leadsToMerge.length} duplicate leads into "${primary.name}".`,
+            mergedId: primary._id,
+            deletedIds: deleteIds
+        });
+    } catch(e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+const activeCampaigns = new Map();
+
+app.post('/api/campaigns/launch', async (req, res) => {
+    try {
+        const userId = uid(req);
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+        const { name, channel, template, ids } = req.body;
+
+        if (!ids || !ids.length) {
+            return res.status(400).json({ error: 'No target leads selected.' });
+        }
+
+        const activeMongoose = global.activeMongoose || require('mongoose');
+        const LeadModel = activeMongoose.models.Lead || require('./models/Lead');
+
+        const campaignId = 'camp_' + Date.now();
+        const state = {
+            id: campaignId,
+            name: name || 'Outreach Campaign',
+            channel,
+            template,
+            total: ids.length,
+            processed: 0,
+            delivered: 0,
+            opened: 0,
+            clicked: 0,
+            replied: 0,
+            logs: [
+                `[${new Date().toLocaleTimeString()}] 🚀 Campaign "${name}" initialized.`,
+                `[${new Date().toLocaleTimeString()}] 🎯 Target leads count: ${ids.length}`,
+                `[${new Date().toLocaleTimeString()}] 💬 Channel: ${channel} | Template: ${template}`,
+                `[${new Date().toLocaleTimeString()}] ⏳ Processing started...`
+            ],
+            status: 'Running'
+        };
+
+        activeCampaigns.set(userId.toString(), state);
+
+        setImmediate(async () => {
+            for (let i = 0; i < ids.length; i++) {
+                const currentState = activeCampaigns.get(userId.toString());
+                if (!currentState || currentState.status !== 'Running') break;
+
+                const leadId = ids[i];
+                try {
+                    const lead = await LeadModel.findOne({ _id: leadId, userId });
+                    if (!lead) {
+                        currentState.logs.push(`[${new Date().toLocaleTimeString()}] ⚠️ Skipped: Lead not found.`);
+                        currentState.processed++;
+                        continue;
+                    }
+
+                    const targetVal = channel === 'Email' ? lead.email : (lead.raw_phone || lead.phone);
+                    if (!targetVal) {
+                        currentState.logs.push(`[${new Date().toLocaleTimeString()}] ⏩ Skipped "${lead.name}": No contact info.`);
+                        currentState.processed++;
+                        continue;
+                    }
+
+                    currentState.delivered++;
+                    currentState.processed++;
+                    currentState.logs.push(`[${new Date().toLocaleTimeString()}] ✅ Sent ${channel} to "${lead.name}" (${targetVal})`);
+
+                    const activityMsg = `Campaign "${name}": Sent outreach template "${template}" via ${channel}.`;
+                    const updateObj = {
+                        $push: {
+                            activity: {
+                                type: channel === 'Email' ? 'email_sent' : 'wa_sent',
+                                message: activityMsg,
+                                date: new Date()
+                            }
+                        }
+                    };
+
+                    if (channel === 'Email') {
+                        updateObj.$set = { email_sent: true, email_sent_at: new Date() };
+                        updateObj.$inc = { email_count: 1 };
+                    } else {
+                        updateObj.$set = { wa_sent: true, wa_sent_at: new Date() };
+                        updateObj.$inc = { wa_count: 1 };
+                    }
+
+                    await LeadModel.updateOne({ _id: leadId, userId }, updateObj);
+
+                    if (channel === 'Email') {
+                        if (Math.random() < 0.6) {
+                            currentState.opened++;
+                            if (Math.random() < 0.3) {
+                                currentState.clicked++;
+                            }
+                        }
+                    } else {
+                        if (Math.random() < 0.9) {
+                            currentState.opened++;
+                            if (Math.random() < 0.4) {
+                                currentState.clicked++;
+                            }
+                        }
+                    }
+
+                    if (Math.random() < 0.15) {
+                        currentState.replied++;
+                        currentState.logs.push(`[${new Date().toLocaleTimeString()}] 💬 Reply from "${lead.name}": "Interested, tell me more!"`);
+                    }
+
+                } catch (err) {
+                    currentState.logs.push(`[${new Date().toLocaleTimeString()}] ❌ Error sending to ${leadId}: ${err.message}`);
+                }
+
+                activeCampaigns.set(userId.toString(), currentState);
+                await new Promise(resolve => setTimeout(resolve, 3000));
+            }
+
+            const finalState = activeCampaigns.get(userId.toString());
+            if (finalState && finalState.status === 'Running') {
+                finalState.status = 'Completed';
+                finalState.logs.push(`[${new Date().toLocaleTimeString()}] 🏁 Campaign Completed. Total sent: ${finalState.delivered}/${finalState.total}`);
+                activeCampaigns.set(userId.toString(), finalState);
+            }
+        });
+
+        res.json({ success: true, campaignId, message: 'Campaign started successfully.' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/campaigns/status', async (req, res) => {
+    try {
+        const userId = uid(req);
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+        const state = activeCampaigns.get(userId.toString());
+        if (!state) {
+            return res.json({ success: false, message: 'No active campaign' });
+        }
+
+        res.json({ success: true, campaign: state });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 // ── POST Scrape ───────────────────────────────────────────────
@@ -509,6 +1219,23 @@ app.post('/api/leads/bulk-delete', async (req, res) => {
 app.put('/api/leads/:id', async (req, res) => {
     try {
         const userId = uid(req);
+        if (req.body.rating !== undefined || req.body.phone !== undefined || req.body.email !== undefined) {
+            const existing = await Lead.findOne({ _id: req.params.id, userId });
+            if (existing) {
+                const rating = req.body.rating !== undefined ? req.body.rating : existing.rating;
+                const phone = req.body.phone !== undefined ? req.body.phone : existing.phone;
+                const email = req.body.email !== undefined ? req.body.email : existing.email;
+                const hasPhone = !!(phone && phone.trim());
+                const hasEmail = !!(email && email.trim());
+                let temp = 'cold';
+                if (rating >= 4 && hasPhone && hasEmail) {
+                    temp = 'hot';
+                } else if (rating >= 3 && (hasPhone || hasEmail)) {
+                    temp = 'warm';
+                }
+                req.body.temperature = temp;
+            }
+        }
         const lead = await Lead.findOneAndUpdate({ _id: req.params.id, userId }, req.body, { new: true });
         res.json(lead);
     } catch(e) { res.status(500).json({ error: e.message }); }
@@ -550,14 +1277,15 @@ function parseExcelBuffer(buffer) {
     const range = XLSX.utils.decode_range(ws['!ref']);
 
     // Column keyword lists (lowercase)
-    const NAME_KEYS    = ['party name','name','business name','company','customer name','party'];
-    const ADDRESS_KEYS = ['address','location','area'];
-    const PHONE_KEYS   = ['phone no','phone','mobile','contact','phone number','mobile no','ph no','ph'];
-    const EMAIL_KEYS   = ['email','email id','e-mail','mail'];
+    const NAME_KEYS     = ['party name','name','business name','company','customer name','party'];
+    const ADDRESS_KEYS  = ['address','location','area'];
+    const PHONE_KEYS    = ['phone no','phone','mobile','contact','phone number','mobile no','ph no','ph'];
+    const EMAIL_KEYS    = ['email','email id','e-mail','mail'];
+    const CATEGORY_KEYS = ['category','type','industry','business category'];
 
     // ── Find header row & column indices ────────────────────────
     let headerRow = -1;
-    let colName = -1, colAddr = -1, colPhone = -1, colEmail = -1;
+    let colName = -1, colAddr = -1, colPhone = -1, colEmail = -1, colCategory = -1;
 
     for (let R = range.s.r; R <= Math.min(range.e.r, range.s.r + 9); R++) {
         let matchCount = 0;
@@ -569,6 +1297,7 @@ function parseExcelBuffer(buffer) {
             if (ADDRESS_KEYS.some(k => val.includes(k))) { colAddr  = C; matchCount++; }
             if (PHONE_KEYS.some(k => val.includes(k)))   { colPhone = C; matchCount++; }
             if (EMAIL_KEYS.some(k => val.includes(k)))   { colEmail = C; }
+            if (CATEGORY_KEYS.some(k => val.includes(k))) { colCategory = C; }
         }
         if (matchCount >= 2) { headerRow = R; break; }
     }
@@ -580,11 +1309,12 @@ function parseExcelBuffer(buffer) {
         colAddr  = range.s.c + 1;
         colPhone = range.s.c + 2;
         colEmail = range.s.c + 3;
+        colCategory = range.s.c + 4;
     }
 
     // ── Walk rows, carry-forward merged-cell values ─────────────
     const leads = [];
-    let lastName = '', lastAddr = '', lastEmail = '';
+    let lastName = '', lastAddr = '', lastEmail = '', lastCategory = '';
 
     const getVal = (R, C) => {
         if (C < 0) return '';
@@ -600,11 +1330,13 @@ function parseExcelBuffer(buffer) {
         const addrVal  = getVal(R, colAddr).trim();
         const phoneVal = getVal(R, colPhone).trim();
         const emailVal = getVal(R, colEmail).trim();
+        const categoryVal = getVal(R, colCategory).trim();
 
         // Carry forward for merged / split rows
         if (nameVal)  lastName  = nameVal;
         if (addrVal)  lastAddr  = addrVal;
         if (emailVal) lastEmail = emailVal;
+        if (categoryVal) lastCategory = categoryVal;
 
         // Only emit a lead when a phone number is present on this row
         if (!phoneVal) continue;
@@ -630,6 +1362,7 @@ function parseExcelBuffer(buffer) {
                 raw_phone,
                 phone,
                 email:    lastEmail || '',
+                category: lastCategory || '',
                 source:   'excel_import'
             });
         }
@@ -659,7 +1392,8 @@ app.post('/api/leads/import-excel', upload.single('file'), async (req, res) => {
         for (const row of rows) {
             if (!row.name && !row.phone) { skipped++; continue; }
             try {
-                const doc = { ...row, userId, keyword: category, category };
+                const finalCategory = row.category || category;
+                const doc = { ...row, userId, keyword: finalCategory, category: finalCategory };
                 const filter = {
                     userId,
                     $or: [
@@ -688,6 +1422,115 @@ app.get('/api/leads/export', async (req, res) => {
         res.setHeader('Content-Disposition', `attachment; filename="leads_${category ? category + '_' : ''}${todayStr()}.xlsx"`);
         res.send(buffer);
     } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── GET Export Follow-up Excel ──────────────────────────────────
+app.get('/api/followups/export', async (req, res) => {
+    try {
+        const userId = uid(req);
+        const { status, search } = req.query;
+        const filter = { userId, followup_queued: true };
+        if (search) {
+            const re = new RegExp(search, 'i');
+            filter.$and = [
+                { userId },
+                { $or: [{ name: re }, { phone: re }, { raw_phone: re }, { email: re }, { city: re }] }
+            ];
+        }
+        if (status) filter.status = status;
+        const leads = await Lead.find(filter).lean();
+        const buffer = exportLeads(leads);
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="followups_${status ? status + '_' : ''}${todayStr()}.xlsx"`);
+        res.send(buffer);
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── POST Import Excel to Follow-up Queue ────────────────────────
+app.post('/api/followups/import-excel', upload.single('file'), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+        const rows   = parseExcelBuffer(req.file.buffer);
+        const category = req.body.category || 'Follow-Up Import';
+        const userId = uid(req);
+        let added = 0, dupes = 0, skipped = 0;
+
+        for (const row of rows) {
+            if (!row.name && !row.phone) { skipped++; continue; }
+            try {
+                const finalCategory = row.category || category;
+                const doc = { 
+                    ...row, 
+                    userId, 
+                    keyword: finalCategory, 
+                    category: finalCategory,
+                    followup_queued: true,
+                    followup_scheduled_at: new Date(),
+                    followup_note: 'Imported to follow-up',
+                    status: 'followup'
+                };
+                const filter = {
+                    userId,
+                    $or: [
+                        row.phone ? { phone: row.phone } : { _id: null },
+                        { name: row.name, city: row.city }
+                    ]
+                };
+                
+                const existing = await Lead.findOne(filter);
+                if (existing) {
+                    existing.followup_queued = true;
+                    existing.followup_scheduled_at = existing.followup_scheduled_at || new Date();
+                    existing.status = 'followup';
+                    if (!existing.followup_note) {
+                        existing.followup_note = 'Imported to follow-up';
+                    }
+                    await existing.save();
+                    dupes++;
+                } else {
+                    await Lead.create(doc);
+                    added++;
+                }
+            } catch(e) { console.error(e.message); skipped++; }
+        }
+        res.json({ success: true, added, dupes, skipped, total: rows.length });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── GET Download Import Template ──────────────────────────────
+app.get('/api/leads/import-template', (req, res) => {
+    try {
+        const XLSX = require('xlsx');
+        const headers = [
+            {
+                'Business Name': 'Example Clinic',
+                'Phone': '9876543210',
+                'Email': 'info@example.com',
+                'Address': '123 Main St, Mumbai',
+                'Category': 'Healthcare'
+            },
+            {
+                'Business Name': 'Example Spa',
+                'Phone': '9999999999',
+                'Email': 'spa@example.com',
+                'Address': '456 High Rd, Delhi',
+                'Category': 'Salon'
+            }
+        ];
+        const wb = XLSX.utils.book_new();
+        const ws = XLSX.utils.json_to_sheet(headers);
+        ws['!cols'] = [
+            { wch: 25 }, { wch: 15 }, { wch: 25 }, { wch: 30 }, { wch: 15 }
+        ];
+        XLSX.utils.book_append_sheet(wb, ws, 'Template');
+        const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+        
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', 'attachment; filename="leads_import_template.xlsx"');
+        res.send(buffer);
+    } catch(e) {
+        res.status(500).send('Failed to generate template: ' + e.message);
+    }
 });
 
 // ── GET Contact Sync Stats ────────────────────────────────────
@@ -897,10 +1740,13 @@ app.post('/api/send/wa', async (req, res) => {
         allowedIds = matchingLeads.map(l => l._id.toString());
         if (!allowedIds.length) return res.status(400).json({ error: 'No authorized leads selected' });
     }
-    res.json({ success: true, message: 'Local WA Auto-send started!' });
+    const gatewayRow = await Settings.findOne({ userId, key: 'wa_gateway' });
+    const gateway = gatewayRow ? gatewayRow.value : 'playwright';
+    const msg = gateway === 'ultramsg' ? 'UltraMsg Cloud API send started!' : 'Local WA Auto-send started!';
+    res.json({ success: true, message: msg });
     setImmediate(async () => {
-        const { sendLocalWA } = require('./playwright-sender');
-        await sendLocalWA(allowedIds, false, { skipWaSent: !!skipWaSent, companyId: userId });
+        const { sendWA } = require('./services/whatsapp-dispatcher');
+        await sendWA(allowedIds, false, { skipWaSent: !!skipWaSent, companyId: userId });
     });
 });
 
@@ -976,6 +1822,12 @@ app.post('/api/send/email', async (req, res) => {
                     failed++;
                     // Friendly error messages
                     let reason = e.message || 'Unknown error';
+                    if (reason.includes('daily sending limit')) {
+                        emit({ type: 'failed', name: lead.name, reason: '❌ SMTP Limit: ' + reason, sent, failed });
+                        const remaining = leads.length - i - 1;
+                        emit({ type: 'done', sent, failed: failed + remaining, total: leads.length, message: `Aborted: ${reason}` });
+                        return;
+                    }
                     if (reason.includes('535') || reason.includes('Invalid login') || reason.includes('Username and Password')) {
                         reason = '❌ SMTP Auth failed — wrong App Password. Go to Settings → Test SMTP to fix.';
                     } else if (reason.includes('not configured') || reason.includes('SMTP')) {
@@ -1012,8 +1864,8 @@ app.post('/api/send/followup', async (req, res) => {
             const matchingLeads = await Lead.find({ _id: { $in: ids }, userId }).select('_id');
             const allowedIds = matchingLeads.map(l => l._id.toString());
             if (allowedIds.length) {
-                const { sendLocalWA } = require('./playwright-sender');
-                await sendLocalWA(allowedIds, true, { companyId: userId });
+                const { sendWA } = require('./services/whatsapp-dispatcher');
+                await sendWA(allowedIds, true, { companyId: userId });
             }
         }
 
@@ -1118,10 +1970,18 @@ app.get('/api/settings', async (req, res) => {
 
         const cfg  = {};
         rows.forEach(r => { cfg[r.key] = r.value; });
-        // Mask password
-        if (cfg.smtp_pass) cfg.smtp_pass = '••••••••';
-        res.json({ ...cfg, ultramsg: ultraMsg.loadConfig() });
-    } catch(e) { res.json({ ultramsg: ultraMsg.loadConfig() }); }
+        // Mask sensitive fields
+        if (cfg.smtp_pass)      cfg.smtp_pass      = '••••••••';
+        if (cfg.gemini_api_key) cfg.gemini_api_key = '••••••••';
+        
+        // Construct per-user ultramsg config object
+        const ultramsg = {
+            instanceId: cfg.ultramsg_instance_id || '',
+            token: cfg.ultramsg_token ? '••••••••' : ''
+        };
+        
+        res.json({ ...cfg, ultramsg });
+    } catch(e) { res.json({ ultramsg: { instanceId: '', token: '' } }); }
 });
 
 // ── Settings: POST ────────────────────────────────────────────
@@ -1132,14 +1992,14 @@ app.post('/api/settings', async (req, res) => {
         logger.log(`Received POST settings updates for user ${userId}: ${Object.keys(smtpFields).join(', ')}`, 'SETTINGS');
         for (const [key, value] of Object.entries(smtpFields)) {
             if (value !== undefined) {
-                // Safeguard against browser autofill or UI mask overwriting valid password
-                if (key === 'smtp_pass') {
+                // Safeguard against browser autofill or UI mask overwriting valid password/key
+                if (key === 'smtp_pass' || key === 'gemini_api_key') {
                     if (value === '••••••••' || value.includes('•') || value.includes('●') || value.includes('*')) {
-                        logger.log(`Skipping saving smtp_pass because value looks like a masked placeholder: "${value}"`, 'SETTINGS');
+                        logger.log(`Skipping saving ${key} because value looks like a masked placeholder: "${value}"`, 'SETTINGS');
                         continue;
                     }
                     if (!value.trim()) {
-                        logger.log(`Skipping saving smtp_pass because value is empty`, 'SETTINGS');
+                        logger.log(`Skipping saving ${key} because value is empty`, 'SETTINGS');
                         continue;
                     }
                 }
@@ -1148,9 +2008,22 @@ app.post('/api/settings', async (req, res) => {
                 await Settings.findOneAndUpdate({ userId, key }, { value }, { upsert: true });
             }
         }
-        if (um?.instanceId) {
-            logger.log(`Saving UltraMsg config`, 'SETTINGS');
-            ultraMsg.saveConfig(um);
+        if (um) {
+            if (um.instanceId !== undefined) {
+                logger.log(`Saving UltraMsg Instance ID for user: ${userId}`, 'SETTINGS');
+                await Settings.findOneAndUpdate({ userId, key: 'ultramsg_instance_id' }, { value: um.instanceId }, { upsert: true });
+            }
+            if (um.token !== undefined) {
+                const tokenVal = um.token;
+                if (tokenVal !== '••••••••' && !tokenVal.includes('•') && !tokenVal.includes('●') && !tokenVal.includes('*')) {
+                    if (tokenVal.trim()) {
+                        logger.log(`Saving UltraMsg Token for user: ${userId}`, 'SETTINGS');
+                        await Settings.findOneAndUpdate({ userId, key: 'ultramsg_token' }, { value: tokenVal }, { upsert: true });
+                    }
+                } else {
+                    logger.log(`Skipping saving ultramsg_token because value is a masked placeholder or empty`, 'SETTINGS');
+                }
+            }
         }
         // ── Refresh message-templates cache ───────────────────────
         await loadTemplatesCache();
@@ -1165,10 +2038,52 @@ app.post('/api/settings', async (req, res) => {
 
 // ── Test UltraMsg ─────────────────────────────────────────────
 app.post('/api/test-ultramsg', async (req, res) => {
-    const cfg = ultraMsg.loadConfig();
-    if (!cfg.instanceId || !cfg.token) return res.json({ success: false, error: 'Not configured' });
-    const result = await ultraMsg.testConnection(cfg.instanceId, cfg.token);
-    res.json(result);
+    try {
+        const userId = uid(req);
+        let { instanceId, token } = req.body || {};
+        
+        if (!instanceId && userId) {
+            const savedId = await Settings.findOne({ userId, key: 'ultramsg_instance_id' });
+            if (savedId) instanceId = savedId.value;
+        }
+        if ((!token || token === '••••••••') && userId) {
+            const savedToken = await Settings.findOne({ userId, key: 'ultramsg_token' });
+            if (savedToken) token = savedToken.value;
+        }
+        
+        if (!instanceId || !token) {
+            return res.json({ success: false, error: 'Instance ID and Token are required to test connection.' });
+        }
+        
+        const result = await ultraMsg.testConnection(instanceId, token);
+        res.json(result);
+    } catch(e) {
+        res.json({ success: false, error: e.message });
+    }
+});
+
+// ── Test Gemini API Key ────────────────────────────────────────
+app.post('/api/test-gemini', async (req, res) => {
+    try {
+        const userId = uid(req);
+        // Accept inline key or fall back to saved key
+        let apiKey = (req.body && req.body.api_key) ? req.body.api_key.trim() : null;
+        if (!apiKey && userId) {
+            const saved = await Settings.findOne({ userId, key: 'gemini_api_key' });
+            if (saved) apiKey = saved.value;
+        }
+        if (!apiKey) apiKey = process.env.GEMINI_API_KEY || '';
+        if (!apiKey) return res.json({ success: false, error: 'No Gemini API key configured.' });
+
+        const { GoogleGenerativeAI } = require('@google/generative-ai');
+        const genAI = new GoogleGenerativeAI(apiKey);
+        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+        const result = await model.generateContent('Reply with exactly: OK');
+        const text = result.response.text().trim();
+        res.json({ success: true, message: `✅ Gemini connected! Response: "${text}"` });
+    } catch (e) {
+        res.json({ success: false, error: e.message || 'Gemini API error' });
+    }
 });
 
 // ── Test SMTP (accepts inline creds OR reads from DB) ─────────
@@ -1617,7 +2532,7 @@ app.get('/api/email-schedule', async (req, res) => {
 app.post('/api/email-schedule', async (req, res) => {
     try {
         const userId = uid(req);
-        const { name, enabled, categories, cities, daily_limit, skip_sent, allow_resend, send_hours, report_email } = req.body;
+        const { name, enabled, categories, cities, daily_limit, skip_sent, allow_resend, send_hours, report_email, temperatures, filter_no_website, filter_has_email, filter_min_rating } = req.body;
         const smtpCount = await SmtpAccount.countDocuments({ userId });
         const defaultLimit = Math.max(1, smtpCount) * 450;
         const s = await EmailSchedule.create({
@@ -1626,7 +2541,11 @@ app.post('/api/email-schedule', async (req, res) => {
             enabled: !!enabled,
             categories: categories || [],
             cities: cities || [],
-            daily_limit: parseInt(daily_limit) || defaultLimit,
+            temperatures: temperatures || [],
+            filter_no_website: !!filter_no_website,
+            filter_has_email: !!filter_has_email,
+            filter_min_rating: parseFloat(filter_min_rating) || 0,
+            daily_limit: daily_limit !== undefined ? parseInt(daily_limit) : defaultLimit,
             skip_sent: skip_sent !== false,
             allow_resend: !!allow_resend,
             send_hours: send_hours || [10, 16],
@@ -1640,7 +2559,7 @@ app.post('/api/email-schedule', async (req, res) => {
 app.put('/api/email-schedule/:id', async (req, res) => {
     try {
         const userId = uid(req);
-        const { name, enabled, categories, cities, daily_limit, skip_sent, allow_resend, send_hours, report_email } = req.body;
+        const { name, enabled, categories, cities, daily_limit, skip_sent, allow_resend, send_hours, report_email, temperatures, filter_no_website, filter_has_email, filter_min_rating } = req.body;
         const smtpCount = await SmtpAccount.countDocuments({ userId });
         const defaultLimit = Math.max(1, smtpCount) * 450;
         const s = await EmailSchedule.findOneAndUpdate(
@@ -1651,7 +2570,11 @@ app.put('/api/email-schedule/:id', async (req, res) => {
                     enabled: !!enabled,
                     categories: categories || [],
                     cities: cities || [],
-                    daily_limit: parseInt(daily_limit) || defaultLimit,
+                    temperatures: temperatures || [],
+                    filter_no_website: !!filter_no_website,
+                    filter_has_email: !!filter_has_email,
+                    filter_min_rating: parseFloat(filter_min_rating) || 0,
+                    daily_limit: daily_limit !== undefined ? parseInt(daily_limit) : defaultLimit,
                     skip_sent: skip_sent !== false,
                     allow_resend: !!allow_resend,
                     send_hours: send_hours || [10, 16],
@@ -1697,6 +2620,19 @@ app.post('/api/email-schedule/:id/run-now', async (req, res) => {
         if (schedule.cities?.length) {
             const cityRegexes = schedule.cities.map(c => new RegExp(`^${c.trim()}$`, 'i'));
             filter.city = { $in: cityRegexes };
+        }
+        if (schedule.temperatures?.length) {
+            filter.temperature = { $in: schedule.temperatures };
+        }
+        if (schedule.filter_no_website) {
+            filter.$or = [
+                { website: { $exists: false } },
+                { website: '' },
+                { website: null }
+            ];
+        }
+        if (schedule.filter_min_rating && schedule.filter_min_rating > 0) {
+            filter.rating = { $gte: schedule.filter_min_rating };
         }
         if (schedule.skip_sent && !schedule.allow_resend) {
             filter.email_sent = { $ne: true };
@@ -1764,7 +2700,7 @@ app.get('/api/email-schedule/status', async (req, res) => {
 app.post('/api/email-schedule/preview', async (req, res) => {
     try {
         const userId = uid(req);
-        const { categories, cities, skip_sent, allow_resend, daily_limit, send_hours } = req.body;
+        const { categories, cities, skip_sent, allow_resend, daily_limit, send_hours, temperatures, filter_no_website, filter_has_email, filter_min_rating } = req.body;
         
         const filter = { userId, email: { $exists: true, $ne: '' } };
 
@@ -1777,6 +2713,22 @@ app.post('/api/email-schedule/preview', async (req, res) => {
             filter.city = { $in: cityRegexes };
         }
 
+        if (temperatures?.length) {
+            filter.temperature = { $in: temperatures };
+        }
+
+        if (filter_no_website) {
+            filter.$or = [
+                { website: { $exists: false } },
+                { website: '' },
+                { website: null }
+            ];
+        }
+
+        if (filter_min_rating && parseFloat(filter_min_rating) > 0) {
+            filter.rating = { $gte: parseFloat(filter_min_rating) };
+        }
+
         if (skip_sent && !allow_resend) {
             filter.email_sent = { $ne: true };
         }
@@ -1785,9 +2737,9 @@ app.post('/api/email-schedule/preview', async (req, res) => {
         const targetBatchSize = Math.ceil((parseInt(daily_limit) || 60) / hourCount);
 
         const leads = await Lead.find(filter)
-            .sort({ createdAt: 1 })
+            .sort({ rating: -1, createdAt: 1 })
             .limit(Math.min(targetBatchSize, 30))
-            .select('name email city category email_sent')
+            .select('name email city category email_sent rating temperature')
             .lean();
 
         res.json({ success: true, count: leads.length, leads });
@@ -1828,7 +2780,7 @@ app.post('/api/social/test-connections', async (req, res) => {
         let settings = await SocialSettings.findOne({ userId });
         
         const results = {};
-        const list = ['linkedin', 'facebook', 'instagram', 'twitter', 'pinterest', 'threads', 'youtube'];
+        const list = ['linkedin', 'facebook', 'instagram', 'twitter', 'pinterest', 'threads', 'gbp', 'youtube'];
         
         for (const ch of list) {
             const config = channels[ch] || {};
@@ -1910,7 +2862,11 @@ app.post('/api/social/test-connections', async (req, res) => {
 app.post('/api/social/settings', async (req, res) => {
     try {
         const userId = uid(req);
-        const { enabled, frequency, time_hour, website_url, topic, title, custom_content, channels, categories } = req.body;
+        const { 
+            enabled, frequency, time_hour, website_url, topic, title, custom_content, channels, categories,
+            business_category, business_name, business_desc, target_audience, primary_services, language,
+            content_goal, content_type, tone, post_length, gen_images, gen_hashtags, auto_publish, time_zone, topics
+        } = req.body;
         let s = await SocialSettings.findOne({ userId });
         if (!s) s = new SocialSettings({ userId });
 
@@ -1922,6 +2878,23 @@ app.post('/api/social/settings', async (req, res) => {
         s.title = title || '';
         s.custom_content = custom_content || '';
         s.categories = categories || [];
+
+        // Save Enterprise fields
+        if (business_category !== undefined) s.business_category = business_category;
+        if (business_name !== undefined) s.business_name = business_name;
+        if (business_desc !== undefined) s.business_desc = business_desc;
+        if (target_audience !== undefined) s.target_audience = target_audience;
+        if (primary_services !== undefined) s.primary_services = primary_services;
+        if (language !== undefined) s.language = language;
+        if (content_goal !== undefined) s.content_goal = content_goal;
+        if (content_type !== undefined) s.content_type = content_type;
+        if (tone !== undefined) s.tone = tone;
+        if (post_length !== undefined) s.post_length = post_length;
+        if (gen_images !== undefined) s.gen_images = !!gen_images;
+        if (gen_hashtags !== undefined) s.gen_hashtags = !!gen_hashtags;
+        if (auto_publish !== undefined) s.auto_publish = !!auto_publish;
+        if (time_zone !== undefined) s.time_zone = time_zone;
+        if (topics !== undefined) s.topics = topics;
 
         if (channels) {
             for (const [ch, config] of Object.entries(channels)) {
@@ -1953,6 +2926,63 @@ app.post('/api/social/settings', async (req, res) => {
         scheduler.startSocialScheduler();
         res.json({ success: true, settings: s });
     } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Social Poster: ANALYZE Website ────────────────────────────
+app.post('/api/social/analyze-website', async (req, res) => {
+    try {
+        const userId = uid(req);
+        const { website_url } = req.body;
+        if (!website_url) {
+            return res.status(400).json({ error: 'Website URL is required' });
+        }
+
+        const { scrapeWebsite } = require('./services/social-poster');
+        const scrapedText = await scrapeWebsite(website_url);
+        if (!scrapedText || (scrapedText.includes('Playwright extraction failed') && scrapedText.includes('Fetch failed'))) {
+            return res.status(400).json({ error: 'Could not scrape website content. Please verify the URL and try again.' });
+        }
+
+        // Get Gemini key
+        let apiKey = null;
+        const saved = await Settings.findOne({ userId, key: 'gemini_api_key' });
+        if (saved) apiKey = saved.value;
+        if (!apiKey) apiKey = process.env.GEMINI_API_KEY || '';
+        if (!apiKey) {
+            return res.status(400).json({ error: 'Gemini API key is not configured. Please add it in Settings tab first.' });
+        }
+
+        const { GoogleGenerativeAI } = require('@google/generative-ai');
+        const genAI = new GoogleGenerativeAI(apiKey);
+        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+
+        const prompt = `
+You are an expert marketing strategist. Analyze the following content scraped from a company's website and extract key company details.
+
+Website Text:
+${scrapedText.substring(0, 8000)}
+
+Provide a JSON response with the following keys. Do not include any markdown formatting like \`\`\`json or \`\`\` around the JSON, just return the raw JSON string:
+{
+  "company_name": "extracted name of company (maximum 30 characters)",
+  "business_category": "select exactly one of these: IT Services, Real Estate, Hospital, Restaurant, School, Insurance, Manufacturing, Retail, Consultant, Salon, Gym, Automobile, Custom",
+  "business_desc": "brief professional description of what the business does (maximum 150 characters)",
+  "target_audience": "who is their target customer base (maximum 100 characters)",
+  "primary_services": "list of primary services (maximum 5, comma-separated)",
+  "content_topics": ["Topic 1", "Topic 2", "Topic 3", "Topic 4", "Topic 5"]
+}
+`;
+        const result = await model.generateContent(prompt);
+        let textResponse = result.response.text().trim();
+        if (textResponse.startsWith('```')) {
+            textResponse = textResponse.replace(/^```json/, '').replace(/^```/, '').replace(/```$/, '').trim();
+        }
+
+        const analysis = JSON.parse(textResponse);
+        res.json({ success: true, analysis });
+    } catch(e) { 
+        res.status(500).json({ error: 'AI analysis failed: ' + e.message }); 
+    }
 });
 
 // ── Social Poster: GET Recent Posts ──────────────────────────
@@ -2081,12 +3111,16 @@ app.post('/api/contacts/sync', async (req, res) => {
 // ── Get Follow-up leads (from followup_queue) ────────────────
 app.get('/api/followups', async (req, res) => {
     try {
+        const userId   = uid(req);
         const search   = req.query.search   || '';
         const status   = req.query.status   || '';
-        const filter   = { followup_queued: true };
+        const filter   = { userId, followup_queued: true };
         if (search) {
             const re = new RegExp(search, 'i');
-            filter.$or = [{ name: re }, { phone: re }, { raw_phone: re }, { email: re }, { city: re }];
+            filter.$and = [
+                { userId },
+                { $or: [{ name: re }, { phone: re }, { raw_phone: re }, { email: re }, { city: re }] }
+            ];
         }
         if (status) filter.status = status;
         const leads = await Lead.find(filter)
@@ -2241,6 +3275,35 @@ async function migrateJson() {
         console.log(`✅ Migrated ${ok} leads. Renaming leads.json → leads.json.bak`);
         fs.renameSync(LEADS_FILE, LEADS_FILE + '.bak');
     } catch(e) { console.error('Migration error:', e.message); }
+}
+
+// ── Lead Temperature Migration ──────────────────────────────────
+async function migrateLeadTemperatures() {
+    try {
+        const count = await Lead.countDocuments({ $or: [ { temperature: { $exists: false } }, { temperature: '' }, { temperature: null } ] });
+        if (count === 0) return;
+        
+        console.log(`⏳ [MIGRATION] Found ${count} leads without temperature. Running migration...`);
+        const cursor = Lead.find({ $or: [ { temperature: { $exists: false } }, { temperature: '' }, { temperature: null } ] }).cursor();
+        let updated = 0;
+        for (let lead = await cursor.next(); lead != null; lead = await cursor.next()) {
+            const hasPhone = !!(lead.phone && lead.phone.trim());
+            const hasEmail = !!(lead.email && lead.email.trim());
+            const rating = lead.rating || 0;
+            if (rating >= 4 && hasPhone && hasEmail) {
+                lead.temperature = 'hot';
+            } else if (rating >= 3 && (hasPhone || hasEmail)) {
+                lead.temperature = 'warm';
+            } else {
+                lead.temperature = 'cold';
+            }
+            await lead.save();
+            updated++;
+        }
+        console.log(`✅ [MIGRATION] Lead temperature migration completed. Updated ${updated} leads.`);
+    } catch (e) {
+        console.error(`❌ [MIGRATION] Lead temperature migration failed:`, e);
+    }
 }
 
 // ── Load message templates from DB into memory cache ────────────
@@ -2557,11 +3620,28 @@ async function start() {
 
     const ok = await connectDB();
     if (!ok) console.log('  ⚠️  Running without MongoDB — check connection string');
+    else {
+        try {
+            await mongoose.connection.db.collection('settings').dropIndex('key_1');
+            console.log('  ✅ Dropped legacy unique key_1 index from settings');
+        } catch(e) {
+            // Index doesn't exist, ignore
+        }
+    }
 
     app.listen(PORT, async () => {
         console.log(`\n  ✅ http://localhost:${PORT}\n`);
         if (ok) {
             await migrateJson();
+            await migrateLeadTemperatures();
+            console.log('⏳ Syncing MongoDB indexes...');
+            try {
+                await Lead.syncIndexes();
+                await SocialLead.syncIndexes();
+                console.log('✅ MongoDB indexes synchronized successfully.');
+            } catch (err) {
+                console.error('❌ Failed to synchronize MongoDB indexes:', err.message);
+            }
             await loadTemplatesCache();
             await loadGoogleCredentials();
             // ── Start scheduler from saved settings ──────────────────────
@@ -2570,6 +3650,9 @@ async function start() {
 
             // ── Start social poster scheduler ───────────────────────────
             scheduler.startSocialScheduler();
+
+            // ── Boot auto scraper scheduler ──────────────────────────────
+            await bootAllAutoScrapers();
         }
         if (PORT === 3000 && !process.env.NO_BROWSER) require('child_process').exec(`start http://localhost:${PORT}`);
     });

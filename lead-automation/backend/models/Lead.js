@@ -44,12 +44,22 @@ const leadSchema = new mongoose.Schema({
   wa_sent_at:   { type: Date },
   wa_count:     { type: Number, default: 0 },
   wa_last_date: { type: String }, // YYYY-MM-DD
+  wa_invalid:   { type: Boolean, default: false },
 
   // ── Email tracking ────────────────────────────────────────
   email_sent:      { type: Boolean, default: false },
   email_sent_at:   { type: Date },
   email_count:     { type: Number, default: 0 },
   email_last_date: { type: String },
+
+  // ── Lead Temperature (CRM Qualification) ─────────────────
+  // Industry standard: separate from business category
+  // hot = ready to buy, warm = interested, cold = not engaged yet
+  temperature: {
+    type: String,
+    default: '',
+    enum: ['hot', 'warm', 'cold', '']
+  },
 
   // ── Follow-up ─────────────────────────────────────────────
   next_followup:         { type: Date },

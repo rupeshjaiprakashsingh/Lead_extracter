@@ -1,0 +1,19 @@
+◇ injected env (3) from .env // tip: ⌘ enable debugging { debug: true }
+◇ injected env (0) from .env // tip: ⌘ override existing { override: true }
+
+====================================================
+  🤖  LEAD AUTOMATION CRM
+====================================================
+✅ MongoDB connected → lead_automation
+
+  ✅ http://localhost:3000
+
+✅ Dropped unique userId index from schedules
+  📝 Message templates loaded into cache
+  📲 Google Contacts: ⚠️ Not authorized yet
+  ⏰ Scheduler ACTIVE: Minute-by-minute check for custom schedule times
+  ⏰ Email Scheduler ACTIVE: Minute-by-minute check for custom schedule times
+  ⏰ Social Auto-Poster Scheduler ACTIVE (Checks every 5 mins)
+🤖 Resuming background auto-scraper for user: 6a118ad7233c520ca1587307
+🤖 [AutoScraper:6a118ad7233c520ca1587307] ⬆️  Config upgraded (Cities count: 30) & exhausted combos cleared for fresh start.
+🤖 [AutoScraper:6a118ad7233c520ca1587307] 🎯 Daily target of 10000 leads REACHED! (Today: 10000). Auto-scraper pausing until midnight.

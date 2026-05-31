@@ -107,6 +107,33 @@ function emit(data) {
     sseClients.forEach(c => { try { c.write(msg); } catch(e) {} });
 }
 
+function isPotentialLandlineOrInvalid(phone) {
+    if (!phone) return { invalid: true, reason: 'Empty phone number' };
+    const cleaned = String(phone).replace(/\D/g, '');
+    if (cleaned.length < 10) {
+        return { invalid: true, reason: 'Too short (less than 10 digits)' };
+    }
+    // Indian numbers logic
+    if (cleaned.startsWith('91')) {
+        if (cleaned.length !== 12) {
+            return { invalid: true, reason: 'Indian number must be 12 digits (with 91 prefix)' };
+        }
+        const firstNationalDigit = cleaned.charAt(2);
+        if (!['6', '7', '8', '9'].includes(firstNationalDigit)) {
+            return { invalid: true, reason: 'Indian landline or invalid mobile prefix' };
+        }
+    } else {
+        // If 10 digits without prefix (assuming Indian national number)
+        if (cleaned.length === 10) {
+            const firstDigit = cleaned.charAt(0);
+            if (!['6', '7', '8', '9'].includes(firstDigit)) {
+                return { invalid: true, reason: 'Indian landline or invalid mobile prefix (10 digits)' };
+            }
+        }
+    }
+    return { invalid: false };
+}
+
 async function isWALoggedIn(page) {
     // #pane-side is the main chat list container on the left, present only when logged in
     return await page.locator('#pane-side, [aria-label="Search or start a new chat"], header').first().isVisible({ timeout: 6000 }).catch(() => false);
@@ -206,7 +233,27 @@ async function sendLocalWA(ids, isFollowup = false, options = {}) {
                 emit({ type: 'skipped', name: lead.name, reason: 'WA already sent (Skip ON)' });
                 continue;
             }
-            
+
+            // Skip if known invalid
+            if (lead.wa_invalid) {
+                emit({ type: 'skipped', name: lead.name, reason: 'Known invalid WhatsApp number' });
+                continue;
+            }
+
+            // Run pre-validation (landlines/formatting)
+            const preCheck = isPotentialLandlineOrInvalid(lead.phone);
+            if (preCheck.invalid) {
+                const LeadDB = getLeadModel();
+                await LeadDB.findByIdAndUpdate(lead._id, {
+                    $set: { wa_invalid: true },
+                    $push: { activity: { type: 'wa_invalid', message: `Pre-check failed: ${preCheck.reason}`, date: new Date() } }
+                }).catch(() => {});
+
+                emit({ type: 'failed', name: lead.name, reason: `Skipped: ${preCheck.reason}`, sent, failed });
+                failed++;
+                continue;
+            }
+
             let msg = '';
             let followupNum = (lead.followup_count || 0) + 1;
             
@@ -237,14 +284,64 @@ async function sendLocalWA(ids, isFollowup = false, options = {}) {
                 const waUrl = `https://web.whatsapp.com/send?phone=${lead.phone}&text=${encodeURIComponent(msg)}`;
                 await page.goto(waUrl, { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
 
-                // Wait for message input box
-                await page.waitForSelector('[data-testid="conversation-compose-box-input"], [aria-label="Type a message"], footer', { timeout: 15000 }).catch(() => {});
-                await sleep(2000);
+                // Wait for message input box or the invalid number popup in a race
+                let isInvalid = false;
+                try {
+                    await Promise.race([
+                        // Case A: Input box appears (valid number)
+                        page.waitForSelector('[data-testid="conversation-compose-box-input"], [aria-label="Type a message"], footer', { timeout: 15000 }),
+                        // Case B: Dialog or text indicates invalid number
+                        page.waitForFunction(() => {
+                            const modal = document.querySelector('div[role="dialog"], div[data-animate-modal-body="true"]');
+                            if (modal) {
+                                const text = modal.textContent || '';
+                                if (text.includes("isn't on WhatsApp") || text.includes("not on WhatsApp") || text.includes("invalid") || text.includes("Phone number shared via url is invalid")) {
+                                    return true;
+                                }
+                            }
+                            const bodyText = document.body.innerText || '';
+                            return bodyText.includes("isn't on WhatsApp") || bodyText.includes("is not on WhatsApp") || bodyText.includes("not registered on WhatsApp") || bodyText.includes("Phone number shared via url is invalid");
+                        }, { polling: 500, timeout: 15000 })
+                    ]);
 
-                // Check for invalid number
-                const invalid = await page.locator('div[data-animate-modal-body="true"]').isVisible({ timeout: 2000 }).catch(() => false);
-                if (invalid) {
-                    await page.keyboard.press('Escape').catch(() => {});
+                    isInvalid = await page.evaluate(() => {
+                        const modal = document.querySelector('div[role="dialog"], div[data-animate-modal-body="true"]');
+                        if (modal) {
+                            const text = modal.textContent || '';
+                            if (text.includes("isn't on WhatsApp") || text.includes("not on WhatsApp") || text.includes("invalid") || text.includes("Phone number shared via url is invalid")) {
+                                return true;
+                            }
+                        }
+                        const bodyText = document.body.innerText || '';
+                        return bodyText.includes("isn't on WhatsApp") || bodyText.includes("is not on WhatsApp") || bodyText.includes("not registered on WhatsApp") || bodyText.includes("Phone number shared via url is invalid");
+                    });
+                } catch (raceErr) {
+                    // Check if invalid dialog is visible anyway
+                    isInvalid = await page.evaluate(() => {
+                        const modal = document.querySelector('div[role="dialog"], div[data-animate-modal-body="true"]');
+                        if (modal) {
+                            const text = modal.textContent || '';
+                            return text.includes("isn't on WhatsApp") || text.includes("not on WhatsApp") || text.includes("invalid") || text.includes("Phone number shared via url is invalid");
+                        }
+                        return false;
+                    });
+                }
+
+                if (isInvalid) {
+                    const okBtn = page.locator('button:has-text("OK"), [role="button"]:has-text("OK"), button:has-text("Ok"), [role="button"]:has-text("Ok")').first();
+                    if (await okBtn.isVisible().catch(() => false)) {
+                        await okBtn.click().catch(() => {});
+                    } else {
+                        await page.keyboard.press('Escape').catch(() => {});
+                    }
+                    await sleep(1000);
+
+                    const LeadDB = getLeadModel();
+                    await LeadDB.findByIdAndUpdate(lead._id, {
+                        $set: { wa_invalid: true },
+                        $push: { activity: { type: 'wa_invalid', message: 'Number isn\'t registered on WhatsApp', date: new Date() } }
+                    }).catch(() => {});
+
                     emit({ type: 'failed', name: lead.name, reason: 'Invalid WhatsApp Number', sent, failed });
                     failed++;
                     continue;
@@ -404,6 +501,26 @@ async function sendLocalWA_Manual(ids, isFollowup = false, options = {}) {
                 continue;
             }
 
+            // Skip if known invalid
+            if (lead.wa_invalid) {
+                emit({ type: 'skipped', name: lead.name, reason: 'Known invalid WhatsApp number' });
+                continue;
+            }
+
+            // Run pre-validation (landlines/formatting)
+            const preCheck = isPotentialLandlineOrInvalid(lead.phone);
+            if (preCheck.invalid) {
+                const LeadDB = getLeadModel();
+                await LeadDB.findByIdAndUpdate(lead._id, {
+                    $set: { wa_invalid: true },
+                    $push: { activity: { type: 'wa_invalid', message: `Pre-check failed: ${preCheck.reason}`, date: new Date() } }
+                }).catch(() => {});
+
+                emit({ type: 'failed', name: lead.name, reason: `Skipped: ${preCheck.reason}`, sent, failed: ++failed });
+                finalFailed = failed;
+                continue;
+            }
+
             let msg = '';
             let followupNum = (lead.followup_count || 0) + 1;
             if (isFollowup) {
@@ -420,17 +537,61 @@ async function sendLocalWA_Manual(ids, isFollowup = false, options = {}) {
                 const waUrl = `https://web.whatsapp.com/send?phone=${lead.phone}&text=${encodeURIComponent(msg)}`;
                 await page.goto(waUrl, { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
 
-                // Wait for the input box to confirm chat opened
-                await page.waitForSelector(
-                    '[data-testid="conversation-compose-box-input"], [aria-label="Type a message"], footer',
-                    { timeout: 15000 }
-                ).catch(() => {});
-                await sleep(1500);
+                // Wait for the input box or the invalid popup in a race
+                let isInvalid = false;
+                try {
+                    await Promise.race([
+                        page.waitForSelector('[data-testid="conversation-compose-box-input"], [aria-label="Type a message"], footer', { timeout: 15000 }),
+                        page.waitForFunction(() => {
+                            const modal = document.querySelector('div[role="dialog"], div[data-animate-modal-body="true"]');
+                            if (modal) {
+                                const text = modal.textContent || '';
+                                if (text.includes("isn't on WhatsApp") || text.includes("not on WhatsApp") || text.includes("invalid") || text.includes("Phone number shared via url is invalid")) {
+                                    return true;
+                                }
+                            }
+                            const bodyText = document.body.innerText || '';
+                            return bodyText.includes("isn't on WhatsApp") || bodyText.includes("is not on WhatsApp") || bodyText.includes("not registered on WhatsApp") || bodyText.includes("Phone number shared via url is invalid");
+                        }, { polling: 500, timeout: 15000 })
+                    ]);
 
-                // Check invalid number popup
-                const invalid = await page.locator('div[data-animate-modal-body="true"]').isVisible({ timeout: 2000 }).catch(() => false);
-                if (invalid) {
-                    await page.keyboard.press('Escape').catch(() => {});
+                    isInvalid = await page.evaluate(() => {
+                        const modal = document.querySelector('div[role="dialog"], div[data-animate-modal-body="true"]');
+                        if (modal) {
+                            const text = modal.textContent || '';
+                            if (text.includes("isn't on WhatsApp") || text.includes("not on WhatsApp") || text.includes("invalid") || text.includes("Phone number shared via url is invalid")) {
+                                return true;
+                            }
+                        }
+                        const bodyText = document.body.innerText || '';
+                        return bodyText.includes("isn't on WhatsApp") || bodyText.includes("is not on WhatsApp") || bodyText.includes("not registered on WhatsApp") || bodyText.includes("Phone number shared via url is invalid");
+                    });
+                } catch (raceErr) {
+                    isInvalid = await page.evaluate(() => {
+                        const modal = document.querySelector('div[role="dialog"], div[data-animate-modal-body="true"]');
+                        if (modal) {
+                            const text = modal.textContent || '';
+                            return text.includes("isn't on WhatsApp") || text.includes("not on WhatsApp") || text.includes("invalid") || text.includes("Phone number shared via url is invalid");
+                        }
+                        return false;
+                    });
+                }
+
+                if (isInvalid) {
+                    const okBtn = page.locator('button:has-text("OK"), [role="button"]:has-text("OK"), button:has-text("Ok"), [role="button"]:has-text("Ok")').first();
+                    if (await okBtn.isVisible().catch(() => false)) {
+                        await okBtn.click().catch(() => {});
+                    } else {
+                        await page.keyboard.press('Escape').catch(() => {});
+                    }
+                    await sleep(1000);
+
+                    const LeadDB = getLeadModel();
+                    await LeadDB.findByIdAndUpdate(lead._id, {
+                        $set: { wa_invalid: true },
+                        $push: { activity: { type: 'wa_invalid', message: 'Number isn\'t registered on WhatsApp (manual mode)', date: new Date() } }
+                    }).catch(() => {});
+
                     emit({ type: 'failed', name: lead.name, reason: 'Invalid WhatsApp Number', sent, failed: ++failed });
                     finalFailed = failed;
                     continue;
@@ -580,6 +741,26 @@ async function sendLocalWA_Draft(ids, isFollowup = false, options = {}) {
                 continue;
             }
 
+            // Skip if known invalid
+            if (lead.wa_invalid) {
+                emit({ type: 'skipped', name: lead.name, reason: 'Known invalid WhatsApp number' });
+                continue;
+            }
+
+            // Run pre-validation (landlines/formatting)
+            const preCheck = isPotentialLandlineOrInvalid(lead.phone);
+            if (preCheck.invalid) {
+                const LeadDB = getLeadModel();
+                await LeadDB.findByIdAndUpdate(lead._id, {
+                    $set: { wa_invalid: true },
+                    $push: { activity: { type: 'wa_invalid', message: `Pre-check failed: ${preCheck.reason}`, date: new Date() } }
+                }).catch(() => {});
+
+                emit({ type: 'failed', name: lead.name, reason: `Skipped: ${preCheck.reason}`, sent: drafted, failed: ++failed });
+                finalFailed = failed;
+                continue;
+            }
+
             let msg = '';
             let followupNum = (lead.followup_count || 0) + 1;
             if (isFollowup) {
@@ -596,19 +777,61 @@ async function sendLocalWA_Draft(ids, isFollowup = false, options = {}) {
                 const waUrl = `https://web.whatsapp.com/send?phone=${lead.phone}&text=${encodeURIComponent(msg)}`;
                 await page.goto(waUrl, { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
 
-                // Wait for compose box to load (ensures message is filled before moving on)
-                await page.waitForSelector(
-                    '[data-testid="conversation-compose-box-input"], [aria-label="Type a message"], footer',
-                    { timeout: 12000 }
-                ).catch(() => {});
+                // Wait for the input box or the invalid popup in a race
+                let isInvalid = false;
+                try {
+                    await Promise.race([
+                        page.waitForSelector('[data-testid="conversation-compose-box-input"], [aria-label="Type a message"], footer', { timeout: 15000 }),
+                        page.waitForFunction(() => {
+                            const modal = document.querySelector('div[role="dialog"], div[data-animate-modal-body="true"]');
+                            if (modal) {
+                                const text = modal.textContent || '';
+                                if (text.includes("isn't on WhatsApp") || text.includes("not on WhatsApp") || text.includes("invalid") || text.includes("Phone number shared via url is invalid")) {
+                                    return true;
+                                }
+                            }
+                            const bodyText = document.body.innerText || '';
+                            return bodyText.includes("isn't on WhatsApp") || bodyText.includes("is not on WhatsApp") || bodyText.includes("not registered on WhatsApp") || bodyText.includes("Phone number shared via url is invalid");
+                        }, { polling: 500, timeout: 15000 })
+                    ]);
 
-                // Small pause so WhatsApp has time to register the draft
-                await sleep(1800);
+                    isInvalid = await page.evaluate(() => {
+                        const modal = document.querySelector('div[role="dialog"], div[data-animate-modal-body="true"]');
+                        if (modal) {
+                            const text = modal.textContent || '';
+                            if (text.includes("isn't on WhatsApp") || text.includes("not on WhatsApp") || text.includes("invalid") || text.includes("Phone number shared via url is invalid")) {
+                                return true;
+                            }
+                        }
+                        const bodyText = document.body.innerText || '';
+                        return bodyText.includes("isn't on WhatsApp") || bodyText.includes("is not on WhatsApp") || bodyText.includes("not registered on WhatsApp") || bodyText.includes("Phone number shared via url is invalid");
+                    });
+                } catch (raceErr) {
+                    isInvalid = await page.evaluate(() => {
+                        const modal = document.querySelector('div[role="dialog"], div[data-animate-modal-body="true"]');
+                        if (modal) {
+                            const text = modal.textContent || '';
+                            return text.includes("isn't on WhatsApp") || text.includes("not on WhatsApp") || text.includes("invalid") || text.includes("Phone number shared via url is invalid");
+                        }
+                        return false;
+                    });
+                }
 
-                // Check for invalid number popup
-                const invalid = await page.locator('div[data-animate-modal-body="true"]').isVisible({ timeout: 1500 }).catch(() => false);
-                if (invalid) {
-                    await page.keyboard.press('Escape').catch(() => {});
+                if (isInvalid) {
+                    const okBtn = page.locator('button:has-text("OK"), [role="button"]:has-text("OK"), button:has-text("Ok"), [role="button"]:has-text("Ok")').first();
+                    if (await okBtn.isVisible().catch(() => false)) {
+                        await okBtn.click().catch(() => {});
+                    } else {
+                        await page.keyboard.press('Escape').catch(() => {});
+                    }
+                    await sleep(1000);
+
+                    const LeadDB = getLeadModel();
+                    await LeadDB.findByIdAndUpdate(lead._id, {
+                        $set: { wa_invalid: true },
+                        $push: { activity: { type: 'wa_invalid', message: 'Number isn\'t registered on WhatsApp (draft mode)', date: new Date() } }
+                    }).catch(() => {});
+
                     emit({ type: 'failed', name: lead.name, reason: 'Invalid WhatsApp Number', sent: drafted, failed: ++failed });
                     finalFailed = failed;
                     continue;

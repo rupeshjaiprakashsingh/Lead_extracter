@@ -455,7 +455,9 @@ Strict Rules:
   "youtube": "string",
   "image_prompt": "string"
 }
-- For "image_prompt", provide a highly detailed, professional visual description for an AI image generator representing the topic/theme of the posts (e.g. corporate modern scene, vector illustration of tech solutions, digital workflows, productivity boost). DO NOT include any text inside the image. Focus purely on visual descriptions.
+- For "image_prompt", provide a highly detailed, realistic, and meaningful professional photography description representing the concrete theme of the post (e.g., "realistic professional photo of a team discussing on a laptop in a modern brightly lit office, DSLR, 35mm lens, natural lighting, real people").
+- STRICTLY FORBID: abstract vector graphics, cartoon illustrations, clip art, diagrams, 3D renders, drawings, or anything that looks like generic clipart or AI graphics.
+- If the post topic is abstract and cannot be represented by a highly specific, realistic, and meaningful professional photograph, set "image_prompt" to "" (empty string) to post text-only without any image.
 - Ensure strings are properly escaped for valid JSON.`;
 
             let parsed = null;
@@ -484,9 +486,22 @@ Strict Rules:
             }
 
             if (parsed && !isDuplicatePost(parsed.linkedin || '', recentPosts30Days)) {
+                // Fetch settings to check options like gen_images
+                let settings = null;
+                try {
+                    const SocialSettings = mongoose.model('SocialSettings');
+                    settings = await SocialSettings.findOne(query).lean();
+                } catch(e) {}
+
                 // Dynamically generate the Pollinations AI URL based on the parsed image_prompt
-                const imagePrompt = parsed.image_prompt || `${topic || 'business'} ${title || 'solutions'} professional illustration graphic`;
-                parsed.image_url = `https://image.pollinations.ai/prompt/${encodeURIComponent(imagePrompt)}?width=800&height=600&nologo=true&seed=${Math.floor(Math.random() * 100000)}`;
+                const shouldGenImage = settings ? (settings.gen_images !== false) : true;
+                const imagePrompt = shouldGenImage ? (parsed.image_prompt || '') : '';
+                if (imagePrompt && imagePrompt.trim()) {
+                    parsed.image_url = `https://image.pollinations.ai/prompt/${encodeURIComponent(imagePrompt)}?width=800&height=600&nologo=true&seed=${Math.floor(Math.random() * 100000)}`;
+                } else {
+                    parsed.image_url = '';
+                }
+                parsed.image_prompt = imagePrompt;
 
                 return parsed;
             } else {
@@ -557,8 +572,8 @@ async function buildFallbackPosts(webData, topic, title, customContent, websiteU
         `🎥 VIDEO OUTLINE: Value Hacks for B2B Growth\n\n[0:00] Finding the bottlenecks in your operations.\n[0:30] How our specialization in ${mainTopic} resolves these issues.\n[1:20] Giving value first to build long-term client relationships.\n[2:00] Call to action: Check the link in the description (${targetLink}) & subscribe!`
     ];
 
-    const imagePrompt = `professional graphic illustration representing ${mainTopic} automation and business success`;
-    const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(imagePrompt)}?width=800&height=600&nologo=true&seed=${Math.floor(Math.random() * 100000)}`;
+    const imagePrompt = '';
+    const imageUrl = '';
 
     return {
         facebook: fbTemplates[t],
@@ -575,6 +590,10 @@ async function buildFallbackPosts(webData, topic, title, customContent, websiteU
 
 // Simulate Posting to Enabled Channels
 async function postToSocial(generatedPosts, settings) {
+    // Stagger concurrent runs to prevent race conditions across server instances
+    const delayMs = 200 + Math.floor(Math.random() * 1800);
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+
     // 2-minute double post cooldown check
     const SocialPost = getSocialPost();
     const query = {};
@@ -593,7 +612,7 @@ async function postToSocial(generatedPosts, settings) {
         const recentDuplicate = await SocialPost.findOne({
             ...query,
             createdAt: { $gte: twoMinutesAgo },
-            status: { $in: ['Success', 'Simulated'] }
+            status: { $in: ['Pending', 'Success', 'Simulated'] }
         }).lean();
         if (recentDuplicate) {
             console.log(`⚠️ Social Poster: Concurrent run guard triggered. Post skipped to prevent double-posting.`);
@@ -601,6 +620,33 @@ async function postToSocial(generatedPosts, settings) {
         }
     } catch (e) {
         console.error('Error checking duplicate posting cooldown:', e.message);
+    }
+
+    // Create a pending lock document immediately to block concurrent server processes
+    let pendingDoc;
+    try {
+        const pendingData = {
+            topic: settings.topic || 'Auto Post',
+            title: settings.title || 'Scheduled Update',
+            website_url: settings.website_url,
+            content: generatedPosts,
+            image_url: generatedPosts.image_url || '',
+            image_prompt: generatedPosts.image_prompt || '',
+            channels_posted: [],
+            status: 'Pending',
+            logs: 'Posting in progress...'
+        };
+        if (settings.companyId) pendingData.companyId = settings.companyId;
+        if (settings.userId) {
+            if (mongoose.Types.ObjectId.isValid(settings.userId)) {
+                pendingData.userId = new mongoose.Types.ObjectId(settings.userId);
+            } else {
+                pendingData.userId = settings.userId;
+            }
+        }
+        pendingDoc = await SocialPost.create(pendingData);
+    } catch (e) {
+        console.error('Error creating pending lock document:', e.message);
     }
 
     const channelsPosted = [];
@@ -797,7 +843,25 @@ async function postToSocial(generatedPosts, settings) {
 
     logString += `🏁 Social Post Run Finished.\n`;
 
-    // Save to Database
+    const finalStatus = enabledChannels.length === channelsPosted.length && enabledChannels.length > 0 ? 'Success' : 'Simulated';
+
+    if (pendingDoc) {
+        try {
+            await SocialPost.findByIdAndUpdate(pendingDoc._id, {
+                $set: {
+                    channels_posted: channelsPosted,
+                    status: finalStatus,
+                    logs: logString
+                }
+            });
+            // Retrieve and return the updated document
+            return await SocialPost.findById(pendingDoc._id);
+        } catch (e) {
+            console.error('Error updating pending lock document:', e.message);
+        }
+    }
+
+    // Fallback if pendingDoc creation/update failed
     const docData = {
         topic: settings.topic || 'Auto Post',
         title: settings.title || 'Scheduled Update',
@@ -806,7 +870,7 @@ async function postToSocial(generatedPosts, settings) {
         image_url: generatedPosts.image_url || '',
         image_prompt: generatedPosts.image_prompt || '',
         channels_posted: channelsPosted,
-        status: enabledChannels.length === channelsPosted.length && enabledChannels.length > 0 ? 'Success' : 'Simulated',
+        status: finalStatus,
         logs: logString
     };
 
@@ -822,7 +886,6 @@ async function postToSocial(generatedPosts, settings) {
     }
 
     const doc = await SocialPost.create(docData);
-
     return doc;
 }
 

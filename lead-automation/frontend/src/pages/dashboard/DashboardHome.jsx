@@ -52,7 +52,7 @@ export default function DashboardHome() {
         planName={planName}
       />
 
-      <div className="grid grid-4" style={{ marginBottom: 'var(--space-6)' }}>
+      <div className="grid grid-3" style={{ marginBottom: 'var(--space-6)' }}>
         <StatsCard
           title="Total Extracted Leads"
           value={s.total}
@@ -68,11 +68,25 @@ export default function DashboardHome() {
           color="linear-gradient(135deg, #10b981 0%, #059669 100%)"
         />
         <StatsCard
+          title="WhatsApp Sent (Today)"
+          value={s.waToday || 0}
+          subtitle="Sent today"
+          icon="💬"
+          color="linear-gradient(135deg, #34d399 0%, #10b981 100%)"
+        />
+        <StatsCard
           title="Emails Sent"
           value={s.emailSent}
           subtitle="Outbox campaigns"
           icon="📧"
           color="linear-gradient(135deg, #06b6d4 0%, #0891b2 100%)"
+        />
+        <StatsCard
+          title="Emails Sent (Today)"
+          value={s.emailToday || 0}
+          subtitle="Sent today"
+          icon="✉️"
+          color="linear-gradient(135deg, #ec4899 0%, #f43f5e 100%)"
         />
         <StatsCard
           title="Follow-ups Pending"

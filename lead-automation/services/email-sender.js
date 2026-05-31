@@ -4,7 +4,6 @@
 //  prevent rate-limiting and Gmail blocking.
 // ============================================================
 const nodemailer  = require('nodemailer');
-const Settings    = require('../models/Settings');
 const SmtpAccount = require('../models/SmtpAccount');
 const logger      = require('./logger');
 
@@ -49,12 +48,36 @@ function createTransport(cfg) {
 
 // ── Legacy single-account fallback ──────────────────────────
 
-async function getLegacySmtpConfig(userId) {
-    if (!userId) return null;
-    const settings = await Settings.find({
-        userId,
-        key: { $in: ['smtp_host', 'smtp_port', 'smtp_secure', 'smtp_user', 'smtp_pass', 'smtp_from'] }
-    });
+async function getLegacySmtpConfig(idValue) {
+    if (!idValue) return null;
+    const activeMongoose = global.activeMongoose || require('mongoose');
+    const Settings = activeMongoose.models.Settings;
+    if (!Settings) return null;
+
+    const paths = Settings.schema ? Settings.schema.paths : {};
+    const query = { key: { $in: ['smtp_host', 'smtp_port', 'smtp_secure', 'smtp_user', 'smtp_pass', 'smtp_from'] } };
+
+    if (paths.hasOwnProperty('companyId') && paths.hasOwnProperty('userId')) {
+        let castedId = idValue;
+        if (activeMongoose.Types.ObjectId.isValid(idValue)) {
+            castedId = new activeMongoose.Types.ObjectId(idValue.toString());
+        }
+        query.$or = [ { companyId: castedId }, { userId: castedId } ];
+    } else if (paths.hasOwnProperty('companyId')) {
+        let castedId = idValue;
+        if (activeMongoose.Types.ObjectId.isValid(idValue)) {
+            castedId = new activeMongoose.Types.ObjectId(idValue.toString());
+        }
+        query.companyId = castedId;
+    } else if (paths.hasOwnProperty('userId')) {
+        let castedId = idValue;
+        if (activeMongoose.Types.ObjectId.isValid(idValue)) {
+            castedId = new activeMongoose.Types.ObjectId(idValue.toString());
+        }
+        query.userId = castedId;
+    }
+
+    const settings = await Settings.find(query).catch(() => []);
     const cfg = {};
     settings.forEach(s => { cfg[s.key.replace('smtp_', '')] = s.value; });
     if (!cfg.user || !cfg.pass) return null;

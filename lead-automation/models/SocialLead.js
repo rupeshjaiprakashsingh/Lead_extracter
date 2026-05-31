@@ -53,9 +53,9 @@ const socialLeadSchema = new mongoose.Schema({
 
 }, { timestamps: true });
 
-socialLeadSchema.index({ platform: 1, userId: 1 });
-socialLeadSchema.index({ status: 1, userId: 1 });
-socialLeadSchema.index({ score: -1 });
-socialLeadSchema.index({ profileUrl: 1, userId: 1 }, { unique: true, sparse: true });
+socialLeadSchema.index({ userId: 1, platform: 1 });
+socialLeadSchema.index({ userId: 1, status: 1 });
+socialLeadSchema.index({ userId: 1, score: -1 });
+socialLeadSchema.index({ userId: 1, profileUrl: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('SocialLead', socialLeadSchema);

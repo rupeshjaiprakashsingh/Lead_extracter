@@ -1,14 +1,49 @@
 // ============================================================
 //  services/ai-messages.js — AI-Powered Personalised Messages
 //  Gemini with 5 style variations + strong conversion CTAs
+//  Per-user: company profile + Gemini API key from MongoDB
 // ============================================================
 
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 require('dotenv').config();
 const { getTemplates } = require('./templates-cache');
 
-const genAI   = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
-const aiModel = genAI ? genAI.getGenerativeModel({ model: "gemini-1.5-flash" }) : null;
+// ── Per-user profile + Gemini model loader ────────────────────
+async function getUserProfile(userId) {
+    const profile = {
+        company:  'Our Company',
+        phone:    '',
+        email:    '',
+        website:  '',
+        geminiKey: process.env.GEMINI_API_KEY || ''
+    };
+    try {
+        const mongoose = global.activeMongoose || require('mongoose');
+        const Settings = mongoose.models.Settings;
+        if (!Settings || !userId) return profile;
+        const rows = await Settings.find({
+            userId,
+            key: { $in: ['company_name', 'company_phone', 'company_email', 'company_website', 'gemini_api_key'] }
+        }).lean();
+        rows.forEach(r => {
+            if (r.key === 'company_name')    profile.company  = r.value || profile.company;
+            if (r.key === 'company_phone')   profile.phone    = r.value || profile.phone;
+            if (r.key === 'company_email')   profile.email    = r.value || profile.email;
+            if (r.key === 'company_website') profile.website  = r.value || profile.website;
+            if (r.key === 'gemini_api_key')  profile.geminiKey = r.value || profile.geminiKey;
+        });
+    } catch (e) {}
+    return profile;
+}
+
+function getAiModel(apiKey) {
+    const key = apiKey || process.env.GEMINI_API_KEY || '';
+    if (!key) return null;
+    try {
+        const genAI = new GoogleGenerativeAI(key);
+        return genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    } catch(e) { return null; }
+}
 
 function daysSince(date) {
     if (!date) return 999;
@@ -86,16 +121,18 @@ Example style: "I can get [business name] to appear on the first page of Google 
 ];
 
 // ── Build Initial WhatsApp Message ───────────────────────────
-// ── Build Initial WhatsApp Message ───────────────────────────
 async function buildInitialWA(lead, userOrCompanyId = null) {
     // Use companyId (multi-tenant) or userId (legacy single-tenant) to look up saved templates
     const templateId = userOrCompanyId || lead?.companyId || lead?.userId;
     const { wa_template } = await getTemplates(templateId);
+    const prof     = await getUserProfile(templateId);
+    const aiModel  = getAiModel(prof.geminiKey);
     const name     = cleanName(lead.name) || 'your business';
     const hasWeb   = !!(lead.website && !['facebook','instagram','whatsapp','wa.me','youtube'].some(s => (lead.website || '').includes(s)));
     const city     = lead.city || 'India';
     const category = lead.category || lead.keyword || 'business';
     const rating   = lead.rating ? `${lead.rating}⭐ (${lead.reviews || 0} reviews)` : null;
+    const senderCompany = prof.company || 'Our Company';
 
     const specificInsight = buildSpecificInsight(name, hasWeb, city, category, lead.rating, lead.reviews);
 
@@ -133,7 +170,7 @@ STRICT RULES TO ENSURE CUSTOMER READS AND REPLIES:
 4. Resolve/replace all placeholders with actual details.
 5. Sound like a REAL PERSON sending a direct, 1-on-1 WhatsApp text, not a marketing robot or bulk automation.
 6. End with ONE simple, direct CTA/question (like the template has) that makes it easy for the customer to reply (e.g., "Would a quick 5-min call work this week?").
-7. Use *bold* for 1-2 key words only (e.g., *${name}*).
+7. Use *bold* for the business name (e.g., *${name}*) and *bold* the key benefit or important words (e.g., *double your bookings* or *Page 1 of Google*).
 8. NO conversational filler, no subject line, no quotes. Output ONLY the final WhatsApp message body.`;
 
             } else {
@@ -142,7 +179,7 @@ STRICT RULES TO ENSURE CUSTOMER READS AND REPLIES:
                     ? `no website — customers searching "${category} in ${city}" on Google can't find them`
                     : `website exists but Google ranking is low — missing local search traffic`;
 
-                prompt = `You are a WhatsApp sales expert helping an Indian IT company reach local businesses. Write ONE personalised cold WhatsApp message using the "${style.name}" style.
+                prompt = `You are a WhatsApp outreach expert. Write ONE personalised cold WhatsApp message using the "${style.name}" style.
 
 STYLE — ${style.name}:
 ${style.desc}
@@ -154,9 +191,9 @@ TARGET BUSINESS:
 - Problem: ${problemLine}
 ${rating ? `- Google: ${rating}` : ''}
 
-YOUR COMPANY (Innvoque — IT & Digital Marketing, India):
-- Helps local businesses get more customers online
-- Services: Website, SEO, Google ranking, digital marketing
+SENDER (${senderCompany}):
+- Helps businesses get more customers and grow online
+- Services: tailored to the sender's business category
 
 WRITE THE MESSAGE:
 1. Use the ${style.name} style naturally and conversationally.
@@ -164,7 +201,7 @@ WRITE THE MESSAGE:
 3. Reference a SPECIFIC detail: their city, their category, their rating if available.
 4. Keep it VERY SHORT — max 4 lines total. No essays.
 5. End with ONE simple question that needs just a "Yes" or "Interested" reply.
-6. Use *bold* on 1-2 words maximum.
+6. Use *bold* for the business name (e.g., *${name}*) and *bold* the key benefit or important words (e.g., *Page 1* or *double your leads*).
 7. Max 1 emoji — or zero.
 8. Sound human, curious, helpful — NOT sales-y or corporate.
 9. Language: English (natural, conversational).
@@ -194,15 +231,15 @@ WRITE THE MESSAGE:
 // ── Smart Fallback Messages (no AI) ──────────────────────────
 function buildFallbackWA(name, city, category, hasWeb, rating, styleName) {
     const problem = !hasWeb
-        ? `doesn't have a website — so customers searching online can't find you`
-        : `isn't ranking on Google's first page for "${category} in ${city}"`;
+        ? `your business doesn't have a website yet`
+        : `your listing isn't ranking on Page 1 of Google`;
 
     const templates = {
-        CURIOUS: `Quick question for *${name}* — when someone searches "${category} in ${city}" on Google right now, do you show up? 🤔\n\nI noticed your business ${problem}. Mind if I share what I found? Takes 2 min.`,
-        PROBLEM_FIRST: `*${name}* might be losing 10–20 customers every month — just because ${problem}.\n\nI can show you the data. Want to see it?`,
-        COMPLIMENT_HOOK: `${rating ? `Saw *${name}* on Google Maps — ${rating} is genuinely impressive for a ${category} in ${city}!` : `Noticed *${name}* on Google Maps — great business!`}\n\nOne thing holding you back: ${problem}. Want to fix that?`,
-        STORY: `I recently helped a ${category} in ${city} get 3× more enquiries in 45 days. Their situation was similar — ${problem}.\n\nThink *${name}* could benefit from the same? Happy to explain.`,
-        DIRECT_VALUE: `I can get *${name}* to appear on Page 1 of Google for "${category} in ${city}" within 30 days.\n\nNo cost to explore. Interested?`
+        CURIOUS: `Hey *${name}*! 👋 Quick question — did you know that customers search for "${category} in ${city}" over 500 times a month, but your business is currently hidden behind competitors? 🔍\n\nI put together 3 simple changes to fix this and *double your bookings*. Mind if I text them here?`,
+        PROBLEM_FIRST: `Hi *${name}*! I noticed competitors are taking *80% of local "${category}" bookings* in ${city} simply because ${problem}. 📈\n\nI have a 45-second screen recording showing exactly how to capture this traffic. Can I send it over?`,
+        COMPLIMENT_HOOK: `${rating ? `Hi *${name}*! I saw your business on Google Maps — your ${rating} rating is genuinely impressive! 🌟` : `Hi *${name}*! I came across your listing on Google Maps and love what you do.`}\n\nOne quick thing: because ${problem}, you're missing out on *30+ potential enquiries* monthly. Can I drop the details here?`,
+        STORY: `Hey *${name}*! I recently helped a ${category} business in a nearby area *double their customers* in 30 days just by fixing one thing: ${problem}. 🚀\n\nI wrote down the exact checklist we used. Mind if I share it with you?`,
+        DIRECT_VALUE: `Hi *${name}*! I can get you ranked on *Page 1 of Google* for "${category} in ${city}" in 30 days to scale your leads.\n\nI ran a quick audit of your presence. Can I drop the PDF report here?`
     };
 
     return templates[styleName] || templates.CURIOUS;
@@ -210,7 +247,11 @@ function buildFallbackWA(name, city, category, hasWeb, rating, styleName) {
 
 // ── Build Follow-Up WhatsApp Message ─────────────────────────
 async function buildFollowupWA(lead, followupNum, userOrCompanyId = null) {
-    const name = cleanName(lead.name) || 'there';
+    const templateId = userOrCompanyId || lead?.companyId || lead?.userId;
+    const prof     = await getUserProfile(templateId);
+    const aiModel  = getAiModel(prof.geminiKey);
+    const name     = cleanName(lead.name) || 'there';
+    const category = lead.category || lead.keyword || 'your industry';
 
     if (aiModel) {
         try {
@@ -221,7 +262,7 @@ async function buildFollowupWA(lead, followupNum, userOrCompanyId = null) {
             ];
             const style = styles[(followupNum - 1) % styles.length];
 
-            const prompt = `Write a short WhatsApp follow-up message for "${name}" about digital marketing services. Follow-up number: ${followupNum}.
+            const prompt = `Write a short WhatsApp follow-up message for "${name}" (a ${category} business) about services from ${prof.company || 'our company'}. Follow-up number: ${followupNum}.
 
 Style: ${style}
 
@@ -245,19 +286,28 @@ Rules:
         return `Hi *${name}* — just following up on my earlier message. I know you're busy!\n\nWould a 5-min call this week work? I have something specific to show you.`;
     }
     if (followupNum === 2) {
-        return `Last message from me, promise! 😊\n\nIf *${name}* ever needs help getting more customers online, I'm here. Wishing you great success!`;
+        return `Last message from me, promise! 😊\n\nIf *${name}* ever needs help, I'm here. Wishing you great success!`;
     }
-    return `All the best to *${name}*! Feel free to reach out anytime if you'd like to grow your online presence. 🙏`;
+    return `All the best to *${name}*! Feel free to reach out anytime. 🙏`;
 }
 
 // ── Build Initial Email ───────────────────────────────────────
 async function buildInitialEmail(lead, userOrCompanyId = null) {
     const templateId = userOrCompanyId || lead?.companyId || lead?.userId;
     const { email_subject, email_body } = await getTemplates(templateId);
+    const prof     = await getUserProfile(templateId);
+    const aiModel  = getAiModel(prof.geminiKey);
     const name     = cleanName(lead.name) || 'Business Owner';
     const hasWeb   = !!(lead.website && !['facebook','instagram','whatsapp','wa.me'].some(s => (lead.website || '').includes(s)));
     const city     = lead.city || '';
     const category = lead.category || lead.keyword || 'business';
+
+    // Sender details from user profile
+    const senderName    = prof.company    || 'Our Team';
+    const senderPhone   = prof.phone      || '';
+    const senderEmail   = prof.email      || '';
+    const senderWebsite = prof.website    || '';
+    const signOff = `Best regards,\n${senderName}${senderPhone ? '\n' + senderPhone : ''}${senderEmail ? '\n' + senderEmail : ''}${senderWebsite ? '\n' + senderWebsite : ''}`;
 
     // Build a real, specific insight based on actual lead data (no placeholder needed)
     const specificInsight = buildSpecificInsight(name, hasWeb, city, category, lead.rating, lead.reviews);
@@ -297,7 +347,7 @@ ${cleanedTemplate}
 BUSINESS DETAILS:
 - Business Name: "${name}"
 - Has Website: ${hasWeb ? 'Yes' : 'No (a major missed opportunity)'}
-- City: ${city || 'India'}
+- City: ${city || 'your area'}
 - Business Category: ${category}
 - Google Maps Rating: ${lead.rating ? lead.rating + ' ⭐ (' + (lead.reviews || 0) + ' reviews)' : 'Not listed'}
 - Key Insight to weave in naturally: ${specificInsight}
@@ -309,7 +359,7 @@ RULES:
 4. Be concise — max 5 short paragraphs. Nobody reads long cold emails.
 5. End with a clear, low-pressure CTA (free call / free audit / just reply).
 6. Do NOT add any HTML, links, or URLs. Clean text only.
-7. Sign off: "Best regards,\nRupesh\nInnvoque Solutions\n+91 9136662022\ninfo@innvoque.com"
+7. Sign off: "${signOff}"
 8. Output ONLY the email body. No subject line.`;
 
             } else {
@@ -325,11 +375,11 @@ GOAL: Get them to reply or book a free call. This must feel personal, not like a
 RULES:
 1. Open with "${name}" by name — never "Dear Business Owner" or "Sir/Madam".
 2. Lead with the key insight above — it should feel like you actually looked them up.
-3. Mention Innvoque (Indian IT & digital marketing company) and what you specifically do for ${category} businesses.
-4. Offer a free 10-min discovery call or a free Google/website audit.
+3. Mention ${senderName} and what you specifically do for ${category} businesses.
+4. Offer a free 10-min discovery call or a free audit.
 5. Keep it SHORT — 3-4 paragraphs max. People skim cold emails.
 6. Do NOT add any HTML, links, or URLs. Clean text only.
-7. Sign off: "Best regards,\nRupesh\nInnvoque Solutions\n+91 9136662022\ninfo@innvoque.com"
+7. Sign off: "${signOff}"
 8. Output ONLY the body text. No subject line. No HTML.`;
             }
 
@@ -345,7 +395,7 @@ RULES:
         if (cleanedTemplate) {
             bodyText = cleanedTemplate;
         } else {
-            bodyText = `Hi ${name},\n\nI was searching for ${category} businesses in ${city || 'your area'} on Google and came across your listing.\n\n${specificInsight}\n\nI work with Innvoque — we help local businesses in ${city || 'India'} show up better on Google and get more enquiries through their website.\n\nA few things we typically help with:\n- Getting found by more local customers on Google\n- Making sure your website works well on mobile\n- Building trust through better reviews and profile\n\nWould you be open to a quick 10-minute call this week to see if there's a fit? No pressure at all — happy to share what we've seen working for similar businesses in your area.\n\nThanks for your time,\n\nRupesh\nInnvoque Solutions\n+91 9136662022\ninfo@innvoque.com`;
+            bodyText = `Hi ${name},\n\nI was searching for ${category} businesses in ${city || 'your area'} on Google and came across your listing.\n\n${specificInsight}\n\nI work with ${senderName} — we help local businesses show up better online and get more enquiries.\n\nA few things we typically help with:\n- Getting found by more local customers\n- Making sure your website works well on mobile\n- Building trust through better reviews and profile\n\nWould you be open to a quick 10-minute call this week to see if there's a fit?\n\n${signOff}`;
         }
     }
 
@@ -365,15 +415,23 @@ RULES:
 }
 
 // ── Build Follow-Up Email ─────────────────────────────────────
-function buildFollowupEmail(lead, followupNum) {
-    const name = cleanName(lead.name) || 'there';
+async function buildFollowupEmail(lead, followupNum, userOrCompanyId = null) {
+    const templateId = userOrCompanyId || lead?.companyId || lead?.userId;
+    const prof     = await getUserProfile(templateId);
+    const name     = cleanName(lead.name) || 'there';
+    const senderName    = prof.company  || 'Our Team';
+    const senderPhone   = prof.phone    || '';
+    const senderEmail   = prof.email    || '';
+    const senderWebsite = prof.website  || '';
+    const signOff = `Best regards,\n${senderName}${senderPhone ? '\n' + senderPhone : ''}${senderEmail ? '\n' + senderEmail : ''}${senderWebsite ? '\n' + senderWebsite : ''}`;
+
     const subject = followupNum === 1
         ? `Quick follow-up — ${name}`
         : `Last note — ${name}`;
 
     const body = followupNum === 1
-        ? `Hi ${name},\n\nJust following up on my earlier email. I know your inbox gets busy — so I'll keep this very short.\n\nI genuinely believe there's a real opportunity for ${name} to get more customers online. Would a quick 15-min call this week work?\n\nBest regards,\nRupesh\nInnvoque Solutions\n+91 9136662022\ninfo@innvoque.com`
-        : `Hi ${name},\n\nThis is my final note — I won't reach out again after this, I promise.\n\nIf ${name} ever needs help with your digital presence — website, Google ranking, or getting more leads — I'm just one reply away. Wishing you and your business all the best!\n\nBest regards,\nRupesh\nInnvoque Solutions\n+91 9136662022\ninfo@innvoque.com`;
+        ? `Hi ${name},\n\nJust following up on my earlier email. I know your inbox gets busy — so I'll keep this very short.\n\nI genuinely believe there's a real opportunity for ${name} to grow. Would a quick 15-min call this week work?\n\n${signOff}`
+        : `Hi ${name},\n\nThis is my final note — I won't reach out again after this, I promise.\n\nIf ${name} ever needs help with your growth online — I'm just one reply away. Wishing you and your business all the best!\n\n${signOff}`;
 
     const htmlBody = body
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')

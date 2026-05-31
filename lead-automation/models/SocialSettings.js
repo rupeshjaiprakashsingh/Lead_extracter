@@ -9,6 +9,23 @@ const socialSettingsSchema = new mongoose.Schema({
     topic: { type: String, default: '' },
     title: { type: String, default: '' },
     custom_content: { type: String, default: '' },
+    
+    // Enterprise Extensions
+    business_category: { type: String, default: 'IT Services' },
+    business_name: { type: String, default: '' },
+    business_desc: { type: String, default: '' },
+    target_audience: { type: String, default: '' },
+    primary_services: { type: String, default: '' },
+    language: { type: String, default: 'English' },
+    content_goal: { type: String, default: 'Brand Awareness' },
+    content_type: { type: String, default: 'Promotional' },
+    tone: { type: String, default: 'Professional' },
+    post_length: { type: String, default: 'Medium' },
+    gen_images: { type: Boolean, default: true },
+    gen_hashtags: { type: Boolean, default: true },
+    auto_publish: { type: Boolean, default: true },
+    time_zone: { type: String, default: 'IST' },
+    topics: [{ type: String }],
     categories: [{
         name: { type: String, default: '' },
         keywords: { type: String, default: '' },
@@ -43,6 +60,10 @@ const socialSettingsSchema = new mongoose.Schema({
             boardId: { type: String, default: '' }
         },
         threads: {
+            enabled: { type: Boolean, default: false },
+            token: { type: String, default: '' }
+        },
+        gbp: {
             enabled: { type: Boolean, default: false },
             token: { type: String, default: '' }
         },

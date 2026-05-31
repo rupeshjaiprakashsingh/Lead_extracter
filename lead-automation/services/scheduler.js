@@ -1,210 +1,318 @@
 // ============================================================
 //  services/scheduler.js
-//  WhatsApp Auto-Scheduler — dynamic hourly cron rules
-//  Sends daily email reports per schedule rule at 8 PM IST
+//  Unified WA + Email Auto-Scheduler — per-rule cron logic
+//  • Hot/Warm/Cold temperature filtering
+//  • Advanced filters (no_website, min_rating, etc.)
+//  • Smart counting: WA only if phone exists, Email only if email exists
+//  • Daily email reports at 8 PM IST
 // ============================================================
 const cron     = require('node-cron');
 const mongoose = require('mongoose');
 
-let _hourlyJob = null;
+let _minuteJob = null;
 let _reportJob  = null;
 let _socialJob  = null;
-const _isSendingUsers = new Set();  // prevent overlapping sends per user
+const _isSendingCompanies = new Set();  // prevent overlapping sends per company
 
 // ── Lazy model getters ────────────────────────────────────────
 const getSchedule = () => {
-    try {
-        return mongoose.model('Schedule');
-    } catch(e) {
-        return require('../models/Schedule');
-    }
+    try { return mongoose.model('Schedule'); }
+    catch(e) { return require('../models/Schedule'); }
 };
 const getLead = () => {
-    try {
-        return mongoose.model('Lead');
-    } catch(e) {
-        return require('../models/Lead');
-    }
+    try { return mongoose.model('Lead'); }
+    catch(e) { return require('../models/Lead'); }
 };
 const getSocialSettings = () => {
-    try {
-        return mongoose.model('SocialSettings');
-    } catch(e) {
-        try {
-            return require('../models/SocialSettings');
-        } catch(err) {
-            return require('../backend/models/SocialSettings');
-        }
+    try { return mongoose.model('SocialSettings'); }
+    catch(e) {
+        try   { return require('../models/SocialSettings'); }
+        catch  { return require('../backend/models/SocialSettings'); }
     }
 };
 const getSocialPost = () => {
-    try {
-        return mongoose.model('SocialPost');
-    } catch(e) {
-        try {
-            return require('../models/SocialPost');
-        } catch(err) {
-            return require('../backend/models/SocialPost');
-        }
+    try { return mongoose.model('SocialPost'); }
+    catch(e) {
+        try   { return require('../models/SocialPost'); }
+        catch  { return require('../backend/models/SocialPost'); }
     }
 };
 
-// ── Drop unique index and migrate existing records ───────────
-async function dropUniqueIndex() {
-    try {
-        const conn = mongoose.connection;
-        const schedulesColl = conn.db.collection('schedules');
-        
-        // Drop unique index on userId
-        try {
-            await schedulesColl.dropIndex('userId_1');
-            console.log('✅ Dropped unique userId index from schedules');
-        } catch(err) {
-            // Index might not exist, ignore
-        }
+// ── Build Lead filter from schedule settings ──────────────────
+function buildLeadFilter(companyId, schedule) {
+    const filter = { companyId };
 
-        // Migrate old schemas
+    // Exclude invalid WhatsApp numbers
+    filter.wa_invalid = { $ne: true };
+
+    if (schedule.filter_has_phone !== false) {
+        filter.phone = { $exists: true, $ne: '' };
+    }
+    if (schedule.filter_has_email) {
+        filter.email = { $exists: true, $ne: '' };
+    }
+    if (schedule.categories && schedule.categories.length) {
+        filter.category = { $in: schedule.categories };
+    }
+    if (schedule.temperatures && schedule.temperatures.length) {
+        filter.temperature = { $in: schedule.temperatures };
+    }
+    if (schedule.cities && schedule.cities.length) {
+        const cityRegexes = schedule.cities.map(c => new RegExp(`^${c.trim()}$`, 'i'));
+        filter.city = { $in: cityRegexes };
+    }
+    if (schedule.filter_no_website) {
+        filter.$or = [
+            { website: { $exists: false } },
+            { website: '' },
+            { website: null }
+        ];
+    }
+    if (schedule.filter_min_rating && schedule.filter_min_rating > 0) {
+        filter.rating = { $gte: schedule.filter_min_rating };
+    }
+
+    return filter;
+}
+
+// ── Migrate old schema fields ─────────────────────────────────
+async function migrateSchedules() {
+    try {
         const Schedule = getSchedule();
-        const unmigrated = await Schedule.find({ send_hours: { $exists: false } });
-        for (const s of unmigrated) {
-            const morning = s.toObject().morning_hour ?? 10;
-            const evening = s.toObject().evening_hour ?? 16;
+        // Migrate records with old field names
+        const old = await Schedule.find({
+            $or: [
+                { send_hours: { $exists: false } },
+                { today_wa_sent: { $exists: false } }
+            ]
+        });
+        for (const s of old) {
+            const obj = s.toObject();
             await Schedule.updateOne({ _id: s._id }, {
                 $set: {
-                    name: 'Default Schedule',
-                    send_hours: [morning, evening],
-                    cities: []
+                    name:          obj.name || 'Default Schedule',
+                    send_hours:    obj.send_hours || [obj.morning_hour || 10, obj.evening_hour || 16],
+                    send_whatsapp: true,
+                    send_email:    false,
+                    temperatures:  obj.temperatures || [],
+                    filter_has_phone:       true,
+                    filter_has_email:       false,
+                    filter_no_website:      false,
+                    filter_min_rating:      0,
+                    filter_skip_wa_sent:    obj.skip_sent !== false,
+                    filter_skip_email_sent: false,
+                    today_wa_sent:    obj.today_sent   || 0,
+                    today_wa_failed:  obj.today_failed || 0,
+                    today_email_sent:   0,
+                    today_email_failed: 0,
+                    total_wa_sent:    obj.total_sent || 0,
+                    total_email_sent: 0,
                 }
             });
         }
-        if (unmigrated.length) {
-            console.log(`✅ Migrated ${unmigrated.length} schedules to new multi-schedule schema`);
+        if (old.length) {
+            console.log(`✅ Migrated ${old.length} schedule(s) to v2 schema`);
         }
-    } catch (e) {
+    } catch(e) {
         console.error('⏰ Scheduler migration error:', e.message);
     }
 }
 
-// Ensure unique index drop on DB connection
+// Ensure migration runs on DB connection
 if (mongoose.connection.readyState === 1) {
-    dropUniqueIndex();
+    migrateSchedules();
 } else {
-    mongoose.connection.once('open', dropUniqueIndex);
+    mongoose.connection.once('open', migrateSchedules);
 }
 
-// ── Core: Run a specific schedule rule ────────────────────────
+// ── Core: Run a specific schedule rule (WA + Email) ───────────
 async function runScheduledSendForRule(schedule) {
-    const userId = schedule.userId;
-    if (_isSendingUsers.has(userId)) {
-        console.log(`⏰ Scheduler: already sending for user ${userId}, skipping rule "${schedule.name}"`);
-        return { sent: 0, failed: 0, skipped: 0 };
+    const companyId = schedule.companyId || schedule.userId;
+    const companyKey = companyId.toString();
+
+    if (_isSendingCompanies.has(companyKey)) {
+        console.log(`⏰ Scheduler: already sending for company ${companyKey}, skipping rule "${schedule.name}"`);
+        return { wa_sent: 0, wa_failed: 0, email_sent: 0, email_failed: 0 };
     }
 
     const Lead     = getLead();
     const Schedule = getSchedule();
 
-    // Reset daily counter if new day
+    // Reset daily counters if new day
     const today = new Date().toISOString().slice(0, 10);
     if (schedule.today_date !== today) {
         await Schedule.updateOne({ _id: schedule._id }, {
-            $set: { today_sent: 0, today_failed: 0, today_date: today }
+            $set: {
+                today_wa_sent:    0,
+                today_wa_failed:  0,
+                today_email_sent: 0,
+                today_email_failed: 0,
+                today_date: today
+            }
         });
-        schedule.today_sent   = 0;
-        schedule.today_failed = 0;
+        schedule.today_wa_sent    = 0;
+        schedule.today_wa_failed  = 0;
+        schedule.today_email_sent = 0;
+        schedule.today_email_failed = 0;
     }
 
-    const remaining = schedule.daily_limit - schedule.today_sent;
-    if (remaining <= 0) {
-        console.log(`⏰ Scheduler: daily limit already reached for rule "${schedule.name}"`);
-        return { sent: 0, failed: 0, skipped: 0 };
+    const waRemaining = schedule.daily_limit - (schedule.today_wa_sent || 0);
+    if (waRemaining <= 0 && schedule.send_whatsapp) {
+        console.log(`⏰ Scheduler: WA daily limit reached for rule "${schedule.name}"`);
     }
 
-    // Split target limit by the number of scheduled hours per day
-    const hourCount = schedule.send_hours?.length || 1;
-    const targetBatchSize = Math.ceil(schedule.daily_limit / hourCount);
-    const toSend = Math.min(targetBatchSize, remaining);
+    // Build base filter
+    const baseFilter = buildLeadFilter(companyId, schedule);
 
-    // Build lead filters
-    const filter = { userId, phone: { $exists: true, $ne: '' } };
+    // Split batch by hour count
+    const hourCount    = schedule.send_hours?.length || 1;
+    const batchSize    = Math.ceil(schedule.daily_limit / hourCount);
 
-    if (schedule.categories?.length) {
-        filter.category = { $in: schedule.categories };
-    }
+    _isSendingCompanies.add(companyKey);
 
-    if (schedule.cities?.length) {
-        const cityRegexes = schedule.cities.map(c => new RegExp(`^${c.trim()}$`, 'i'));
-        filter.city = { $in: cityRegexes };
-    }
-
-    // Skip already sent
-    if (schedule.skip_sent && !schedule.allow_resend) {
-        filter.wa_sent = { $ne: true };
-    }
-
-    const leads = await Lead.find(filter)
-        .sort({ createdAt: 1 })   // FIFO
-        .limit(toSend)
-        .lean();
-
-    if (!leads.length) {
-        console.log(`⏰ Scheduler: no leads match filter for rule "${schedule.name}"`);
-        return { sent: 0, failed: 0, skipped: 0 };
-    }
-
-    console.log(`\n⏰ Running schedule "${schedule.name}": sending ${leads.length} leads for user ${userId}`);
-    _isSendingUsers.add(userId);
-
-    let sent = 0, failed = 0;
+    let waResult    = { sent: 0, failed: 0 };
+    let emailResult = { sent: 0, failed: 0 };
 
     try {
-        const { sendLocalWA } = require('../playwright-sender');
-        const result = await sendLocalWA(
-            leads.map(l => l._id.toString()),
-            false,
-            {
-                skipWaSent: schedule.skip_sent && !schedule.allow_resend,
-                isScheduled: true,
-                companyId: userId,
-                onComplete: (s, f) => { sent = s; failed = f; }
+        // ── WhatsApp send ──────────────────────────────────────
+        if (schedule.send_whatsapp && waRemaining > 0) {
+            const waFilter = { ...baseFilter, phone: { $exists: true, $ne: '' } };
+
+            // Skip already WA sent unless resend allowed
+            if (schedule.filter_skip_wa_sent && !schedule.allow_resend) {
+                waFilter.wa_sent = { $ne: true };
             }
-        );
-        if (result) { sent = result.sent || sent; failed = result.failed || failed; }
+
+            const toSend = Math.min(batchSize, waRemaining);
+            const leads = await Lead.find(waFilter)
+                .sort({ createdAt: 1 })
+                .limit(toSend)
+                .lean();
+
+            if (leads.length) {
+                console.log(`\n📱 WA Schedule "${schedule.name}": sending ${leads.length} messages for company ${companyKey}`);
+                try {
+                    const { sendWA } = require('./whatsapp-dispatcher');
+                    const res = await sendWA(
+                        leads.map(l => l._id.toString()),
+                        false,
+                        {
+                            skipWaSent:  schedule.filter_skip_wa_sent && !schedule.allow_resend,
+                            isScheduled: true,
+                            companyId:   companyKey,
+                        }
+                    );
+                    waResult.sent   = res?.sent   || 0;
+                    waResult.failed = res?.failed || 0;
+                } catch(e) {
+                    console.error(`⏰ WA send error for rule "${schedule.name}":`, e.message);
+                    waResult.failed = leads.length;
+                }
+            } else {
+                console.log(`⏰ Scheduler: no WA leads match filter for rule "${schedule.name}"`);
+            }
+        }
+
+        // ── Email send ─────────────────────────────────────────
+        if (schedule.send_email) {
+            const emailRemaining = schedule.daily_limit - (schedule.today_email_sent || 0);
+
+            if (emailRemaining > 0) {
+                const emailFilter = {
+                    ...baseFilter,
+                    email: { $exists: true, $ne: '' }  // SMART: only count if email exists
+                };
+
+                // Skip already email sent unless resend allowed
+                if (schedule.filter_skip_email_sent && !schedule.allow_resend) {
+                    emailFilter.email_sent = { $ne: true };
+                }
+
+                const toSend = Math.min(batchSize, emailRemaining);
+                const leads  = await Lead.find(emailFilter)
+                    .sort({ createdAt: 1 })
+                    .limit(toSend)
+                    .lean();
+
+                if (leads.length) {
+                    console.log(`\n📧 Email Schedule "${schedule.name}": sending ${leads.length} emails for company ${companyKey}`);
+                    const { sendEmail } = require('./email-sender');
+                    const { buildInitialEmail } = require('./ai-messages');
+
+                    for (let i = 0; i < leads.length; i++) {
+                        const lead = leads[i];
+                        // Random delay 2–5s between emails
+                        if (i > 0) {
+                            await new Promise(r => setTimeout(r, 2000 + Math.random() * 3000));
+                        }
+                        try {
+                            const { subject, html } = await buildInitialEmail(lead);
+                            await sendEmail(lead.email, subject, html, companyKey);
+
+                            await Lead.findByIdAndUpdate(lead._id, {
+                                $inc:  { email_count: 1 },
+                                $set:  { email_sent: true, email_sent_at: new Date(), email_last_date: today },
+                                $push: { activity: { type: 'email_sent', message: `Email sent (auto-schedule: "${schedule.name}")`, date: new Date() } }
+                            });
+                            emailResult.sent++;
+                        } catch(err) {
+                            emailResult.failed++;
+                            console.error(`⏰ Email fail for ${lead.email}:`, err.message);
+                        }
+                    }
+                } else {
+                    console.log(`⏰ Scheduler: no email leads match filter for rule "${schedule.name}"`);
+                }
+            }
+        }
     } catch(e) {
         console.error(`⏰ Scheduled send error for rule "${schedule.name}":`, e.message);
-        failed = leads.length;
     } finally {
-        _isSendingUsers.delete(userId);
+        _isSendingCompanies.delete(companyKey);
     }
 
     // Update stats
     await Schedule.updateOne({ _id: schedule._id }, {
-        $inc: { today_sent: sent, today_failed: failed, total_sent: sent },
+        $inc: {
+            today_wa_sent:      waResult.sent,
+            today_wa_failed:    waResult.failed,
+            today_email_sent:   emailResult.sent,
+            today_email_failed: emailResult.failed,
+            total_wa_sent:      waResult.sent,
+            total_email_sent:   emailResult.sent,
+        },
         $set: { last_run: new Date() }
     });
 
-    console.log(`⏰ Batch done for rule "${schedule.name}": ${sent} sent, ${failed} failed`);
-    return { sent, failed, skipped: leads.length - sent - failed };
+    console.log(`⏰ Batch done for rule "${schedule.name}": WA=${waResult.sent}✅/${waResult.failed}❌ | Email=${emailResult.sent}✅/${emailResult.failed}❌`);
+    return {
+        wa_sent:    waResult.sent,
+        wa_failed:  waResult.failed,
+        email_sent: emailResult.sent,
+        email_failed: emailResult.failed
+    };
 }
 
 // ── Entry points ──────────────────────────────────────────────
-async function runScheduledSend(session = 'manual', userId = null, scheduleId = null) {
+async function runScheduledSend(session = 'manual', companyId = null, scheduleId = null) {
     const Schedule = getSchedule();
+
     if (scheduleId) {
-        const schedule = await Schedule.findOne({ _id: scheduleId, userId });
-        if (schedule) {
-            return await runScheduledSendForRule(schedule);
-        }
-        return { sent: 0, failed: 0, skipped: 0 };
+        const schedule = await Schedule.findOne({ _id: scheduleId });
+        if (schedule) return await runScheduledSendForRule(schedule);
+        return { wa_sent: 0, wa_failed: 0, email_sent: 0, email_failed: 0 };
     }
 
-    if (userId) {
-        const schedules = await Schedule.find({ userId, enabled: true });
-        let s = 0, f = 0;
+    if (companyId) {
+        const schedules = await Schedule.find({ companyId, enabled: true });
+        let res = { wa_sent: 0, wa_failed: 0, email_sent: 0, email_failed: 0 };
         for (const sched of schedules) {
-            const res = await runScheduledSendForRule(sched);
-            s += res.sent; f += res.failed;
+            const r = await runScheduledSendForRule(sched);
+            res.wa_sent    += r.wa_sent;
+            res.wa_failed  += r.wa_failed;
+            res.email_sent += r.email_sent;
         }
-        return { sent: s, failed: f };
+        return res;
     }
 }
 
@@ -212,15 +320,15 @@ async function runScheduledSend(session = 'manual', userId = null, scheduleId = 
 async function sendDailyReportsAll() {
     const Schedule = getSchedule();
     const schedules = await Schedule.find({ enabled: true, report_email: { $exists: true, $ne: '' } });
-    for (const schedule of schedules) {
-        await sendDailyReportForRule(schedule);
+    for (const s of schedules) {
+        await sendDailyReportForRule(s);
     }
 }
 
-async function sendDailyReport(userId = null) {
+async function sendDailyReport(companyId = null) {
     const Schedule = getSchedule();
-    const query = userId 
-        ? { userId, enabled: true, report_email: { $exists: true, $ne: '' } } 
+    const query = companyId
+        ? { companyId, enabled: true, report_email: { $exists: true, $ne: '' } }
         : { enabled: true, report_email: { $exists: true, $ne: '' } };
     const schedules = await Schedule.find(query);
     for (const s of schedules) {
@@ -230,7 +338,7 @@ async function sendDailyReport(userId = null) {
 
 async function sendDailyReportForRule(schedule) {
     if (!schedule.report_email) return;
-    const uId = schedule.userId;
+    const companyId = schedule.companyId || schedule.userId;
     const { sendEmail } = require('./email-sender');
 
     const today = new Date().toLocaleDateString('en-IN', {
@@ -238,68 +346,71 @@ async function sendDailyReportForRule(schedule) {
         timeZone: 'Asia/Kolkata'
     });
 
-    const successRate = schedule.today_sent + schedule.today_failed > 0
-        ? Math.round((schedule.today_sent / (schedule.today_sent + schedule.today_failed)) * 100)
-        : 100;
+    const waSent    = schedule.today_wa_sent    || 0;
+    const waFailed  = schedule.today_wa_failed  || 0;
+    const emSent    = schedule.today_email_sent  || 0;
+    const emFailed  = schedule.today_email_failed|| 0;
 
-    const categories = schedule.categories?.length ? schedule.categories.join(', ') : 'All Categories';
-    const cities = schedule.cities?.length ? schedule.cities.join(', ') : 'All Cities';
+    const waRate = (waSent + waFailed) > 0
+        ? Math.round((waSent / (waSent + waFailed)) * 100) : 100;
+    const emRate = (emSent + emFailed) > 0
+        ? Math.round((emSent / (emSent + emFailed)) * 100) : 100;
+
+    const categories   = schedule.categories?.length   ? schedule.categories.join(', ')   : 'All Categories';
+    const temperatures = schedule.temperatures?.length ? schedule.temperatures.map(t => `🌡️ ${t}`).join(', ') : 'All';
+    const cities       = schedule.cities?.length       ? schedule.cities.join(', ')       : 'All Cities';
 
     const html = `
-<div style="font-family:'Segoe UI',Arial,sans-serif;max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb">
+<div style="font-family:'Segoe UI',Arial,sans-serif;max-width:640px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;border:1px solid #e5e7eb">
   <div style="background:linear-gradient(135deg,#1e3a5f,#4f8ef7);padding:32px;text-align:center">
     <div style="font-size:36px">📊</div>
-    <h1 style="color:#fff;margin:8px 0 4px;font-size:22px">Daily WhatsApp Report</h1>
+    <h1 style="color:#fff;margin:8px 0 4px;font-size:22px">Daily Campaign Report</h1>
     <p style="color:rgba(255,255,255,.7);margin:0;font-size:13px">${today}</p>
     <p style="color:#fff;margin:8px 0 0;font-size:14px;font-weight:600">Rule: ${schedule.name}</p>
   </div>
   <div style="padding:28px">
 
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:24px">
-      <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:16px;text-align:center">
-        <div style="font-size:36px;font-weight:700;color:#166534">${schedule.today_sent}</div>
-        <div style="font-size:11px;color:#166534;font-weight:600">SENT ✅</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:24px">
+      <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:16px;text-align:center">
+        <div style="font-size:13px;font-weight:700;color:#166534;margin-bottom:8px">📱 WhatsApp</div>
+        <div style="font-size:32px;font-weight:700;color:#166534">${waSent}</div>
+        <div style="font-size:11px;color:#166534">SENT ✅</div>
+        <div style="font-size:11px;color:#dc2626;margin-top:4px">${waFailed} failed | ${waRate}% success</div>
       </div>
-      <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:16px;text-align:center">
-        <div style="font-size:36px;font-weight:700;color:#dc2626">${schedule.today_failed}</div>
-        <div style="font-size:11px;color:#dc2626;font-weight:600">FAILED ❌</div>
-      </div>
-      <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:16px;text-align:center">
-        <div style="font-size:36px;font-weight:700;color:#1d4ed8">${successRate}%</div>
-        <div style="font-size:11px;color:#1d4ed8;font-weight:600">SUCCESS RATE</div>
+      <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:16px;text-align:center">
+        <div style="font-size:13px;font-weight:700;color:#1d4ed8;margin-bottom:8px">📧 Email</div>
+        <div style="font-size:32px;font-weight:700;color:#1d4ed8">${emSent}</div>
+        <div style="font-size:11px;color:#1d4ed8">SENT ✅</div>
+        <div style="font-size:11px;color:#dc2626;margin-top:4px">${emFailed} failed | ${emRate}% success</div>
       </div>
     </div>
 
     <table style="width:100%;border-collapse:collapse;font-size:13px;color:#374151">
       <tr style="background:#f9fafb">
         <td style="padding:10px 12px;border:1px solid #e5e7eb;font-weight:600">Daily Limit</td>
-        <td style="padding:10px 12px;border:1px solid #e5e7eb">${schedule.daily_limit} messages</td>
+        <td style="padding:10px 12px;border:1px solid #e5e7eb">${schedule.daily_limit} per channel</td>
       </tr>
       <tr>
-        <td style="padding:10px 12px;border:1px solid #e5e7eb;font-weight:600">Categories Targeted</td>
+        <td style="padding:10px 12px;border:1px solid #e5e7eb;font-weight:600">Lead Temperature</td>
+        <td style="padding:10px 12px;border:1px solid #e5e7eb">${temperatures}</td>
+      </tr>
+      <tr style="background:#f9fafb">
+        <td style="padding:10px 12px;border:1px solid #e5e7eb;font-weight:600">Categories</td>
         <td style="padding:10px 12px;border:1px solid #e5e7eb">${categories}</td>
       </tr>
-      <tr style="background:#f9fafb">
-        <td style="padding:10px 12px;border:1px solid #e5e7eb;font-weight:600">Cities Targeted</td>
+      <tr>
+        <td style="padding:10px 12px;border:1px solid #e5e7eb;font-weight:600">Cities</td>
         <td style="padding:10px 12px;border:1px solid #e5e7eb">${cities}</td>
       </tr>
-      <tr>
-        <td style="padding:10px 12px;border:1px solid #e5e7eb;font-weight:600">Skip Already Sent</td>
-        <td style="padding:10px 12px;border:1px solid #e5e7eb">${schedule.skip_sent ? 'Yes ✓' : 'No'}</td>
-      </tr>
       <tr style="background:#f9fafb">
-        <td style="padding:10px 12px;border:1px solid #e5e7eb;font-weight:600">All-Time Total Sent</td>
-        <td style="padding:10px 12px;border:1px solid #e5e7eb"><strong>${schedule.total_sent}</strong> messages</td>
+        <td style="padding:10px 12px;border:1px solid #e5e7eb;font-weight:600">All-Time WA Sent</td>
+        <td style="padding:10px 12px;border:1px solid #e5e7eb"><strong>${schedule.total_wa_sent || 0}</strong> messages</td>
+      </tr>
+      <tr>
+        <td style="padding:10px 12px;border:1px solid #e5e7eb;font-weight:600">All-Time Email Sent</td>
+        <td style="padding:10px 12px;border:1px solid #e5e7eb"><strong>${schedule.total_email_sent || 0}</strong> emails</td>
       </tr>
     </table>
-
-    ${schedule.today_sent === 0 ? `
-    <div style="background:#fef9c3;border:1px solid #fde047;border-radius:8px;padding:14px;margin-top:16px;font-size:13px;color:#713f12">
-      ⚠️ <strong>0 messages sent today.</strong> Make sure the CRM server is running and WhatsApp Web is logged in.
-    </div>` : `
-    <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:14px;margin-top:16px;font-size:13px;color:#166534">
-      ✅ <strong>Great job!</strong> ${schedule.today_sent} WhatsApp messages were sent today by the auto-scheduler.
-    </div>`}
 
     <p style="font-size:11px;color:#9ca3af;margin-top:24px;text-align:center">
       Automated report from Innvoque Lead CRM &bull;
@@ -309,10 +420,10 @@ async function sendDailyReportForRule(schedule) {
 </div>`;
 
     try {
-        await sendEmail(schedule.report_email, `📊 Daily WA Report [${schedule.name}]: ${schedule.today_sent} sent`, html, uId);
+        await sendEmail(schedule.report_email, `📊 Daily Report [${schedule.name}]: ${waSent} WA + ${emSent} Email sent`, html, companyId);
         const ScheduleModel = getSchedule();
         await ScheduleModel.updateOne({ _id: schedule._id }, { $set: { last_report_at: new Date() } });
-        console.log(`📧 Daily report sent to ${schedule.report_email} for rule "${schedule.name}" (${schedule._id})`);
+        console.log(`📧 Daily report sent to ${schedule.report_email} for rule "${schedule.name}"`);
     } catch(e) {
         console.error(`📧 Report email failed for rule "${schedule.name}":`, e.message);
     }
@@ -321,142 +432,130 @@ async function sendDailyReportForRule(schedule) {
 // ── Start / Stop Scheduler ────────────────────────────────────
 function startScheduler() {
     stopScheduler();
-    
-    // Check every minute to see if any schedule for the current hour needs to run
-    _hourlyJob = cron.schedule('* * * * *', async () => {
+
+    // Check every minute for any schedule matching current hour
+    _minuteJob = cron.schedule('* * * * *', async () => {
         try {
-            const now = new Date();
-            const hourStr = now.toLocaleTimeString('en-US', { hour12: false, hour: 'numeric', timeZone: 'Asia/Kolkata' });
+            const now       = new Date();
+            const hourStr   = now.toLocaleTimeString('en-US', { hour12: false, hour: 'numeric', timeZone: 'Asia/Kolkata' });
             const currentHour = parseInt(hourStr);
-            const todayStr = now.toISOString().slice(0, 10);
+            const todayStr  = now.toISOString().slice(0, 10);
 
             const Schedule = getSchedule();
-            // Find all enabled rules scheduled for this hour
             const activeSchedules = await Schedule.find({ enabled: true, send_hours: currentHour });
 
             for (const sched of activeSchedules) {
-                // Check if already run in the current hour of today
                 if (sched.last_run) {
-                    const lastRunHour = new Date(sched.last_run).toLocaleTimeString('en-US', { hour12: false, hour: 'numeric', timeZone: 'Asia/Kolkata' });
+                    const lastRunHour = parseInt(new Date(sched.last_run).toLocaleTimeString('en-US', { hour12: false, hour: 'numeric', timeZone: 'Asia/Kolkata' }));
                     const lastRunDate = new Date(sched.last_run).toISOString().slice(0, 10);
-                    if (parseInt(lastRunHour) === currentHour && lastRunDate === todayStr) {
-                        // Already ran this hour
-                        continue;
-                    }
+                    if (lastRunHour === currentHour && lastRunDate === todayStr) continue;
                 }
 
-                console.log(`⏰ Auto-Scheduler: triggering WhatsApp rule "${sched.name}" for user ${sched.userId} (Hour: ${currentHour})`);
-                runScheduledSendForRule(sched).catch(err => console.error(`Error running schedule ${sched._id}:`, err.message));
+                console.log(`⏰ Auto-Scheduler: triggering rule "${sched.name}" for company ${sched.companyId} (Hour: ${currentHour})`);
+                runScheduledSendForRule(sched).catch(err => console.error(`Error in schedule ${sched._id}:`, err.message));
             }
         } catch(e) {
             console.error('⏰ Scheduler cron check error:', e.message);
         }
     }, { timezone: 'Asia/Kolkata' });
 
-    // Daily report job at 8 PM IST
+    // Daily reports at 8 PM IST
     _reportJob = cron.schedule('0 20 * * *', () => {
-        console.log('\n📊 Sending daily email reports...');
+        console.log('\n📊 Sending daily campaign reports...');
         sendDailyReportsAll().catch(e => console.error('Report error:', e.message));
     }, { timezone: 'Asia/Kolkata' });
 
-    console.log('  ⏰ Scheduler ACTIVE: Minute-by-minute check for custom schedule times');
+    console.log('  ⏰ Unified Scheduler ACTIVE (WA + Email, checks every minute)');
 }
 
 function stopScheduler() {
-    if (_hourlyJob) { _hourlyJob.stop(); _hourlyJob = null; }
-    if (_reportJob)  { _reportJob.stop();  _reportJob  = null; }
+    if (_minuteJob) { _minuteJob.stop(); _minuteJob = null; }
+    if (_reportJob) { _reportJob.stop(); _reportJob = null; }
 }
 
 // ── Social Poster Scheduler ───────────────────────────────────
 async function runScheduledSocialPost() {
     try {
         const SocialSettings = getSocialSettings();
-        const SocialPost = getSocialPost();
-        
+        const SocialPost     = getSocialPost();
+
         const settingsList = await SocialSettings.find({ enabled: true });
         for (const settings of settingsList) {
             try {
-                const now = new Date();
+                const now         = new Date();
                 const currentHour = parseInt(now.toLocaleTimeString('en-US', { hour12: false, hour: 'numeric', timeZone: 'Asia/Kolkata' }));
-                const todayStr = now.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata' });
+                const todayStr    = now.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata' });
 
                 const logIdentifier = settings.companyId ? `company ${settings.companyId}` : `user ${settings.userId}`;
-
                 const query = {};
-                if (settings.companyId) {
-                    query.companyId = settings.companyId;
-                } else if (settings.userId) {
-                    query.userId = settings.userId;
-                }
+                if (settings.companyId) query.companyId = settings.companyId;
+                else if (settings.userId) query.userId  = settings.userId;
 
                 if (settings.frequency === 'daily') {
-                    if (currentHour !== settings.time_hour) {
-                        continue;
-                    }
+                    if (currentHour !== settings.time_hour) continue;
                     const lastPost = await SocialPost.findOne(query).sort({ createdAt: -1 });
-                    if (lastPost && new Date(lastPost.createdAt).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata' }) === todayStr) {
-                        continue;
-                    }
+                    if (lastPost && new Date(lastPost.createdAt).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata' }) === todayStr) continue;
                 } else if (settings.frequency === 'thirty_minutes') {
                     const lastPost = await SocialPost.findOne(query).sort({ createdAt: -1 });
-                    if (lastPost) {
-                        const diffMs = now - new Date(lastPost.createdAt);
-                        const diffMins = diffMs / (1000 * 60);
-                        if (diffMins < 25) {
-                            continue;
-                        }
-                    }
+                    if (lastPost && (now - new Date(lastPost.createdAt)) / 60000 < 25) continue;
                 } else if (settings.frequency === 'hourly') {
                     const lastPost = await SocialPost.findOne(query).sort({ createdAt: -1 });
-                    if (lastPost) {
-                        const diffMs = now - new Date(lastPost.createdAt);
-                        const diffMins = diffMs / (1000 * 60);
-                        if (diffMins < 50) {
-                            continue;
-                        }
-                    }
+                    if (lastPost && (now - new Date(lastPost.createdAt)) / 60000 < 50) continue;
                 }
 
-                console.log(`⏰ Social Scheduler: Running scheduled social posting (${settings.frequency}) for ${logIdentifier}...`);
+                console.log(`⏰ Social Scheduler: Running (${settings.frequency}) for ${logIdentifier}...`);
                 const { scrapeWebsite, generateSocialPosts, postToSocial } = require('./social-poster');
                 const webData = await scrapeWebsite(settings.website_url);
 
-                let topic = settings.topic;
-                let title = settings.title;
-                let custom_content = settings.custom_content;
+                let topic = settings.topic, title = settings.title, custom_content = settings.custom_content;
 
-                if (settings.categories && settings.categories.length > 0) {
+                if (settings.business_category) {
+                    if (settings.topics && settings.topics.length > 0) {
+                        const idx = settings.current_category_index || 0;
+                        topic = settings.topics[idx % settings.topics.length];
+                        settings.current_category_index = (idx + 1) % settings.topics.length;
+                        await settings.save();
+                    } else {
+                        topic = 'General Services';
+                    }
+                    title = settings.business_name || settings.title || 'Our Company';
+                    let inst = `Business Category: ${settings.business_category}. `;
+                    if (settings.business_desc)    inst += `Business Description: ${settings.business_desc}. `;
+                    if (settings.target_audience)  inst += `Target Audience: ${settings.target_audience}. `;
+                    if (settings.primary_services) inst += `Primary Services: ${settings.primary_services}. `;
+                    inst += `Language: ${settings.language || 'English'}. Goal: ${settings.content_goal || 'Brand Awareness'}. `;
+                    inst += `Type: ${settings.content_type || 'Promotional'}. Tone: ${settings.tone || 'Professional'}. `;
+                    inst += `Length: ${settings.post_length || 'Medium'}. `;
+                    if (settings.gen_hashtags === false) inst += 'No hashtags. ';
+                    else inst += 'Generate relevant hashtags. ';
+                    custom_content = inst;
+                } else if (settings.categories && settings.categories.length > 0) {
                     const idx = settings.current_category_index || 0;
                     const cat = settings.categories[idx % settings.categories.length];
-                    topic = cat.topic || settings.topic;
-                    title = cat.name || settings.title;
+                    topic         = cat.topic || settings.topic;
+                    title         = cat.name  || settings.title;
                     custom_content = `[Category: ${cat.name}] ${cat.custom_content || ''} (Focus keywords: ${cat.keywords || ''}). ${settings.custom_content || ''}`;
-                    
                     settings.current_category_index = (idx + 1) % settings.categories.length;
                     await settings.save();
-                    console.log(`⏰ Social Scheduler: Selected category "${cat.name}" (Index ${idx})`);
                 }
 
-                const generated = await generateSocialPosts(webData, topic, title, custom_content, {
+                const generated  = await generateSocialPosts(webData, topic, title, custom_content, {
                     companyId: settings.companyId,
-                    userId: settings.userId,
+                    userId:    settings.userId,
                     websiteUrl: settings.website_url
                 });
-                
-                // Construct a temporary settings object to pass category topic/title info to post document
                 const settingsForDoc = settings.toObject ? settings.toObject() : { ...settings };
-                settingsForDoc.topic = topic;
-                settingsForDoc.title = title;
+                settingsForDoc.topic          = topic;
+                settingsForDoc.title          = title;
                 settingsForDoc.custom_content = custom_content;
-                
                 const postDoc = await postToSocial(generated, settingsForDoc);
-                console.log(`✅ Social Scheduler: Posting completed for ${logIdentifier}. Post ID: ${postDoc._id}`);
-            } catch (innerErr) {
+                console.log(`✅ Social Scheduler: Post completed for ${logIdentifier}. ID: ${postDoc._id}`);
+            } catch(innerErr) {
                 const logId = settings.companyId || settings.userId || 'unknown';
                 console.error(`❌ Social Scheduler Error for ${logId}: ${innerErr.message}`);
             }
         }
-    } catch (err) {
+    } catch(err) {
         console.error(`❌ Social Scheduler Main Error: ${err.message}`);
     }
 }
@@ -464,7 +563,6 @@ async function runScheduledSocialPost() {
 function startSocialScheduler() {
     stopSocialScheduler();
     _socialJob = cron.schedule('*/5 * * * *', () => {
-        console.log('\n⏰ Social scheduler check triggered...');
         runScheduledSocialPost().catch(e => console.error('Social scheduler cron error:', e.message));
     }, { timezone: 'Asia/Kolkata' });
     console.log('  ⏰ Social Auto-Poster Scheduler ACTIVE (Checks every 5 mins)');
@@ -474,17 +572,17 @@ function stopSocialScheduler() {
     if (_socialJob) { _socialJob.stop(); _socialJob = null; }
 }
 
-function isRunning(userId = null) { 
-    if (userId) return _isSendingUsers.has(userId);
-    return _isSendingUsers.size > 0; 
+function isRunning(companyId = null) {
+    if (companyId) return _isSendingCompanies.has(companyId.toString());
+    return _isSendingCompanies.size > 0;
 }
 
-module.exports = { 
-    startScheduler, 
-    stopScheduler, 
-    runScheduledSend, 
+module.exports = {
+    startScheduler,
+    stopScheduler,
+    runScheduledSend,
     runScheduledSendForRule,
-    sendDailyReport, 
+    sendDailyReport,
     sendDailyReportForRule,
     isRunning,
     startSocialScheduler,

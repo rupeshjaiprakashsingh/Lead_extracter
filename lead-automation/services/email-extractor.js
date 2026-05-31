@@ -295,23 +295,35 @@ async function extractEmailsForLeads(leadIds, userId, onProgress) {
                 }
             }
 
-            if (activityMsgs.length) {
-                // Build activity logs
-                const activityEntries = activityMsgs.map(msg => ({
-                    type: 'note',
-                    message: `🌐 Website Extractor: ${msg}`,
-                    date: new Date()
-                }));
-                
-                // Add to Lead
-                await Lead.findOneAndUpdate(
-                    { _id: lead._id, userId },
-                    { 
-                        $set: updateDoc,
-                        $push: { activity: { $each: activityEntries } } 
-                    }
-                );
+            // Calculate new lead temperature based on updated email and phone
+            const finalRating = lead.rating || 0;
+            const finalPhone = updateDoc.phone || lead.phone || '';
+            const finalEmail = updateDoc.email || lead.email || '';
+            const hasPhone = !!finalPhone.trim();
+            const hasEmail = !!finalEmail.trim();
+            let temp = 'cold';
+            if (finalRating >= 4 && hasPhone && hasEmail) {
+                temp = 'hot';
+            } else if (finalRating >= 3 && (hasPhone || hasEmail)) {
+                temp = 'warm';
             }
+            updateDoc.temperature = temp;
+
+            const activityEntries = activityMsgs.map(msg => ({
+                type: 'note',
+                message: `🌐 Website Extractor: ${msg}`,
+                date: new Date()
+            }));
+            
+            const updateObj = { $set: updateDoc };
+            if (activityEntries.length) {
+                updateObj.$push = { activity: { $each: activityEntries } };
+            }
+
+            await Lead.findOneAndUpdate(
+                { _id: lead._id, userId },
+                updateObj
+            );
 
             extracted++;
             onProgress({ 
