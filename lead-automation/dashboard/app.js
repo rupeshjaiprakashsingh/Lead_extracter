@@ -4589,7 +4589,7 @@ function autoFillAllCities() {
 }
 
 // ─── Category change → auto fill keywords ─────────────────────
-function onExtractorCategoryChange() {
+function onExtractorCategoryChange(skipKeywordOverride = false) {
   const catEl = document.getElementById('ex-discovery-category');
   if (!catEl) return;
   const cat = catEl.value;
@@ -4603,7 +4603,7 @@ function onExtractorCategoryChange() {
   // Auto-fill keywords
   const keywords = CATEGORY_KEYWORDS_MAP[cat] || CATEGORY_KEYWORDS_MAP['Custom Industry'];
   const kwEl = document.getElementById('auto-scraper-keywords');
-  if (kwEl) kwEl.value = keywords;
+  if (kwEl && skipKeywordOverride !== true) kwEl.value = keywords;
 
   // Update AI suggestions box
   const sugEl = document.getElementById('ex-industry-suggestions');
@@ -4626,18 +4626,20 @@ async function startFullAuto247() {
   if (statusEl) { statusEl.textContent = '⏳ Auto-configuring all settings...'; statusEl.style.color = '#38bdf8'; }
 
   try {
-    // Step 1: Auto-select ALL_AUTO category
+    const kwEl = document.getElementById('auto-scraper-keywords');
+    
+    // Step 1: Auto-select ALL_AUTO category only if keywords are empty
     const catEl = document.getElementById('ex-discovery-category');
-    if (catEl) {
+    if (catEl && kwEl && !kwEl.value.trim()) {
       catEl.value = 'ALL_AUTO';
       onExtractorCategoryChange();
     }
 
-    // Step 2: Auto-fill all Indian cities if the field is empty or contains fewer than 5 cities
+    // Step 2: Auto-fill all Indian cities if the field is empty
     const citiesEl = document.getElementById('auto-scraper-cities');
     if (citiesEl) {
       const currentCitiesCount = citiesEl.value.split(',').map(c => c.trim()).filter(Boolean).length;
-      if (currentCitiesCount < 5) {
+      if (currentCitiesCount === 0) {
         autoFillAllCities();
       }
     }
@@ -4790,8 +4792,10 @@ async function loadAutoScraperConfig() {
   if (kwEl2 && !kwEl2.value.trim()) {
     const catEl2 = document.getElementById('ex-discovery-category');
     if (catEl2) catEl2.value = 'ALL_AUTO';
+    onExtractorCategoryChange();
+  } else {
+    onExtractorCategoryChange(true);
   }
-  onExtractorCategoryChange();
 }
 
 
