@@ -9,7 +9,7 @@ echo.
 
 set "NODE_DIR=%~dp0..\..\node\node-v20.19.1-win-x64"
 set "APP_DIR=%~dp0.."
-set "APP_JS=%APP_DIR%\index.js"
+set "APP_JS=%APP_DIR%\server.js"
 set "PORT=3006"
 set "NO_BROWSER=1"
 

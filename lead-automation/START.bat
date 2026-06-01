@@ -53,6 +53,6 @@ echo  [4/4] Starting server...
 echo.
 echo  Opening dashboard at: http://localhost:3000
 echo.
-node index.js
+node server.js
 
 pause

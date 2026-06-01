@@ -4,7 +4,7 @@
   "description": "Google Maps Lead Extractor + WhatsApp/Email Auto-Sender",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
+    "start": "node server.js",
     "scrape": "node scraper.js",
     "send-wa": "node whatsapp-sender.js",
     "send-email": "node email-sender.js",
@@ -28,5 +28,9 @@
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
     "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0",
+    "javascript-obfuscator": "^5.4.3"
   }
 }

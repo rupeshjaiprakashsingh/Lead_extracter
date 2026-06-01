@@ -10,7 +10,7 @@ echo  ============================================================
 echo.
 
 set "NODE=%~dp0..\node\node-v20.19.1-win-x64\node.exe"
-set "APP=%~dp0index.js"
+set "APP=%~dp0server.js"
 set "DIR=%~dp0"
 
 REM -- Kill any existing node processes

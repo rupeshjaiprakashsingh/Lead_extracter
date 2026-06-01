@@ -110,6 +110,7 @@ app.post('/auth/login', async (req, res) => {
         req.session.userRole = user.role;
         req.session.company = user.company;
         req.session.plan = user.plan;
+        req.session.licenseExpiry = user.licenseExpiry;
         
         user.lastLogin = new Date();
         await user.save();
@@ -140,6 +141,7 @@ app.post('/auth/register', async (req, res) => {
             req.session.userRole = adminUser.role;
             req.session.company = adminUser.company;
             req.session.plan = adminUser.plan;
+            req.session.licenseExpiry = adminUser.licenseExpiry;
         } else {
             const targetUser = await User.findOne({ licenseKey: license });
             if (!targetUser) {
@@ -161,6 +163,7 @@ app.post('/auth/register', async (req, res) => {
             req.session.userRole = targetUser.role;
             req.session.company = targetUser.company;
             req.session.plan = targetUser.plan;
+            req.session.licenseExpiry = targetUser.licenseExpiry;
         }
         res.json({ success: true });
     } catch (e) {

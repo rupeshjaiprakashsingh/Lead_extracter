@@ -1557,6 +1557,26 @@ async function loadUserSession() {
           alertEl.style.display = 'flex';
           alertEl.textContent = '⚠️ License Expired!';
           planEl.className = 'badge-sm s-err';
+          
+          const blocker = document.createElement('div');
+          blocker.style.position = 'fixed';
+          blocker.style.inset = '0';
+          blocker.style.backgroundColor = 'rgba(15, 23, 42, 0.95)';
+          blocker.style.zIndex = '999999';
+          blocker.style.display = 'flex';
+          blocker.style.flexDirection = 'column';
+          blocker.style.alignItems = 'center';
+          blocker.style.justifyContent = 'center';
+          blocker.style.backdropFilter = 'blur(10px)';
+          blocker.innerHTML = `
+            <div style="font-size:64px;margin-bottom:20px">⚠️</div>
+            <h1 style="color:#f87171;font-size:24px;margin-bottom:10px">Your License Has Expired</h1>
+            <p style="color:#cbd5e1;font-size:14px;max-width:400px;text-align:center;margin-bottom:24px;line-height:1.5">
+              Your subscription for Lead Automation CRM has expired. Please contact support or your administrator to renew your license and regain access to the platform.
+            </p>
+            <button onclick="window.location.href='/auth/logout'" class="btn b-red" style="padding:10px 24px;font-size:14px">🚪 Logout</button>
+          `;
+          document.body.appendChild(blocker);
         } else {
           banner.style.background = '#1e293b';
           banner.style.borderBottomColor = '#2d3748';

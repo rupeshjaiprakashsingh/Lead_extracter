@@ -5,7 +5,21 @@ const User = require('../models/User');
 
 // Middleware: require login
 function requireAuth(req, res, next) {
-    if (req.session && req.session.userId) return next();
+    if (req.session && req.session.userId) {
+        // Expiry check for non-admin users
+        if (req.session.userRole !== 'admin' && req.session.licenseExpiry) {
+            const expDate = new Date(req.session.licenseExpiry);
+            if (!isNaN(expDate.getTime()) && expDate < new Date()) {
+                const fullPath = req.originalUrl || req.path || '';
+                if (fullPath.startsWith('/api/') || fullPath.startsWith('/auth/')) {
+                    if (req.method !== 'GET' || fullPath.split('?')[0] !== '/auth/status') {
+                        return res.status(403).json({ error: 'License Expired' });
+                    }
+                }
+            }
+        }
+        return next();
+    }
     // API calls → 401 JSON
     const fullPath = req.originalUrl || req.path || '';
     if (fullPath.startsWith('/api/') || fullPath.startsWith('/auth/')) {

@@ -5,7 +5,7 @@
 # ============================================================
 
 $NODE = "c:\Rupesh\Lead_extracter\node\node-v20.19.1-win-x64\node.exe"
-$APP  = "c:\Rupesh\Lead_extracter\lead-automation\index.js"
+$APP  = "c:\Rupesh\Lead_extracter\lead-automation\server.js"
 $DIR  = "c:\Rupesh\Lead_extracter\lead-automation"
 
 # ── Configure: How many instances to start ──────────────────
