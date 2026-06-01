@@ -1693,6 +1693,29 @@ function renderScheduleRules() {
     const emSent    = s.today_email_sent  || 0;
     const dailyLim  = s.daily_limit      || 60;
     
+    let nextRunHtml = '';
+    if (s.enabled && s.send_hours && s.send_hours.length > 0) {
+      const now = new Date();
+      const istTime = new Date(now.toLocaleString('en-US', {timeZone: 'Asia/Kolkata'}));
+      const istHour = istTime.getHours();
+      const sortedHours = [...s.send_hours].sort((a,b)=>a-b);
+      let nextHour = sortedHours.find(h => h > istHour);
+      let isTomorrow = false;
+      if (nextHour === undefined) {
+        nextHour = sortedHours[0];
+        isTomorrow = true;
+      }
+      const limitReached = (s.today_wa_sent || 0) >= (s.daily_limit || 60);
+      if (limitReached && !isTomorrow) {
+         nextHour = sortedHours[0];
+         isTomorrow = true;
+      }
+      const ampm = nextHour >= 12 ? 'PM' : 'AM';
+      const disp = nextHour % 12 || 12;
+      const dayStr = isTomorrow ? 'Tomorrow' : 'Today';
+      nextRunHtml = `<span style="font-size:10px;color:#fbbf24;margin-left:10px">&bull; Next run: ${dayStr} ${disp}:00 ${ampm}</span>`;
+    }
+
     const infoCol = document.createElement('div');
     infoCol.style.cssText = `flex:1;display:flex;flex-direction:column;gap:5px`;
     infoCol.innerHTML = `
@@ -1710,10 +1733,11 @@ function renderScheduleRules() {
       <div style="font-size:11px;color:#94a3b8">
         🕐 <b>Hours (IST):</b> ${hoursFormatted}
       </div>
-      <div style="display:flex;gap:10px;margin-top:4px;flex-wrap:wrap">
+      <div style="display:flex;gap:10px;margin-top:4px;flex-wrap:wrap;align-items:center">
         <span style="font-size:11px">📱 WA Today: <span style="color:#34d399;font-weight:700">${waSent}</span>/<span style="color:#60a5fa">${dailyLim}</span></span>
         ${s.send_email ? `<span style="font-size:11px">📧 Email Today: <span style="color:#60a5fa;font-weight:700">${emSent}</span>/<span style="color:#60a5fa">${dailyLim}</span></span>` : ''}
-        ${s.last_run ? `<span style="font-size:10px;color:#64748b">${new Date(s.last_run).toLocaleDateString('en-IN')} ${new Date(s.last_run).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</span>` : ''}
+        ${s.last_run ? `<span style="font-size:10px;color:#64748b;margin-left:5px">&bull; Last run: ${new Date(s.last_run).toLocaleDateString('en-IN')} ${new Date(s.last_run).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</span>` : ''}
+        ${nextRunHtml}
       </div>
     `;
     
@@ -2412,6 +2436,29 @@ function renderEmailScheduleRules() {
     const catsStr = (s.categories && s.categories.length) ? s.categories.join(', ') : 'All Categories';
     const citiesStr = (s.cities && s.cities.length) ? s.cities.join(', ') : 'All Cities';
     
+    let nextRunHtml = '';
+    if (s.enabled && s.send_hours && s.send_hours.length > 0) {
+      const now = new Date();
+      const istTime = new Date(now.toLocaleString('en-US', {timeZone: 'Asia/Kolkata'}));
+      const istHour = istTime.getHours();
+      const sortedHours = [...s.send_hours].sort((a,b)=>a-b);
+      let nextHour = sortedHours.find(h => h > istHour);
+      let isTomorrow = false;
+      if (nextHour === undefined) {
+        nextHour = sortedHours[0];
+        isTomorrow = true;
+      }
+      const limitReached = (s.today_sent || 0) >= (s.daily_limit || 60);
+      if (limitReached && !isTomorrow) {
+         nextHour = sortedHours[0];
+         isTomorrow = true;
+      }
+      const ampm = nextHour >= 12 ? 'PM' : 'AM';
+      const disp = nextHour % 12 || 12;
+      const dayStr = isTomorrow ? 'Tomorrow' : 'Today';
+      nextRunHtml = `&nbsp;&bull;&nbsp; <span style="color:#fbbf24">Next run: ${dayStr} ${disp}:00 ${ampm}</span>`;
+    }
+
     const infoCol = document.createElement('div');
     infoCol.style.cssText = `flex:1;display:flex;flex-direction:column;gap:4px`;
     infoCol.innerHTML = `
@@ -2427,9 +2474,10 @@ function renderEmailScheduleRules() {
       <div style="font-size:11px;color:#94a3b8">
         🕐 <b>Send Hours (IST):</b> ${hoursFormatted}
       </div>
-      <div style="font-size:11px;color:#64748b;margin-top:2px">
-        📈 Sent today: <span style="color:#34d399;font-weight:600">${s.today_sent || 0}</span> / <span style="color:#60a5fa;font-weight:600">${s.daily_limit || 60}</span>
+      <div style="font-size:11px;color:#64748b;margin-top:2px;display:flex;align-items:center;flex-wrap:wrap">
+        <span>📈 Sent today: <span style="color:#34d399;font-weight:600">${s.today_sent || 0}</span> / <span style="color:#60a5fa;font-weight:600">${s.daily_limit || 60}</span></span>
         ${s.last_run ? `&nbsp;&bull;&nbsp; Last run: ${new Date(s.last_run).toLocaleDateString('en-IN')} ${new Date(s.last_run).toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'})}` : ''}
+        ${nextRunHtml}
       </div>
     `;
     

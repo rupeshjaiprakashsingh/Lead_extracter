@@ -113,17 +113,23 @@ async function start() {
       try {
         const Schedule = require('./models/Schedule');
         const scheduler = require('../services/scheduler');
-        const schedules = await Schedule.find({ enabled: true }).lean();
-        schedules.forEach(s => {
-          scheduler.startScheduler(s);
-          console.log(`  ⏰ Scheduler started for company: ${s.companyId}`);
-        });
+        scheduler.startScheduler();
+        console.log('  ⏰ WA/Unified Scheduler started successfully');
 
         // Social scheduler
         try {
             scheduler.startSocialScheduler();
         } catch (e) {
             console.log('  ⚠️  Social Scheduler startup error:', e.message);
+        }
+
+        // Email scheduler
+        try {
+            const emailScheduler = require('../services/email-scheduler');
+            emailScheduler.startScheduler();
+            console.log('  ⏰ Email Scheduler started successfully');
+        } catch (e) {
+            console.log('  ⚠️  Email Scheduler startup error:', e.message);
         }
       } catch (e) {
         console.log('  ⚠️  Scheduler init error:', e.message);

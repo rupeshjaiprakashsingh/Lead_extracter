@@ -181,10 +181,14 @@ async function selectFallbackTemplateIndex(userId, companyId) {
     if (companyId) {
         query.companyId = companyId;
     } else if (userId) {
-        if (mongoose.Types.ObjectId.isValid(userId)) {
-            query.userId = new mongoose.Types.ObjectId(userId);
+        const userIdStr = userId.toString();
+        if (mongoose.Types.ObjectId.isValid(userIdStr)) {
+            query.$or = [
+                { userId: userIdStr },
+                { userId: new mongoose.Types.ObjectId(userIdStr) }
+            ];
         } else {
-            query.userId = userId;
+            query.userId = userIdStr;
         }
     }
 
@@ -345,10 +349,14 @@ async function generateSocialPosts(webData, topic, title, customContent, options
     const query = {};
     if (companyId) query.companyId = companyId;
     else if (userId) {
-        if (mongoose.Types.ObjectId.isValid(userId)) {
-            query.userId = new mongoose.Types.ObjectId(userId);
+        const userIdStr = userId.toString();
+        if (mongoose.Types.ObjectId.isValid(userIdStr)) {
+            query.$or = [
+                { userId: userIdStr },
+                { userId: new mongoose.Types.ObjectId(userIdStr) }
+            ];
         } else {
-            query.userId = userId;
+            query.userId = userIdStr;
         }
     }
 
@@ -391,8 +399,8 @@ async function generateSocialPosts(webData, topic, title, customContent, options
             const genAI = new GoogleGenerativeAI(geminiKey);
             const aiModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
             
-            const prompt = `You are a world-class social media copywriter, viral marketing consultant, and expert content creator.
-Your goal is to generate highly engaging, reaction-inducing, and viral social media posts for a company based on their website content, category topic, and guidelines.
+            const prompt = `You are a world-class social media copywriter, B2B viral marketing consultant, and expert content creator.
+Your goal is to generate highly engaging, reaction-inducing, and extremely informative social media posts for a company based on their website content, category topic, and guidelines.
 
 COMPANY WEBSITE INFO:
 - Title: "${webData.title || ''}"
@@ -412,37 +420,35 @@ ${recentPostsText ? `AVOID REPETITION: Here are the texts of our recently publis
 ${recentPostsText}
 ` : ''}
 
-CRITICAL RULES FOR VIRAL ENGAGEMENT & REACTION-INDUCING COPY:
-You must strictly follow this value-first, high-engagement copywriting structure for all channels (adapted for character limits):
+CRITICAL RULES FOR B2B ENGAGEMENT, TARGETING & INFORMATIVE COPY:
+You must strictly follow this value-first, high-engagement, detailed copywriting structure for all channels:
 
-1. THE VIRAL HOOK (Line 1): Start with an extremely compelling, contrarian, shocking, or deeply relatable first line. 
-   Examples: 
-   - "I stopped doing [Common Practice] and my business grew by 300%."
-   - "95% of founders make this outreach mistake (it cost us $10,000)."
-   - "Here is the uncomfortable truth about [Industry Topic] that nobody wants to admit."
+1. THE TARGETED VIRAL HOOK (Line 1): Start with an extremely compelling, direct first line that specifically addresses or targets CEOs, CTOs, and Management.
+   Examples of hook style:
+   - "Attention: All CEOs, CTOs, and operations management — read this before sending another sales campaign."
+   - "Why 95% of CEOs and founders are failing at B2B lead generation (and the simple operational fix)."
+   - "Dear CTOs and technical management: Stop wasting engineering bandwidth building custom scraper scripts."
+   - "The B2B outreach strategy that top-performing CEOs use to double their meeting booking rates."
    NEVER start with generic self-promotion (e.g. do NOT say "We are excited to launch...", "At our company...", or "Check out...").
 
-2. READABILITY & FORMATTING (The "LinkedIn Broetry" Style):
-   - Use short, punchy, single-sentence paragraphs.
+2. READABILITY & FORMATTING:
+   - Use short, punchy paragraphs.
    - Leave a double line break after almost every sentence.
-   - Keep sentences under 12 words. High readability on mobile screen is vital.
-   - Use bullet points and emojis to break up text visually.
+   - Keep sentences highly readable, using bullet points and emojis to break up text visually.
 
-3. ACTIONABLE VALUE: Provide 3 high-impact, actionable tips, a checklist, or a simple "how-to" that teaches the reader something immediately useful without leaving the platform.
+3. HIGHLY DETAILED & ACTIONABLE VALUE:
+   - Do NOT write generic or brief tips. Provide deep, comprehensive, and highly informative advice (3 detailed tips, a checklist, or a step-by-step technical guide) that teaches the reader something immediately useful.
+   - Explain the "how" and "why" behind each tip so the post has real, professional-grade depth.
 
 4. SOFT PITCH: Seamlessly tie the value back to the company's product/services as the ultimate automated way to save time/money or scale results.
 
 5. ALGORITHM-BOOSTING COMMENT CTA: End the post with a thought-provoking, interactive question that practically forces readers to reply in the comments (drives the viral algorithm).
-   Examples:
-   - "What is your #1 strategy for this? Let me know in the comments."
-   - "Have you faced this challenge too? Share below."
-   - "Do you agree with this approach, or do you prefer the old way?"
    Followed by: "P.S. Learn how to automate this entire process here: ${targetWebsite}"
 
 Generate customized posts for the following social media channels:
 1. "facebook": Highly engaging, friendly/informal, uses emojis, lists value points with space breaks, ends with a soft pitch, comments CTA, and 3-5 hashtags.
 2. "instagram": Visually descriptive, highly engaging hook, uses emojis, space breaks for readability, ends with a comments CTA + bio CTA, and 5-10 hashtags.
-3. "linkedin": Professional, informative, business-oriented. Uses bullet points, structured spacing, professional tone, lists value/checklists, ends with a soft pitch, algorithm comment question, and 3-5 relevant hashtags.
+3. "linkedin": Professional, highly informative, business-oriented. Uses bullet points, structured spacing, professional tone, lists detailed value/checklists, ends with a soft pitch, algorithm comment question, and 3-5 relevant hashtags.
 4. "twitter": Short, punchy, under 280 characters, starts with a value hook, ends with a short pitch & CTA/link: "${targetWebsite}".
 5. "pinterest": Highly descriptive, uses search-friendly keywords, lists tips, includes a clear call to action pointing to the link.
 6. "threads": Conversational, interactive, invites comments, value-first, under 500 characters.
@@ -460,9 +466,7 @@ Strict Rules:
   "youtube": "string",
   "image_prompt": "string"
 }
-- For "image_prompt", provide a highly detailed, realistic, and meaningful professional photography description representing the concrete theme of the post (e.g., "realistic professional photo of a team discussing on a laptop in a modern brightly lit office, DSLR, 35mm lens, natural lighting, real people").
-- STRICTLY FORBID: abstract vector graphics, cartoon illustrations, clip art, diagrams, 3D renders, drawings, or anything that looks like generic clipart or AI graphics.
-- If the post topic is abstract and cannot be represented by a highly specific, realistic, and meaningful professional photograph, set "image_prompt" to "" (empty string) to post text-only without any image.
+- For "image_prompt", generate a highly descriptive prompt for an AI image generator (like DALL-E/Midjourney) to create an image strictly related to the post topic (e.g. "realistic photo of a professional workspace with a laptop..."). Do NOT leave it empty.
 - Ensure strings are properly escaped for valid JSON.`;
 
             let parsed = null;
@@ -498,15 +502,13 @@ Strict Rules:
                     settings = await SocialSettings.findOne(query).lean();
                 } catch(e) {}
 
-                // Dynamically generate the Pollinations AI URL based on the parsed image_prompt
+                // Add image URL from prompt
                 const shouldGenImage = settings ? (settings.gen_images !== false) : true;
-                const imagePrompt = shouldGenImage ? (parsed.image_prompt || '') : '';
-                if (imagePrompt && imagePrompt.trim()) {
-                    parsed.image_url = `https://image.pollinations.ai/prompt/${encodeURIComponent(imagePrompt)}?width=800&height=600&nologo=true&seed=${Math.floor(Math.random() * 100000)}`;
+                if (shouldGenImage && parsed.image_prompt) {
+                    parsed.image_url = `https://image.pollinations.ai/prompt/${encodeURIComponent(parsed.image_prompt)}?width=800&height=600&nologo=true&seed=${Math.floor(Math.random() * 100000)}`;
                 } else {
                     parsed.image_url = '';
                 }
-                parsed.image_prompt = imagePrompt;
 
                 return parsed;
             } else {
@@ -537,84 +539,56 @@ async function buildFallbackPosts(webData, topic, title, customContent, websiteU
     if (options.companyId) {
         query.companyId = options.companyId;
     } else if (options.userId) {
-        if (mongoose.Types.ObjectId.isValid(options.userId)) {
-            query.userId = new mongoose.Types.ObjectId(options.userId);
+        const userIdStr = options.userId.toString();
+        if (mongoose.Types.ObjectId.isValid(userIdStr)) {
+            query.$or = [
+                { userId: userIdStr },
+                { userId: new mongoose.Types.ObjectId(userIdStr) }
+            ];
         } else {
-            query.userId = options.userId;
+            query.userId = userIdStr;
         }
     }
 
-    const count = await SocialPost.countDocuments(query).catch(() => 0);
-    const t = count % 100;
-
-    const hookIdx = Math.floor(t / 10) % 10;
-    const bodyIdx = t % 10;
-    const pitchIdx = (hookIdx + bodyIdx) % 10;
-    const ctaIdx = (hookIdx * 3 + bodyIdx * 7) % 10;
-
     const hooks = [
-        `95% of founders make this outreach mistake (and it costs them thousands).`,
-        `I stopped doing manual follow-ups and our business grew by 300%.`,
-        `Here is the uncomfortable truth about B2B growth that nobody wants to admit.`,
-        `The best marketing doesn't feel like marketing. It feels like help.`,
-        `Why are you still wasting hours sending manual emails and postings?`,
-        `If you are not using value-first outreach, you are leaving client deals on the table.`,
-        `The secret to a 391% increase in conversion rates isn't a better sales pitch.`,
-        `We audited 100 B2B campaigns this quarter. The results were shocking.`,
-        `Stop hard selling in the first message. Start teaching instead.`,
-        `Scale your brand smarter, not harder. Here is what the data says.`
+        `Attention: All CEOs, CTOs, and management team members — read this before sending your next cold outreach campaign.`,
+        `Why 95% of CEOs and founders are failing at B2B lead generation (and how to fix it).`,
+        `Dear CTOs and technical management: Stop wasting engineering hours building custom scraper scripts.`,
+        `The B2B outreach strategy that top-performing CEOs are using to double their meeting booking rates.`,
+        `A message to all operations management: Manual lead tracking is killing your team's productivity.`,
+        `How smart CEOs structure their CRM and WhatsApp automations to scale without adding headcount.`,
+        `What every CTO needs to know about API limits and deliverability when scaling client outreach.`,
+        `The simple value-first outreach blueprint that B2B management teams are using to build instant trust.`,
+        `Why cold pitches fail and how modern management is pivoting to educational, tip-based outreach.`,
+        `Operations audit: How top management teams eliminate outreach consistency issues using scheduling.`
     ];
 
     const bodies = [
-        `Here are 3 quick tips to solve this:
-1️⃣ Automate your first outreach step.
-2️⃣ Follow up within 5 minutes of a query.
-3️⃣ Always provide upfront educational value.`,
+        `Here is a detailed 3-step action plan to optimize your client acquisition:
+1️⃣ Implement Multi-Channel Data Extraction: Instead of manually copying leads, extract high-intent prospects from Google Maps and LinkedIn automatically to build a structured database of targeted leads.
+2️⃣ Deploy WhatsApp & Email Hyper-Personalization: Personalize your outreach at scale. Use dynamic variables (Business Name, City, Industry Rating, and specific local insights) to ensure every message feels uniquely researched.
+3️⃣ Leverage Automated Multi-Step Follow-ups: Establish automated follow-up sequences within 24-48 hours. Consistent follow-ups can increase response rates by over 150% compared to a single touchpoint.`,
 
-        `Try this quick outreach checklist:
-✔️ Educate your leads instead of just selling.
-✔️ Share actionable guides to show expertise.
-✔️ Keep access to your services frictionless.`,
+        `Here is a technical guide for CTOs and operations management to scale outreach safely:
+🔹 Establish Dedicated Outreach Domains: Protect your main corporate domain by setting up secondary domains specifically for B2B email outreach. This safeguards your domain authority and email deliverability.
+🔹 Warm Up New IP/Sender Addresses: Gradually increase your sending limits over 2-4 weeks to establish positive sender reputation with major ESPs (Google, Outlook, etc.).
+🔹 Monitor Real-time Verification & Bounce Rates: Automatically filter out invalid emails and inactive phone numbers before launching campaigns to keep your bounce rates strictly below 2%.`,
 
-        `Here is a 3-step audit for your operations:
-🔹 Use templates to keep messaging consistent.
-🔹 Pre-schedule postings to stay active 24/7.
-🔹 Automate tracking for all responses.`,
+        `Here is the Value-First Outreach Blueprint to build instant B2B trust:
+1️⃣ Offer an Upfront Audit: Instead of asking for a sales meeting, offer a quick free review of their public profile, website load times, or business listings. This shows immediate value.
+2️⃣ Share a Frictionless Checklist: Provide a simple, 5-point industry-specific PDF or guide that they can implement immediately to see results without spending money.
+3️⃣ Connect the Solution to Automation: Once trust is established, introduce how your platform can automate and scale these results with zero manual effort.`,
 
-        `Implement this simple value-first checklist:
-1️⃣ Share high-value tips instead of product features.
-2️⃣ Teach prospects something that saves them time.
-3️⃣ Connect them to a reliable platform to scale.`,
+        `To improve your client acquisition pipeline and eliminate outreach consistency issues:
+🔹 Build a Centralized Leads CRM: Store all potential client data in a single unified dashboard, categorizing leads as Hot, Warm, or Cold based on rating and responsiveness.
+🔹 Schedule Dynamic Batches: Stagger your outreach sending times (e.g. 10:00 AM and 4:00 PM) to align with when business owners and management are most likely to check their messages.
+🔹 Sync Client Contacts Automatically: Use secure OAuth integrations to sync leads directly to your workspace, saving hours of manual data entry for your sales team.`,
 
-        `To improve your client acquisition immediately:
-✔️ Implement automated template builders.
-✔️ Use CRM tools to centralize user queries.
-✔️ Outsource non-core data extraction.`,
-
-        `Optimize your daily workflow with these steps:
-🔹 Create educational content answering FAQs.
-🔹 Automate your posting schedule.
-🔹 Base your campaigns on real data insights.`,
-
-        `Here is how to build instant trust:
-1️⃣ Address a real pain point your client experiences.
-2️⃣ Show a clear pathway to solve it.
-3️⃣ Offer value before asking for a call.`,
-
-        `Stop losing deals to slow follow-ups:
-✔️ Sync your contacts automatically to your CRM.
-✔️ Keep templates ready for standard responses.
-✔️ Always follow up within the same day.`,
-
-        `Create a self-sustaining marketing engine:
-🔹 Document your most successful workflows.
-🔹 Set up automated triggers for new leads.
-🔹 Focus on high-intent customer segments.`,
-
-        `3 rules for modern B2B customer engagement:
-1️⃣ No spammy cold pitches.
-2️⃣ Highly personalized context.
-3️⃣ Frictionless scaling mechanisms.`
+        `Here is the ultimate workflow checklist for high-converting B2B outreach:
+✔️ Personalized hooks targeting specific local pain points.
+✔️ Educational tips offering immediate solutions.
+✔️ Clear, low-friction call-to-actions (CTAs) directing to a helpful landing page.
+✔️ Automated follow-up triggers linked directly to response tracking.`
     ];
 
     const pitches = [
@@ -643,18 +617,12 @@ async function buildFallbackPosts(webData, topic, title, customContent, websiteU
         `Ready to transform your brand? Let me know in the comments! 👇\n\n🔗 Visit: ${targetLink}`
     ];
 
-    const imgThemes = [
-        "realistic professional photo of a team discussing on a laptop in a modern brightly lit office, DSLR, 35mm lens, natural lighting",
-        "realistic photo of a professional workspace with a clean desk, a laptop showing charts, and a coffee mug, modern office setting, depth of field",
-        "realistic photo of a business meeting in a modern glass conference room, people collaborating, sunlight streaming in, professional attire",
-        "realistic shot of a focused entrepreneur working on a desktop computer in a sleek home office, warm lighting, high quality",
-        "realistic photo of hands typing on a laptop keyboard with blurred office background, clean corporate aesthetic, soft shadows",
-        "realistic photo of a creative marketing team writing ideas on a whiteboard in a bright modern studio, authentic interaction",
-        "realistic photo of a modern corporate building facade during golden hour, professional design, clear blue sky, wide angle",
-        "realistic photo of a desk with a smartphone, tablet, and notebook, organized productivity layout, top-down view, minimal style",
-        "realistic shot of business partners shaking hands in a bright, modern lobby, professional relationship, warm welcoming atmosphere",
-        "realistic photo of a server rack room or sleek tech environment with soft blue indicator lights, clean modern hosting infrastructure"
-    ];
+    const count = await SocialPost.countDocuments(query).catch(() => 0);
+
+    const hookIdx = count % hooks.length;
+    const bodyIdx = count % bodies.length;
+    const pitchIdx = count % pitches.length;
+    const ctaIdx = count % ctas.length;
 
     const hook = hooks[hookIdx];
     const body = bodies[bodyIdx];
@@ -686,12 +654,10 @@ async function buildFallbackPosts(webData, topic, title, customContent, websiteU
         settings = await SocialSettings.findOne(query).lean();
     } catch(e) {}
 
-    const shouldGenImage = settings ? (settings.gen_images !== false) : true;
-    const imagePrompt = shouldGenImage ? imgThemes[hookIdx] : '';
+    // Forced false to remove images for now per user request
+    const shouldGenImage = false;
+    const imagePrompt = '';
     let imageUrl = '';
-    if (imagePrompt) {
-        imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(imagePrompt)}?width=800&height=600&nologo=true&seed=${Math.floor(Math.random() * 100000)}`;
-    }
 
     return {
         facebook,
@@ -718,10 +684,14 @@ async function postToSocial(generatedPosts, settings) {
     if (settings.companyId) {
         query.companyId = settings.companyId;
     } else if (settings.userId) {
-        if (mongoose.Types.ObjectId.isValid(settings.userId)) {
-            query.userId = new mongoose.Types.ObjectId(settings.userId);
+        const userIdStr = settings.userId.toString();
+        if (mongoose.Types.ObjectId.isValid(userIdStr)) {
+            query.$or = [
+                { userId: userIdStr },
+                { userId: new mongoose.Types.ObjectId(userIdStr) }
+            ];
         } else {
-            query.userId = settings.userId;
+            query.userId = userIdStr;
         }
     }
 
