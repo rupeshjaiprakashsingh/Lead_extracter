@@ -473,83 +473,174 @@ function stopScheduler() {
     if (_reportJob) { _reportJob.stop(); _reportJob = null; }
 }
 
+async function generateMonthlySchedule(settings) {
+    const categories = ['Business Tips', 'Customer Success Stories', 'Industry Insights', 'Service Promotion', 'Educational Content'];
+    let catIndex = Math.floor(Math.random() * categories.length);
+    const schedule = [];
+    const today = new Date();
+    
+    for (let d = 0; d < 30; d++) {
+        const date = new Date(today);
+        date.setDate(today.getDate() + d);
+        
+        const windows = [
+            { minHour: 8, maxHour: 9 }, // 8-10 AM
+            { minHour: 12, maxHour: 13 }, // 12-2 PM
+            { minHour: 16, maxHour: 17 }, // 4-6 PM
+            { minHour: 20, maxHour: 21 } // 8-10 PM
+        ];
+        
+        let lastTime = 0;
+        for (let i = 0; i < 4; i++) {
+            const w = windows[i];
+            const baseHour = w.minHour + Math.floor(Math.random() * (w.maxHour - w.minHour + 1));
+            // +/- 15 to 30 mins logic via random minutes 15-45
+            const minuteOffset = 15 + Math.floor(Math.random() * 30);
+            
+            const postTime = new Date(date);
+            postTime.setHours(baseHour, minuteOffset, 0, 0);
+            
+            if (lastTime) {
+                const gapHrs = (postTime.getTime() - lastTime.getTime()) / (1000 * 60 * 60);
+                if (gapHrs < 4) {
+                    postTime.setTime(lastTime.getTime() + (4 * 60 * 60 * 1000) + Math.random() * (2 * 60 * 60 * 1000));
+                } else if (gapHrs > 6) {
+                    postTime.setTime(lastTime.getTime() + (5.5 * 60 * 60 * 1000));
+                }
+            }
+            
+            lastTime = postTime;
+            const categoryName = categories[catIndex % categories.length];
+            catIndex++;
+            
+            schedule.push({
+                post_time: postTime,
+                category_name: categoryName,
+                status: 'pending'
+            });
+        }
+    }
+    settings.monthly_schedule = schedule;
+    settings.last_schedule_generated = new Date();
+    await settings.save();
+    console.log(`📅 Generated 30-day posting schedule for company ${settings.companyId || settings.userId}`);
+}
+
 // ── Social Poster Scheduler ───────────────────────────────────
 async function runScheduledSocialPost() {
     try {
         const SocialSettings = getSocialSettings();
         const SocialPost     = getSocialPost();
-
         const settingsList = await SocialSettings.find({ enabled: true });
+        
         for (const settings of settingsList) {
             try {
-                const now         = new Date();
-                const currentHour = parseInt(now.toLocaleTimeString('en-US', { hour12: false, hour: 'numeric', timeZone: 'Asia/Kolkata' }));
-                const todayStr    = now.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata' });
-
+                const now = new Date();
                 const logIdentifier = settings.companyId ? `company ${settings.companyId}` : `user ${settings.userId}`;
+                
+                // Generate schedule if missing or old (> 25 days)
+                if (!settings.monthly_schedule || settings.monthly_schedule.length === 0 || 
+                   (now.getTime() - new Date(settings.last_schedule_generated).getTime() > 25 * 24 * 60 * 60 * 1000)) {
+                    await generateMonthlySchedule(settings);
+                }
+
+                // Check for pending posts whose time has passed (within last 1 hour to avoid double-posting old ones)
+                const pendingIdx = settings.monthly_schedule.findIndex(s => 
+                    s.status === 'pending' && 
+                    new Date(s.post_time) <= now && 
+                    (now.getTime() - new Date(s.post_time).getTime()) < 60 * 60 * 1000
+                );
+                
+                let targetCategory = null;
+                let scheduleToUpdate = -1;
+                let isRetry = false;
+                let retryPostId = null;
+
+                // Also check for retries
                 const query = {};
                 if (settings.companyId) query.companyId = settings.companyId;
                 else if (settings.userId) query.userId  = settings.userId;
+                
+                const retryPost = await SocialPost.findOne({
+                    ...query,
+                    status: 'Failed',
+                    retry_count: { $lt: 3 },
+                    next_retry_at: { $lte: now }
+                });
 
-                if (settings.frequency === 'daily') {
-                    if (currentHour !== settings.time_hour) continue;
-                    const lastPost = await SocialPost.findOne(query).sort({ createdAt: -1 });
-                    if (lastPost && new Date(lastPost.createdAt).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata' }) === todayStr) continue;
-                } else if (settings.frequency === 'thirty_minutes') {
-                    const lastPost = await SocialPost.findOne(query).sort({ createdAt: -1 });
-                    if (lastPost && (now - new Date(lastPost.createdAt)) / 60000 < 25) continue;
-                } else if (settings.frequency === 'hourly') {
-                    const lastPost = await SocialPost.findOne(query).sort({ createdAt: -1 });
-                    if (lastPost && (now - new Date(lastPost.createdAt)) / 60000 < 50) continue;
+                if (retryPost) {
+                    console.log(`⏰ Retrying failed post ID ${retryPost._id}...`);
+                    targetCategory = retryPost.topic || 'Business Tips';
+                    isRetry = true;
+                    retryPostId = retryPost._id;
+                } else if (pendingIdx !== -1) {
+                    // Check if we haven't exceeded 4 posts today
+                    const startOfDay = new Date(now);
+                    startOfDay.setHours(0,0,0,0);
+                    const postsToday = await SocialPost.countDocuments({
+                        ...query,
+                        createdAt: { $gte: startOfDay }
+                    });
+                    if (postsToday >= 4) {
+                        console.log(`⚠️ 4 post limit reached for today. Skipping schedule.`);
+                        settings.monthly_schedule[pendingIdx].status = 'skipped_limit';
+                        await settings.save();
+                        continue;
+                    }
+                    targetCategory = settings.monthly_schedule[pendingIdx].category_name;
+                    scheduleToUpdate = pendingIdx;
+                    
+                    // Mark as in progress to prevent duplicate runs
+                    settings.monthly_schedule[pendingIdx].status = 'processing';
+                    await settings.save();
+                } else {
+                    continue; // Nothing to do right now
                 }
 
-                console.log(`⏰ Social Scheduler: Running (${settings.frequency}) for ${logIdentifier}...`);
+                console.log(`⏰ Social Scheduler: Running auto-post for ${logIdentifier}. Category: ${targetCategory}`);
                 const { scrapeWebsite, generateSocialPosts, postToSocial } = require('./social-poster');
                 const webData = await scrapeWebsite(settings.website_url);
 
-                let topic = settings.topic, title = settings.title, custom_content = settings.custom_content;
-
+                let custom_content = `Focus strictly on this content category: ${targetCategory}. Maintain a professional business tone. `;
+                
                 if (settings.business_category) {
-                    if (settings.topics && settings.topics.length > 0) {
-                        const idx = settings.current_category_index || 0;
-                        topic = settings.topics[idx % settings.topics.length];
-                        settings.current_category_index = (idx + 1) % settings.topics.length;
-                        await settings.save();
-                    } else {
-                        topic = 'General Services';
-                    }
-                    title = settings.business_name || settings.title || 'Our Company';
                     let inst = `Business Category: ${settings.business_category}. `;
                     if (settings.business_desc)    inst += `Business Description: ${settings.business_desc}. `;
                     if (settings.target_audience)  inst += `Target Audience: ${settings.target_audience}. `;
                     if (settings.primary_services) inst += `Primary Services: ${settings.primary_services}. `;
                     inst += `Language: ${settings.language || 'English'}. Goal: ${settings.content_goal || 'Brand Awareness'}. `;
-                    inst += `Type: ${settings.content_type || 'Promotional'}. Tone: ${settings.tone || 'Professional'}. `;
+                    inst += `Type: ${settings.content_type || 'Promotional'}. Tone: Professional and corporate. `;
                     inst += `Length: ${settings.post_length || 'Medium'}. `;
                     if (settings.gen_hashtags === false) inst += 'No hashtags. ';
-                    else inst += 'Generate relevant hashtags. ';
-                    custom_content = inst;
-                } else if (settings.categories && settings.categories.length > 0) {
-                    const idx = settings.current_category_index || 0;
-                    const cat = settings.categories[idx % settings.categories.length];
-                    topic         = cat.topic || settings.topic;
-                    title         = cat.name  || settings.title;
-                    custom_content = `[Category: ${cat.name}] ${cat.custom_content || ''} (Focus keywords: ${cat.keywords || ''}). ${settings.custom_content || ''}`;
-                    settings.current_category_index = (idx + 1) % settings.categories.length;
-                    await settings.save();
+                    else inst += 'Generate relevant hashtags, avoid identical repeating hashtags. ';
+                    custom_content += inst;
                 }
 
-                const generated  = await generateSocialPosts(webData, topic, title, custom_content, {
+                const generated = await generateSocialPosts(webData, targetCategory, settings.business_name || settings.title || 'Our Company', custom_content, {
                     companyId: settings.companyId,
                     userId:    settings.userId,
                     websiteUrl: settings.website_url
                 });
+                
                 const settingsForDoc = settings.toObject ? settings.toObject() : { ...settings };
-                settingsForDoc.topic          = topic;
-                settingsForDoc.title          = title;
-                settingsForDoc.custom_content = custom_content;
-                const postDoc = await postToSocial(generated, settingsForDoc);
-                console.log(`✅ Social Scheduler: Post completed for ${logIdentifier}. ID: ${postDoc._id}`);
+                settingsForDoc.topic = targetCategory;
+                
+                try {
+                    const postDoc = await postToSocial(generated, settingsForDoc, isRetry ? retryPostId : null);
+                    console.log(`✅ Social Scheduler: Post completed for ${logIdentifier}. ID: ${postDoc._id}`);
+                    
+                    if (scheduleToUpdate !== -1) {
+                        settings.monthly_schedule[scheduleToUpdate].status = 'posted';
+                        settings.monthly_schedule[scheduleToUpdate].post_id = postDoc._id;
+                        await settings.save();
+                    }
+                } catch (postErr) {
+                    console.error(`❌ Social Post execution error: ${postErr.message}`);
+                    if (scheduleToUpdate !== -1) {
+                        settings.monthly_schedule[scheduleToUpdate].status = 'failed';
+                        await settings.save();
+                    }
+                }
             } catch(innerErr) {
                 const logId = settings.companyId || settings.userId || 'unknown';
                 console.error(`❌ Social Scheduler Error for ${logId}: ${innerErr.message}`);

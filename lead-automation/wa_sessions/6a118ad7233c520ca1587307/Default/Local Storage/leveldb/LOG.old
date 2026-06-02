@@ -1,12 +1,42 @@
-2026/05/31-00:13:24.267 4b20 Reusing MANIFEST C:\Users\Admin\Documents\GitHub\Lead_extracter\lead-automation\wa_sessions\6a118ad7233c520ca1587307\Default\Local Storage\leveldb/MANIFEST-000001
-2026/05/31-00:13:24.274 4b20 Recovering log #233
-2026/05/31-00:13:24.277 4b20 Reusing old log C:\Users\Admin\Documents\GitHub\Lead_extracter\lead-automation\wa_sessions\6a118ad7233c520ca1587307\Default\Local Storage\leveldb/000233.log 
-2026/05/31-00:15:09.895 22f4 Level-0 table #238: started
-2026/05/31-00:15:09.907 22f4 Level-0 table #238: 17625 bytes OK
-2026/05/31-00:15:09.909 22f4 Delete type=0 #233
-2026/05/31-00:20:24.865 22f4 Level-0 table #240: started
-2026/05/31-00:20:24.872 22f4 Level-0 table #240: 17217 bytes OK
-2026/05/31-00:20:24.874 22f4 Delete type=0 #237
-2026/05/31-00:25:59.039 22f4 Level-0 table #242: started
-2026/05/31-00:25:59.056 22f4 Level-0 table #242: 17648 bytes OK
-2026/05/31-00:25:59.061 22f4 Delete type=0 #239
+2026/06/01-22:41:03.073 1e64 Reusing MANIFEST C:\Users\Admin\Documents\GitHub\Lead_extracter\lead-automation\wa_sessions\6a118ad7233c520ca1587307\Default\Local Storage\leveldb/MANIFEST-000001
+2026/06/01-22:41:03.112 1e64 Recovering log #269
+2026/06/01-22:41:03.118 1e64 Reusing old log C:\Users\Admin\Documents\GitHub\Lead_extracter\lead-automation\wa_sessions\6a118ad7233c520ca1587307\Default\Local Storage\leveldb/000269.log 
+2026/06/01-22:42:14.862 2ec0 Level-0 table #273: started
+2026/06/01-22:42:14.883 2ec0 Level-0 table #273: 17793 bytes OK
+2026/06/01-22:42:14.886 2ec0 Delete type=0 #269
+2026/06/01-22:48:03.703 2ec0 Level-0 table #275: started
+2026/06/01-22:48:03.714 2ec0 Level-0 table #275: 16593 bytes OK
+2026/06/01-22:48:03.717 2ec0 Delete type=0 #272
+2026/06/01-22:48:03.718 2ec0 Compacting 4@0 + 1@1 files
+2026/06/01-22:48:03.734 2ec0 Generated table #276@0: 5490 keys, 277162 bytes
+2026/06/01-22:48:03.734 2ec0 Compacted 4@0 + 1@1 files => 277162 bytes
+2026/06/01-22:48:03.735 2ec0 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/06/01-22:48:03.737 2ec0 Delete type=2 #266
+2026/06/01-22:48:03.737 2ec0 Delete type=2 #268
+2026/06/01-22:48:03.737 2ec0 Delete type=2 #270
+2026/06/01-22:48:03.737 2ec0 Delete type=2 #273
+2026/06/01-22:48:03.737 2ec0 Delete type=2 #275
+2026/06/01-22:53:54.720 2ec0 Level-0 table #278: started
+2026/06/01-22:53:54.728 2ec0 Level-0 table #278: 16762 bytes OK
+2026/06/01-22:53:54.730 2ec0 Delete type=0 #274
+2026/06/01-22:59:15.303 2ec0 Level-0 table #280: started
+2026/06/01-22:59:15.317 2ec0 Level-0 table #280: 17434 bytes OK
+2026/06/01-22:59:15.320 2ec0 Delete type=0 #277
+2026/06/01-23:04:33.158 2ec0 Level-0 table #282: started
+2026/06/01-23:04:33.167 2ec0 Level-0 table #282: 17597 bytes OK
+2026/06/01-23:04:33.170 2ec0 Delete type=0 #279
+2026/06/01-23:11:38.351 2ec0 Level-0 table #284: started
+2026/06/01-23:11:38.365 2ec0 Level-0 table #284: 16854 bytes OK
+2026/06/01-23:11:38.368 2ec0 Delete type=0 #281
+2026/06/01-23:11:38.369 2ec0 Compacting 4@0 + 1@1 files
+2026/06/01-23:11:38.385 2ec0 Generated table #285@0: 5727 keys, 287737 bytes
+2026/06/01-23:11:38.385 2ec0 Compacted 4@0 + 1@1 files => 287737 bytes
+2026/06/01-23:11:38.386 2ec0 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/06/01-23:11:38.388 2ec0 Delete type=2 #276
+2026/06/01-23:11:38.388 2ec0 Delete type=2 #278
+2026/06/01-23:11:38.388 2ec0 Delete type=2 #280
+2026/06/01-23:11:38.388 2ec0 Delete type=2 #282
+2026/06/01-23:11:38.388 2ec0 Delete type=2 #284
+2026/06/01-23:16:03.689 2ec0 Level-0 table #287: started
+2026/06/01-23:16:03.695 2ec0 Level-0 table #287: 19673 bytes OK
+2026/06/01-23:16:03.698 2ec0 Delete type=0 #283

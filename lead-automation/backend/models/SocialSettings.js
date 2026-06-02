@@ -50,7 +50,14 @@ const socialSettingsSchema = new mongoose.Schema({
       enabled: { type: Boolean, default: false },
       token:   { type: String, default: '' }
     }
-  }
+  },
+  monthly_schedule: [{
+    post_time: { type: Date },
+    category_name: { type: String },
+    status: { type: String, default: 'pending' }, // 'pending', 'posted', 'failed'
+    post_id: { type: mongoose.Schema.Types.ObjectId, ref: 'SocialPost' }
+  }],
+  last_schedule_generated: { type: Date }
 }, { timestamps: true });
 
 module.exports = mongoose.model('SocialSettings', socialSettingsSchema);

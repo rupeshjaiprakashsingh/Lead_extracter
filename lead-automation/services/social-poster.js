@@ -673,7 +673,7 @@ async function buildFallbackPosts(webData, topic, title, customContent, websiteU
 }
 
 // Simulate Posting to Enabled Channels
-async function postToSocial(generatedPosts, settings) {
+async function postToSocial(generatedPosts, settings, retryPostId = null) {
     // Stagger concurrent runs to prevent race conditions across server instances
     const delayMs = 200 + Math.floor(Math.random() * 1800);
     await new Promise(resolve => setTimeout(resolve, delayMs));
@@ -931,18 +931,53 @@ async function postToSocial(generatedPosts, settings) {
 
     logString += `🏁 Social Post Run Finished.\n`;
 
-    const finalStatus = enabledChannels.length === channelsPosted.length && enabledChannels.length > 0 ? 'Success' : 'Simulated';
+    let finalStatus = 'Simulated';
+    if (enabledChannels.length > 0) {
+        if (channelsPosted.length === enabledChannels.length) {
+            finalStatus = 'Success';
+        } else if (channelsPosted.length === 0) {
+            finalStatus = 'Failed';
+        } else {
+            finalStatus = 'Partial Success';
+        }
+    }
+    
+    // If we failed, calculate next_retry_at (30 mins from now)
+    let nextRetryAt = null;
+    let newRetryCount = 0;
+    if (finalStatus === 'Failed') {
+        const now = new Date();
+        now.setMinutes(now.getMinutes() + 30);
+        nextRetryAt = now;
+        
+        if (retryPostId) {
+            // Retrieve existing retry count
+            try {
+                const existing = await SocialPost.findById(retryPostId).lean();
+                if (existing && existing.retry_count) {
+                    newRetryCount = existing.retry_count + 1;
+                } else {
+                    newRetryCount = 1;
+                }
+            } catch (e) {}
+        } else {
+            newRetryCount = 1;
+        }
+    }
 
     if (pendingDoc) {
         try {
-            await SocialPost.findByIdAndUpdate(pendingDoc._id, {
-                $set: {
-                    channels_posted: channelsPosted,
-                    status: finalStatus,
-                    logs: logString
-                }
-            });
-            // Retrieve and return the updated document
+            const updateFields = {
+                channels_posted: channelsPosted,
+                status: finalStatus,
+                logs: logString
+            };
+            if (finalStatus === 'Failed') {
+                updateFields.retry_count = newRetryCount;
+                updateFields.next_retry_at = nextRetryAt;
+            }
+            
+            await SocialPost.findByIdAndUpdate(pendingDoc._id, { $set: updateFields });
             return await SocialPost.findById(pendingDoc._id);
         } catch (e) {
             console.error('Error updating pending lock document:', e.message);
@@ -961,6 +996,11 @@ async function postToSocial(generatedPosts, settings) {
         status: finalStatus,
         logs: logString
     };
+    
+    if (finalStatus === 'Failed') {
+        docData.retry_count = newRetryCount;
+        docData.next_retry_at = nextRetryAt;
+    }
 
     if (settings.companyId) {
         docData.companyId = settings.companyId;

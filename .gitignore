@@ -18,6 +18,7 @@ client_secret.json
 playwright-profile/
 test-results/
 playwright-report/
+.browser_profile_*
 
 # Logs
 logs/

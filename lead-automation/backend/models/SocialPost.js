@@ -20,7 +20,9 @@ const socialPostSchema = new mongoose.Schema({
   channels_posted: [String],
   status:      { type: String, default: 'Simulated' }, // 'Success', 'Simulated', 'Failed'
   logs:        { type: String, default: '' },
-  last_run_at: { type: Date, default: Date.now }
+  last_run_at: { type: Date, default: Date.now },
+  retry_count: { type: Number, default: 0 },
+  next_retry_at: { type: Date }
 }, { timestamps: true });
 
 module.exports = mongoose.model('SocialPost', socialPostSchema);
