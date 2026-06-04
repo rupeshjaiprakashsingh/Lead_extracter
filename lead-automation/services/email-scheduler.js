@@ -5,7 +5,7 @@
 // ============================================================
 const cron     = require('node-cron');
 const mongoose = require('mongoose');
-const { sendEmail } = require('./email-sender');
+const { sendEmail, isValidEmail } = require('./email-sender');
 const { buildInitialEmail } = require('./ai-messages');
 
 let _hourlyJob = null;
@@ -92,6 +92,9 @@ async function runScheduledSendForRule(schedule) {
         filter.email_sent = { $ne: true };
     }
 
+    // Never retry leads with permanently invalid email addresses
+    filter.email_invalid = { $ne: true };
+
     const leads = await Lead.find(filter)
         .sort({ rating: -1, createdAt: 1 })   // Prioritize HOT leads (highest rating) first, then FIFO
         .limit(toSend)
@@ -133,6 +136,28 @@ async function runScheduledSendForRule(schedule) {
             }
 
             try {
+                // ── Validate email before sending ──────────────────
+                if (!isValidEmail(lead.email)) {
+                    console.warn(`⏰ Email Scheduler: Skipping lead "${lead.name}" — invalid email address: "${lead.email}"`);
+                    // Mark in DB so it is never picked up again
+                    await Lead.findOneAndUpdate({ _id: lead._id, userId }, {
+                        $set: { email_invalid: true },
+                        $push: { activity: { type: 'email_invalid', message: `Email address "${lead.email}" is not a valid RFC 5321 address — skipped permanently.`, date: new Date() } }
+                    });
+                    failed++;
+                    if (global.emit) {
+                        global.emit({
+                            type: 'failed',
+                            name: lead.name || lead.email,
+                            reason: `Invalid email address: "${lead.email}"`,
+                            sent,
+                            failed,
+                            total: leads.length
+                        });
+                    }
+                    continue;
+                }
+
                 const { subject, html } = await buildInitialEmail(lead);
                 await sendEmail(lead.email, subject, html, userId);
                 

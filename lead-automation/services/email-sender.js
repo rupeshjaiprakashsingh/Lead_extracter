@@ -9,6 +9,27 @@ const logger      = require('./logger');
 
 // ── Helpers ──────────────────────────────────────────────────
 
+/**
+ * Validate an email address against RFC 5321 rules.
+ * Rejects: missing @, double dots, invalid chars, IP-like domains, etc.
+ */
+function isValidEmail(email) {
+    if (!email || typeof email !== 'string') return false;
+    const trimmed = email.trim();
+    // Must match standard email pattern
+    const RFC5321 = /^[a-zA-Z0-9.!#$%&'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
+    if (!RFC5321.test(trimmed)) return false;
+    // Reject consecutive dots anywhere
+    if (trimmed.includes('..')) return false;
+    // Domain must have at least one dot and a valid TLD (2+ chars)
+    const domain = trimmed.split('@')[1];
+    const parts = domain.split('.');
+    if (parts.length < 2) return false;
+    const tld = parts[parts.length - 1];
+    if (tld.length < 2) return false;
+    return true;
+}
+
 function todayStr() {
     return new Date().toISOString().slice(0, 10);
 }
@@ -183,6 +204,14 @@ async function recordSent(accountId) {
 // ── Main sendEmail (load-balancer aware) ─────────────────────
 
 async function sendEmail(to, subject, html, userId) {
+    // ── Validate recipient address before touching SMTP ──────
+    if (!isValidEmail(to)) {
+        const err = new Error(`Invalid email address: "${to}" — skipping (not a valid RFC 5321 address).`);
+        err.code = 'INVALID_EMAIL';
+        logger.error(`Skipping send — invalid recipient address: ${to}`, err);
+        throw err;
+    }
+
     logger.log(`Attempting to send email to: ${to} (Subject: "${subject}") for user: ${userId}`, 'EMAIL');
 
     const selection = await pickSmtpAccount(userId);
@@ -318,6 +347,7 @@ async function migrateOldSettingsIfNeeded(userId) {
 
 module.exports = {
     sendEmail,
+    isValidEmail,
     testSmtp,
     testSmtpAccountById,
     migrateOldSettingsIfNeeded,
