@@ -8,6 +8,7 @@
 // ============================================================
 const cron     = require('node-cron');
 const mongoose = require('mongoose');
+const { isValidEmail } = require('./email-sender');
 
 let _minuteJob = null;
 let _reportJob  = null;
@@ -244,6 +245,16 @@ async function runScheduledSendForRule(schedule) {
                         // Random delay 2–5s between emails
                         if (i > 0) {
                             await new Promise(r => setTimeout(r, 2000 + Math.random() * 3000));
+                        }
+                        // ── Validate email before sending ─────────────
+                        if (!isValidEmail(lead.email)) {
+                            console.warn(`⏰ Scheduler: Skipping "${lead.name}" — invalid email: "${lead.email}"`);
+                            await Lead.findByIdAndUpdate(lead._id, {
+                                $set:  { email_invalid: true },
+                                $push: { activity: { type: 'email_invalid', message: `Email "${lead.email}" is not a valid address — skipped permanently.`, date: new Date() } }
+                            });
+                            emailResult.failed++;
+                            continue;
                         }
                         try {
                             const { subject, html } = await buildInitialEmail(lead);

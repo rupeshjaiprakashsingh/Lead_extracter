@@ -1587,6 +1587,23 @@ app.post('/api/contacts/mark-all-saved', async (req, res) => {
     } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── POST Clear WA Invalid flag (useful if leads were wrongly marked invalid due to playwright evaluation crash) ─
+app.post('/api/wa/clear-invalid', async (req, res) => {
+    try {
+        const userId = uid(req);
+        const { ids } = req.body;
+        const filter = { userId };
+        if (ids && ids.length) {
+            filter._id = { $in: ids };
+        } else {
+            filter.wa_invalid = true;
+        }
+        const result = await Lead.updateMany(filter, { $set: { wa_invalid: false } });
+        console.log(`✅ Reset wa_invalid=false for ${result.modifiedCount} leads for user ${userId}`);
+        res.json({ success: true, cleared: result.modifiedCount });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── GET Export VCard — ALL leads (no dedup) ───────────────────
 app.get('/api/leads/export-vcf', async (req, res) => {
     try {
@@ -1812,6 +1829,22 @@ app.post('/api/send/email', async (req, res) => {
                     continue;
                 }
 
+                // ── Validate email format before touching SMTP ────────────
+                const { isValidEmail } = require('./services/email-sender');
+                if (!isValidEmail(lead.email)) {
+                    skipped++;
+                    failed++;
+                    emit({ type: 'failed', name: lead.name,
+                        reason: `❌ Invalid email address: "${lead.email}" — this looks like a CSS/font value scraped by mistake. Use "Extract Emails" to re-scrape.`,
+                        sent, failed });
+                    // Mark permanently so scheduler won't retry either
+                    await Lead.findOneAndUpdate({ _id: lead._id, userId }, {
+                        $set: { email_invalid: true },
+                        $push: { activity: { type: 'email_invalid', message: `Email "${lead.email}" is not a valid RFC 5321 address — skipped permanently.`, date: new Date() } }
+                    });
+                    continue;
+                }
+
                 try {
                     const { subject, html } = await buildInitialEmail(lead);
                     await sendEmail(lead.email, subject, html, userId);
@@ -1893,6 +1926,15 @@ app.post('/api/send/followup', async (req, res) => {
                 let emailDone = false;
 
                 if (lead.email) {
+                    // Validate email before attempting SMTP send
+                    const { isValidEmail: _isValid } = require('./services/email-sender');
+                    if (!_isValid(lead.email)) {
+                        console.warn(`Followup: skipping invalid email "${lead.email}" for lead "${lead.name}"`);
+                        await Lead.findOneAndUpdate({ _id: lead._id, userId }, {
+                            $set: { email_invalid: true },
+                            $push: { activity: { type: 'email_invalid', message: `Email "${lead.email}" is not a valid address — skipped permanently.`, date: new Date() } }
+                        });
+                    } else {
                     try {
                         const { subject, html } = buildFollowupEmail(lead, followupNum);
                         await sendEmail(lead.email, subject, html, userId);
@@ -1903,6 +1945,7 @@ app.post('/api/send/followup', async (req, res) => {
                         });
                         emailDone = true;
                     } catch(e) { console.error('Followup email error:', e.message); }
+                    } // end else (valid email)
                 }
 
                 if (emailDone) { sent++; emit({ type: 'sent', name: lead.name, sent, failed, total: leads.length }); }
@@ -3205,6 +3248,15 @@ app.post('/api/leads/:id/followup-send-email', async (req, res) => {
         const lead = await Lead.findOne({ _id: req.params.id, userId }).lean();
         if (!lead) return res.status(404).json({ error: 'Lead not found' });
         if (!lead.email) return res.status(400).json({ error: 'No email address for this lead' });
+        // Validate email format before attempting SMTP
+        const { isValidEmail: _iv } = require('./services/email-sender');
+        if (!_iv(lead.email)) {
+            await Lead.findOneAndUpdate({ _id: lead._id, userId }, {
+                $set: { email_invalid: true },
+                $push: { activity: { type: 'email_invalid', message: `Email "${lead.email}" is not a valid address — skipped permanently.`, date: new Date() } }
+            });
+            return res.status(400).json({ error: `Invalid email address "${lead.email}" — this looks like a scraped CSS value. Please re-extract the email from their website.` });
+        }
         const followupNum = (lead.followup_count || 0) + 1;
         const { subject, html } = buildFollowupEmail(lead, followupNum);
         await sendEmail(lead.email, subject, html, userId);
@@ -3246,6 +3298,17 @@ app.post('/api/followups/send-email', async (req, res) => {
             const lead = leads[i];
             emit({ type: 'sending', current: i+1, total: leads.length, name: lead.name, sent, failed });
             if (!lead.email) { failed++; emit({ type: 'failed', name: lead.name, reason: 'No email', sent, failed }); continue; }
+            // Validate email format
+            const { isValidEmail: _iv2 } = require('./services/email-sender');
+            if (!_iv2(lead.email)) {
+                failed++;
+                emit({ type: 'failed', name: lead.name, reason: `❌ Invalid email: "${lead.email}" — re-extract from website.`, sent, failed });
+                await Lead.findOneAndUpdate({ _id: lead._id, userId }, {
+                    $set: { email_invalid: true },
+                    $push: { activity: { type: 'email_invalid', message: `Email "${lead.email}" is not valid — skipped permanently.`, date: new Date() } }
+                });
+                continue;
+            }
             try {
                 const followupNum = (lead.followup_count || 0) + 1;
                 const { subject, html } = buildFollowupEmail(lead, followupNum);

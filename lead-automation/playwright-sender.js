@@ -99,6 +99,38 @@ function getDelay(index) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+/**
+ * Safely checks whether WhatsApp Web is showing an "invalid number" dialog.
+ * Uses ONLY Playwright locators — avoids page.evaluate() entirely so that
+ * WhatsApp's obfuscated JS variables (e.g. _0x1802fe) cannot crash our check.
+ */
+async function isWANumberInvalid(page) {
+    try {
+        // Strategy 1: Look for the known dialog locators with invalid-number text
+        const invalidTexts = [
+            "isn't on WhatsApp",
+            "is not on WhatsApp",
+            "not registered on WhatsApp",
+            "Phone number shared via url is invalid",
+            "Invalid phone number",
+        ];
+        for (const txt of invalidTexts) {
+            const loc = page.locator(`text=${txt}`).first();
+            if (await loc.isVisible({ timeout: 1000 }).catch(() => false)) return true;
+        }
+        // Strategy 2: Check dialog role
+        const dialog = page.locator('div[role="dialog"]').first();
+        if (await dialog.isVisible({ timeout: 500 }).catch(() => false)) {
+            const dialogText = await dialog.innerText().catch(() => '');
+            if (invalidTexts.some(t => dialogText.includes(t))) return true;
+        }
+        return false;
+    } catch (e) {
+        // If we can't determine, assume number is valid and let WhatsApp handle it
+        return false;
+    }
+}
+
 let sseClients = [];
 function registerSSE(res) { sseClients.push(res); }
 function removeSSE(res) { sseClients = sseClients.filter(c => c !== res); }
@@ -284,52 +316,29 @@ async function sendLocalWA(ids, isFollowup = false, options = {}) {
                 const waUrl = `https://web.whatsapp.com/send?phone=${lead.phone}&text=${encodeURIComponent(msg)}`;
                 await page.goto(waUrl, { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
 
-                // Wait for message input box or the invalid number popup in a race
+                // Wait for message input box OR the invalid number dialog
+                // Uses only Playwright locators — no page.evaluate() to avoid WhatsApp's obfuscated JS crashing
                 let isInvalid = false;
+                const inputBoxSel = '[data-testid="conversation-compose-box-input"], [aria-label="Type a message"], footer';
                 try {
                     await Promise.race([
-                        // Case A: Input box appears (valid number)
-                        page.waitForSelector('[data-testid="conversation-compose-box-input"], [aria-label="Type a message"], footer', { timeout: 15000 }),
-                        // Case B: Dialog or text indicates invalid number
-                        page.waitForFunction(() => {
-                            const modal = document.querySelector('div[role="dialog"], div[data-animate-modal-body="true"]');
-                            if (modal) {
-                                const text = modal.textContent || '';
-                                if (text.includes("isn't on WhatsApp") || text.includes("not on WhatsApp") || text.includes("invalid") || text.includes("Phone number shared via url is invalid")) {
-                                    return true;
-                                }
-                            }
-                            const bodyText = document.body.innerText || '';
-                            return bodyText.includes("isn't on WhatsApp") || bodyText.includes("is not on WhatsApp") || bodyText.includes("not registered on WhatsApp") || bodyText.includes("Phone number shared via url is invalid");
-                        }, { polling: 500, timeout: 15000 })
+                        page.waitForSelector(inputBoxSel, { timeout: 15000 }),
+                        page.waitForSelector(
+                            'div[role="dialog"], div[data-animate-modal-body="true"]',
+                            { timeout: 15000 }
+                        )
                     ]);
-
-                    isInvalid = await page.evaluate(() => {
-                        const modal = document.querySelector('div[role="dialog"], div[data-animate-modal-body="true"]');
-                        if (modal) {
-                            const text = modal.textContent || '';
-                            if (text.includes("isn't on WhatsApp") || text.includes("not on WhatsApp") || text.includes("invalid") || text.includes("Phone number shared via url is invalid")) {
-                                return true;
-                            }
-                        }
-                        const bodyText = document.body.innerText || '';
-                        return bodyText.includes("isn't on WhatsApp") || bodyText.includes("is not on WhatsApp") || bodyText.includes("not registered on WhatsApp") || bodyText.includes("Phone number shared via url is invalid");
-                    });
                 } catch (raceErr) {
-                    // Check if invalid dialog is visible anyway
-                    isInvalid = await page.evaluate(() => {
-                        const modal = document.querySelector('div[role="dialog"], div[data-animate-modal-body="true"]');
-                        if (modal) {
-                            const text = modal.textContent || '';
-                            return text.includes("isn't on WhatsApp") || text.includes("not on WhatsApp") || text.includes("invalid") || text.includes("Phone number shared via url is invalid");
-                        }
-                        return false;
-                    });
+                    // Timeout — proceed and check for dialog
                 }
 
+                // Now use safe locator-based check (no page.evaluate)
+                isInvalid = await isWANumberInvalid(page);
+
                 if (isInvalid) {
-                    const okBtn = page.locator('button:has-text("OK"), [role="button"]:has-text("OK"), button:has-text("Ok"), [role="button"]:has-text("Ok")').first();
-                    if (await okBtn.isVisible().catch(() => false)) {
+                    // Dismiss dialog
+                    const okBtn = page.locator('button:has-text("OK"), [role="button"]:has-text("OK"), button:has-text("Ok")').first();
+                    if (await okBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
                         await okBtn.click().catch(() => {});
                     } else {
                         await page.keyboard.press('Escape').catch(() => {});
@@ -415,7 +424,18 @@ async function sendLocalWA(ids, isFollowup = false, options = {}) {
             } catch(err) {
                 failed++;
                 finalFailed = failed;
-                emit({ type: 'failed', name: lead.name, reason: err.message.split('\n')[0], sent, failed });
+                // If this is WhatsApp's obfuscated JS crashing (e.g. _0x... ReferenceError),
+                // treat it as a transient error — do NOT mark the number as invalid
+                const isWAObfuscationError = err.message && (
+                    /ReferenceError.*_0x[a-f0-9]+/i.test(err.message) ||
+                    err.message.includes('is not defined') && err.message.includes('_0x')
+                );
+                if (isWAObfuscationError) {
+                    console.warn(`[WA] WhatsApp JS obfuscation error for ${lead.name} — treating as transient, not marking invalid. Error: ${err.message.split('\n')[0]}`);
+                    emit({ type: 'failed', name: lead.name, reason: '⚠️ WhatsApp page error (transient) — number NOT marked invalid. Try again.', sent, failed });
+                } else {
+                    emit({ type: 'failed', name: lead.name, reason: err.message.split('\n')[0], sent, failed });
+                }
             }
         }
 
@@ -537,49 +557,23 @@ async function sendLocalWA_Manual(ids, isFollowup = false, options = {}) {
                 const waUrl = `https://web.whatsapp.com/send?phone=${lead.phone}&text=${encodeURIComponent(msg)}`;
                 await page.goto(waUrl, { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
 
-                // Wait for the input box or the invalid popup in a race
+                // Wait for input box OR invalid dialog — locator only, no page.evaluate
                 let isInvalid = false;
                 try {
                     await Promise.race([
                         page.waitForSelector('[data-testid="conversation-compose-box-input"], [aria-label="Type a message"], footer', { timeout: 15000 }),
-                        page.waitForFunction(() => {
-                            const modal = document.querySelector('div[role="dialog"], div[data-animate-modal-body="true"]');
-                            if (modal) {
-                                const text = modal.textContent || '';
-                                if (text.includes("isn't on WhatsApp") || text.includes("not on WhatsApp") || text.includes("invalid") || text.includes("Phone number shared via url is invalid")) {
-                                    return true;
-                                }
-                            }
-                            const bodyText = document.body.innerText || '';
-                            return bodyText.includes("isn't on WhatsApp") || bodyText.includes("is not on WhatsApp") || bodyText.includes("not registered on WhatsApp") || bodyText.includes("Phone number shared via url is invalid");
-                        }, { polling: 500, timeout: 15000 })
+                        page.waitForSelector('div[role="dialog"], div[data-animate-modal-body="true"]', { timeout: 15000 })
                     ]);
-
-                    isInvalid = await page.evaluate(() => {
-                        const modal = document.querySelector('div[role="dialog"], div[data-animate-modal-body="true"]');
-                        if (modal) {
-                            const text = modal.textContent || '';
-                            if (text.includes("isn't on WhatsApp") || text.includes("not on WhatsApp") || text.includes("invalid") || text.includes("Phone number shared via url is invalid")) {
-                                return true;
-                            }
-                        }
-                        const bodyText = document.body.innerText || '';
-                        return bodyText.includes("isn't on WhatsApp") || bodyText.includes("is not on WhatsApp") || bodyText.includes("not registered on WhatsApp") || bodyText.includes("Phone number shared via url is invalid");
-                    });
                 } catch (raceErr) {
-                    isInvalid = await page.evaluate(() => {
-                        const modal = document.querySelector('div[role="dialog"], div[data-animate-modal-body="true"]');
-                        if (modal) {
-                            const text = modal.textContent || '';
-                            return text.includes("isn't on WhatsApp") || text.includes("not on WhatsApp") || text.includes("invalid") || text.includes("Phone number shared via url is invalid");
-                        }
-                        return false;
-                    });
+                    // Timeout — proceed and check for dialog
                 }
 
+                // Safe locator-based invalid check (no page.evaluate)
+                isInvalid = await isWANumberInvalid(page);
+
                 if (isInvalid) {
-                    const okBtn = page.locator('button:has-text("OK"), [role="button"]:has-text("OK"), button:has-text("Ok"), [role="button"]:has-text("Ok")').first();
-                    if (await okBtn.isVisible().catch(() => false)) {
+                    const okBtn = page.locator('button:has-text("OK"), [role="button"]:has-text("OK"), button:has-text("Ok")').first();
+                    if (await okBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
                         await okBtn.click().catch(() => {});
                     } else {
                         await page.keyboard.press('Escape').catch(() => {});
@@ -608,17 +602,20 @@ async function sendLocalWA_Manual(ids, isFollowup = false, options = {}) {
                 const startTime = Date.now();
 
                 while (Date.now() - startTime < maxWait) {
-                    // If user navigated away or window closed, break
-                    try { await page.evaluate(() => true); } catch(e) { break; }
-
-                    // Check if the compose box is now empty (message was sent) or a new message appeared in chat
-                    const inputEmpty = await page.evaluate(() => {
-                        const el = document.querySelector('[data-testid="conversation-compose-box-input"], [contenteditable="true"][aria-label]');
-                        return el ? (el.textContent || '').trim() === '' : false;
-                    }).catch(() => false);
-
-                    if (inputEmpty) {
-                        userSent = true;
+                    // Check if browser/page is still alive and we can access it
+                    try {
+                        const inputBox = page.locator('[data-testid="conversation-compose-box-input"], [contenteditable="true"][aria-label]').first();
+                        if (await inputBox.isVisible({ timeout: 500 }).catch(() => false)) {
+                            const val = await inputBox.innerText().catch(() => '');
+                            if (val.trim() === '') {
+                                userSent = true;
+                                break;
+                            }
+                        } else {
+                            // If compose box disappears or isn't visible, check if we've successfully moved past
+                        }
+                    } catch (e) {
+                        // Browser closed or navigation occurred
                         break;
                     }
                     await sleep(pollInterval);
@@ -656,7 +653,16 @@ async function sendLocalWA_Manual(ids, isFollowup = false, options = {}) {
             } catch(err) {
                 failed++;
                 finalFailed = failed;
-                emit({ type: 'failed', name: lead.name, reason: err.message.split('\n')[0], sent, failed });
+                const isWAObfuscationError = err.message && (
+                    /ReferenceError.*_0x[a-f0-9]+/i.test(err.message) ||
+                    (err.message.includes('is not defined') && err.message.includes('_0x'))
+                );
+                if (isWAObfuscationError) {
+                    console.warn(`[WA-Manual] WhatsApp JS obfuscation error for ${lead.name} — transient, not marking invalid.`);
+                    emit({ type: 'failed', name: lead.name, reason: '⚠️ WhatsApp page error (transient) — number NOT marked invalid. Try again.', sent, failed });
+                } else {
+                    emit({ type: 'failed', name: lead.name, reason: err.message.split('\n')[0], sent, failed });
+                }
             }
         }
 
@@ -777,49 +783,23 @@ async function sendLocalWA_Draft(ids, isFollowup = false, options = {}) {
                 const waUrl = `https://web.whatsapp.com/send?phone=${lead.phone}&text=${encodeURIComponent(msg)}`;
                 await page.goto(waUrl, { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
 
-                // Wait for the input box or the invalid popup in a race
+                // Wait for the input box or the invalid popup in a race (no page.evaluate)
                 let isInvalid = false;
                 try {
                     await Promise.race([
                         page.waitForSelector('[data-testid="conversation-compose-box-input"], [aria-label="Type a message"], footer', { timeout: 15000 }),
-                        page.waitForFunction(() => {
-                            const modal = document.querySelector('div[role="dialog"], div[data-animate-modal-body="true"]');
-                            if (modal) {
-                                const text = modal.textContent || '';
-                                if (text.includes("isn't on WhatsApp") || text.includes("not on WhatsApp") || text.includes("invalid") || text.includes("Phone number shared via url is invalid")) {
-                                    return true;
-                                }
-                            }
-                            const bodyText = document.body.innerText || '';
-                            return bodyText.includes("isn't on WhatsApp") || bodyText.includes("is not on WhatsApp") || bodyText.includes("not registered on WhatsApp") || bodyText.includes("Phone number shared via url is invalid");
-                        }, { polling: 500, timeout: 15000 })
+                        page.waitForSelector('div[role="dialog"], div[data-animate-modal-body="true"]', { timeout: 15000 })
                     ]);
-
-                    isInvalid = await page.evaluate(() => {
-                        const modal = document.querySelector('div[role="dialog"], div[data-animate-modal-body="true"]');
-                        if (modal) {
-                            const text = modal.textContent || '';
-                            if (text.includes("isn't on WhatsApp") || text.includes("not on WhatsApp") || text.includes("invalid") || text.includes("Phone number shared via url is invalid")) {
-                                return true;
-                            }
-                        }
-                        const bodyText = document.body.innerText || '';
-                        return bodyText.includes("isn't on WhatsApp") || bodyText.includes("is not on WhatsApp") || bodyText.includes("not registered on WhatsApp") || bodyText.includes("Phone number shared via url is invalid");
-                    });
                 } catch (raceErr) {
-                    isInvalid = await page.evaluate(() => {
-                        const modal = document.querySelector('div[role="dialog"], div[data-animate-modal-body="true"]');
-                        if (modal) {
-                            const text = modal.textContent || '';
-                            return text.includes("isn't on WhatsApp") || text.includes("not on WhatsApp") || text.includes("invalid") || text.includes("Phone number shared via url is invalid");
-                        }
-                        return false;
-                    });
+                    // Timeout — proceed and check for dialog
                 }
 
+                // Safe locator-based invalid check (no page.evaluate)
+                isInvalid = await isWANumberInvalid(page);
+
                 if (isInvalid) {
-                    const okBtn = page.locator('button:has-text("OK"), [role="button"]:has-text("OK"), button:has-text("Ok"), [role="button"]:has-text("Ok")').first();
-                    if (await okBtn.isVisible().catch(() => false)) {
+                    const okBtn = page.locator('button:has-text("OK"), [role="button"]:has-text("OK"), button:has-text("Ok")').first();
+                    if (await okBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
                         await okBtn.click().catch(() => {});
                     } else {
                         await page.keyboard.press('Escape').catch(() => {});
@@ -861,7 +841,16 @@ async function sendLocalWA_Draft(ids, isFollowup = false, options = {}) {
             } catch(err) {
                 failed++;
                 finalFailed = failed;
-                emit({ type: 'failed', name: lead.name, reason: err.message.split('\n')[0], sent: drafted, failed });
+                const isWAObfuscationError = err.message && (
+                    /ReferenceError.*_0x[a-f0-9]+/i.test(err.message) ||
+                    (err.message.includes('is not defined') && err.message.includes('_0x'))
+                );
+                if (isWAObfuscationError) {
+                    console.warn(`[WA-Draft] WhatsApp JS obfuscation error for ${lead.name} — transient, not marking invalid.`);
+                    emit({ type: 'failed', name: lead.name, reason: '⚠️ WhatsApp page error (transient) — number NOT marked invalid. Try again.', sent: drafted, failed });
+                } else {
+                    emit({ type: 'failed', name: lead.name, reason: err.message.split('\n')[0], sent: drafted, failed });
+                }
             }
         }
 
