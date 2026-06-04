@@ -81,15 +81,45 @@ function extractPhonesFromText(text) {
     return validPhones;
 }
 
+/**
+ * RFC 5321 email validator — rejects CSS values, image paths, and malformed addresses.
+ */
+function isValidEmailAddress(email) {
+    if (!email || typeof email !== 'string') return false;
+    const e = email.trim().toLowerCase();
+    // Must have exactly one @
+    const atParts = e.split('@');
+    if (atParts.length !== 2) return false;
+    const [local, domain] = atParts;
+    if (!local || !domain) return false;
+    // Reject consecutive dots anywhere (catches wght@300..900)
+    if (e.includes('..')) return false;
+    // Domain must have letters-only TLD (2+ chars) — rejects 300..900, numeric-only domains
+    const domainParts = domain.split('.');
+    if (domainParts.length < 2) return false;
+    const tld = domainParts[domainParts.length - 1];
+    if (!/^[a-z]{2,}$/.test(tld)) return false;
+    // Local part must not be empty or contain only special chars
+    if (!/^[a-z0-9][a-z0-9.!#$%&'*+/=?^_`{|}~-]*$/.test(local)) return false;
+    // Full RFC 5321 pattern check
+    const RFC5321 = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+    return RFC5321.test(e);
+}
+
 function cleanEmails(emails) {
     if (!emails) return [];
-    return emails.filter(e => {
-        const lower = e.toLowerCase();
-        return !lower.endsWith('.png') && !lower.endsWith('.jpg') && !lower.endsWith('.jpeg') && 
-               !lower.endsWith('.gif') && !lower.endsWith('.webp') && !lower.endsWith('.svg') && 
-               !lower.includes('sentry') && !lower.includes('wixpress') && !lower.includes('example.com') &&
-               !lower.includes('bootstrap') && !lower.includes('jquery');
-    }).map(e => e.replace(/^mailto:/i, '').toLowerCase());
+    return emails
+        .map(e => e.replace(/^mailto:/i, '').trim().toLowerCase())
+        .filter(e => {
+            // Block known non-email patterns
+            if (!e || e.length < 6) return false;
+            if (e.endsWith('.png') || e.endsWith('.jpg') || e.endsWith('.jpeg') ||
+                e.endsWith('.gif') || e.endsWith('.webp') || e.endsWith('.svg')) return false;
+            if (e.includes('sentry') || e.includes('wixpress') || e.includes('example.com') ||
+                e.includes('bootstrap') || e.includes('jquery')) return false;
+            // Final RFC validation — rejects wght@300..900, font@weight, etc.
+            return isValidEmailAddress(e);
+        });
 }
 
 async function findContactLinks(page, baseUrl) {
@@ -208,7 +238,8 @@ async function extractEmailsForLeads(leadIds, userId, onProgress) {
             // Extract emails
             const homeMailto = cleanEmails(homeInfo.mailto);
             homeMailto.forEach(e => uniqueEmails.add(e));
-            const emailRegex = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/gi;
+            // Strict regex: requires proper TLD (letters only, 2-6 chars) to avoid matching CSS font values
+            const emailRegex = /([a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,6})/gi;
             const homeMatches = cleanEmails(homeInfo.html.match(emailRegex) || []);
             homeMatches.forEach(e => uniqueEmails.add(e));
 
