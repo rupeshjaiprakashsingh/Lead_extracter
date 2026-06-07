@@ -88,7 +88,7 @@ async function waitForCaptchaIfNeeded(page, label = '') {
     return false; // no captcha
 }
 
-async function scrapeGoogleMaps(keyword, city, maxResults = 9999, onLeadScraped = null) {
+async function scrapeGoogleMaps(keyword, city, maxResults = 9999, onLeadScraped = null, shouldCancel = null, registerBrowser = null) {
     console.log(`\n🔍 Searching: "${keyword}" in ${city} | Target: ${maxResults} leads\n`);
 
     // ── Use persistent profile (avoids repeated CAPTCHA) ──────
@@ -112,20 +112,27 @@ async function scrapeGoogleMaps(keyword, city, maxResults = 9999, onLeadScraped 
     };
 
     try {
-        browser = await chromium.launchPersistentContext(usedProfileDir, launchArgs);
-    } catch (err) {
-        if (err.message.includes('existing browser session') || err.message.includes('has been closed')) {
-            console.log('\n  ⚠️ Persistent profile in use by another instance. Using a temporary profile for this run.');
-            usedProfileDir = PROFILE_DIR + '_' + Date.now();
-            isTempProfile = true;
-            fs.mkdirSync(usedProfileDir, { recursive: true });
+        try {
             browser = await chromium.launchPersistentContext(usedProfileDir, launchArgs);
-        } else {
-            throw err;
+            if (registerBrowser) {
+                registerBrowser(browser);
+            }
+        } catch (err) {
+            if (err.message.includes('existing browser session') || err.message.includes('has been closed')) {
+                console.log('\n  ⚠️ Persistent profile in use by another instance. Using a temporary profile for this run.');
+                usedProfileDir = PROFILE_DIR + '_' + Date.now();
+                isTempProfile = true;
+                fs.mkdirSync(usedProfileDir, { recursive: true });
+                browser = await chromium.launchPersistentContext(usedProfileDir, launchArgs);
+                if (registerBrowser) {
+                    registerBrowser(browser);
+                }
+            } else {
+                throw err;
+            }
         }
-    }
 
-    const page = await browser.newPage();
+        const page = await browser.newPage();
 
     // ── Mask automation detection ──────────────────────────────
     await page.addInitScript(() => {
@@ -182,6 +189,10 @@ async function scrapeGoogleMaps(keyword, city, maxResults = 9999, onLeadScraped 
     console.log(`\n  📜 Starting DEEP SCROLL to collect ALL business URLs...\n`);
 
     while (noNewCount < MAX_NO_NEW) {
+        if (shouldCancel && await shouldCancel()) {
+            console.log(`  🛑 Scrape cancelled by caller during scrolling.`);
+            return [];
+        }
         // Collect all visible place links (Broadened search)
         const links = await page.locator('a[href*="/maps/place/"]').all();
         let added = 0;
@@ -311,6 +322,10 @@ async function scrapeGoogleMaps(keyword, city, maxResults = 9999, onLeadScraped 
     const newLeads = [];
 
     for (let i = 0; i < urlList.length; i++) {
+        if (shouldCancel && await shouldCancel()) {
+            console.log(`  🛑 Scrape cancelled by caller during details visiting.`);
+            return newLeads;
+        }
         const href = urlList[i];
         const fullUrl = href.startsWith('http') ? href : 'https://www.google.com' + href;
 
@@ -371,9 +386,9 @@ async function scrapeGoogleMaps(keyword, city, maxResults = 9999, onLeadScraped 
                     let fetched = false;
 
                     // Method 1: Try fast fetch via HTTP to bypass browser tab overhead
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 8000);
                     try {
-                        const controller = new AbortController();
-                        const timeoutId = setTimeout(() => controller.abort(), 6000);
                         const res = await fetch(webHref, {
                             signal: controller.signal,
                             headers: {
@@ -382,7 +397,6 @@ async function scrapeGoogleMaps(keyword, city, maxResults = 9999, onLeadScraped 
                                 'Accept-Language': 'en-US,en;q=0.5'
                             }
                         });
-                        clearTimeout(timeoutId);
                         if (res.ok) {
                             html = await res.text();
                             fetched = true;
@@ -390,6 +404,8 @@ async function scrapeGoogleMaps(keyword, city, maxResults = 9999, onLeadScraped 
                         }
                     } catch (fetchErr) {
                         // Fallback to browser page if fetch fails or times out
+                    } finally {
+                        clearTimeout(timeoutId);
                     }
 
                     // Method 2: Fallback to lightweight browser page (with image/styles blocking)
@@ -469,24 +485,26 @@ async function scrapeGoogleMaps(keyword, city, maxResults = 9999, onLeadScraped 
         await sleep(300 + Math.random() * 400);
     }
 
-    await browser.close();
+        // Save & merge (dedup by phone)
+        const existing = loadLeads();
+        const existingPhones = new Set(existing.filter(b => b.phone).map(b => b.phone));
+        const unique = newLeads.filter(b => !b.phone || !existingPhones.has(b.phone));
+        saveLeads([...existing, ...unique]);
 
-    if (isTempProfile) {
-        try {
-            fs.rmSync(usedProfileDir, { recursive: true, force: true });
-        } catch (e) {
-            console.log(`  ⚠️ Could not remove temporary profile: ${e.message}`);
+        console.log(`\n✅ Done! Added ${unique.length} new leads. Total in DB: ${existing.length + unique.length}\n`);
+        return unique;
+    } finally {
+        if (browser) {
+            await browser.close().catch(() => {});
+        }
+        if (isTempProfile) {
+            try {
+                fs.rmSync(usedProfileDir, { recursive: true, force: true });
+            } catch (e) {
+                console.log(`  ⚠️ Could not remove temporary profile: ${e.message}`);
+            }
         }
     }
-
-    // Save & merge (dedup by phone)
-    const existing = loadLeads();
-    const existingPhones = new Set(existing.filter(b => b.phone).map(b => b.phone));
-    const unique = newLeads.filter(b => !b.phone || !existingPhones.has(b.phone));
-    saveLeads([...existing, ...unique]);
-
-    console.log(`\n✅ Done! Added ${unique.length} new leads. Total in DB: ${existing.length + unique.length}\n`);
-    return unique;
 }
 
 if (require.main === module) {

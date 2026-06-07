@@ -101,32 +101,25 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 /**
  * Safely checks whether WhatsApp Web is showing an "invalid number" dialog.
- * Uses ONLY Playwright locators — avoids page.evaluate() entirely so that
- * WhatsApp's obfuscated JS variables (e.g. _0x1802fe) cannot crash our check.
+ * Uses ONLY Playwright locators — avoids page.evaluate() entirely.
  */
 async function isWANumberInvalid(page) {
     try {
-        // Strategy 1: Look for the known dialog locators with invalid-number text
+        const dialog = page.locator('div[role="dialog"], div[data-animate-modal-body="true"]').first();
+        const hasDialog = await dialog.isVisible().catch(() => false);
+        if (!hasDialog) return false;
+
+        const dialogText = await dialog.innerText().catch(() => '');
         const invalidTexts = [
             "isn't on WhatsApp",
             "is not on WhatsApp",
             "not registered on WhatsApp",
             "Phone number shared via url is invalid",
             "Invalid phone number",
+            "invalid"
         ];
-        for (const txt of invalidTexts) {
-            const loc = page.locator(`text=${txt}`).first();
-            if (await loc.isVisible({ timeout: 1000 }).catch(() => false)) return true;
-        }
-        // Strategy 2: Check dialog role
-        const dialog = page.locator('div[role="dialog"]').first();
-        if (await dialog.isVisible({ timeout: 500 }).catch(() => false)) {
-            const dialogText = await dialog.innerText().catch(() => '');
-            if (invalidTexts.some(t => dialogText.includes(t))) return true;
-        }
-        return false;
+        return invalidTexts.some(t => dialogText.toLowerCase().includes(t.toLowerCase()));
     } catch (e) {
-        // If we can't determine, assume number is valid and let WhatsApp handle it
         return false;
     }
 }
@@ -166,6 +159,46 @@ function isPotentialLandlineOrInvalid(phone) {
     return { invalid: false };
 }
 
+/**
+ * Normalise a raw phone string into a 12-digit Indian mobile (91XXXXXXXXXX).
+ * Returns null when the candidate cannot be normalised to a valid mobile.
+ */
+function normalisePhone(raw) {
+    if (!raw) return null;
+    const d = String(raw).replace(/\D/g, '');
+    let normalised = null;
+    if (d.startsWith('91') && d.length === 12) {
+        normalised = d;
+    } else if (d.length === 10) {
+        normalised = '91' + d;
+    } else if (d.startsWith('0') && d.length === 11) {
+        normalised = '91' + d.slice(1);
+    } else if (d.startsWith('+91') || (d.startsWith('91') && d.length > 12)) {
+        // strip leading +91 or country-code duplicates
+        const local = d.replace(/^\+?91/, '');
+        if (local.length === 10) normalised = '91' + local;
+    }
+    if (!normalised) return null;
+    // Must be a valid Indian mobile (starts with 6–9 after the 91 prefix)
+    if (!['6','7','8','9'].includes(normalised.charAt(2))) return null;
+    return normalised;
+}
+
+/**
+ * If the phone field contains multiple comma/semicolon-separated numbers,
+ * pick the first one that normalises to a valid Indian mobile.
+ * Returns null when no candidate is valid.
+ */
+function pickBestPhone(rawPhone) {
+    if (!rawPhone) return null;
+    const candidates = String(rawPhone).split(/[,;\s]+/).map(p => p.trim()).filter(Boolean);
+    for (const candidate of candidates) {
+        const normalised = normalisePhone(candidate);
+        if (normalised) return normalised;
+    }
+    return null;
+}
+
 async function isWALoggedIn(page) {
     // #pane-side is the main chat list container on the left, present only when logged in
     return await page.locator('#pane-side, [aria-label="Search or start a new chat"], header').first().isVisible({ timeout: 6000 }).catch(() => false);
@@ -174,6 +207,7 @@ async function isWALoggedIn(page) {
 async function sendLocalWA(ids, isFollowup = false, options = {}) {
     const { skipWaSent = false, isScheduled = false, onComplete } = options;
     let finalSent = 0, finalFailed = 0;
+    let browser;
     try {
         const Lead = getLeadModel();
         const leads = await Lead.find({ _id: { $in: ids }, phone: { $exists: true, $ne: '' } });
@@ -187,8 +221,6 @@ async function sendLocalWA(ids, isFollowup = false, options = {}) {
         
         const sessionDir = getSessionDir(options.companyId);
         if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
-
-        let browser;
         try {
             browser = await chromium.launchPersistentContext(sessionDir, {
                 headless: false, // Must be visible for safety
@@ -272,18 +304,23 @@ async function sendLocalWA(ids, isFollowup = false, options = {}) {
                 continue;
             }
 
-            // Run pre-validation (landlines/formatting)
-            const preCheck = isPotentialLandlineOrInvalid(lead.phone);
-            if (preCheck.invalid) {
+            // ── Resolve best phone (handles comma-separated / garbage fields) ──
+            const resolvedPhone = pickBestPhone(lead.phone);
+            if (!resolvedPhone) {
                 const LeadDB = getLeadModel();
                 await LeadDB.findByIdAndUpdate(lead._id, {
                     $set: { wa_invalid: true },
-                    $push: { activity: { type: 'wa_invalid', message: `Pre-check failed: ${preCheck.reason}`, date: new Date() } }
+                    $push: { activity: { type: 'wa_invalid', message: `No valid Indian mobile in phone field: "${lead.phone}" — skipped permanently.`, date: new Date() } }
                 }).catch(() => {});
-
-                emit({ type: 'failed', name: lead.name, reason: `Skipped: ${preCheck.reason}`, sent, failed });
+                emit({ type: 'failed', name: lead.name, reason: `No valid phone number in: "${lead.phone}"`, sent, failed });
                 failed++;
                 continue;
+            }
+            // If phone field was dirty (comma-separated or wrong format), clean it in DB
+            if (resolvedPhone !== lead.phone) {
+                const LeadDB = getLeadModel();
+                await LeadDB.findByIdAndUpdate(lead._id, { $set: { phone: resolvedPhone } }).catch(() => {});
+                lead.phone = resolvedPhone;
             }
 
             let msg = '';
@@ -313,27 +350,30 @@ async function sendLocalWA(ids, isFollowup = false, options = {}) {
             }
 
             try {
-                const waUrl = `https://web.whatsapp.com/send?phone=${lead.phone}&text=${encodeURIComponent(msg)}`;
-                await page.goto(waUrl, { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
+                const waUrl = `https://web.whatsapp.com/send?phone=${resolvedPhone}&text=${encodeURIComponent(msg)}`;
+                await page.goto(waUrl, { waitUntil: 'commit', timeout: 45000 }).catch(() => {});
 
                 // Wait for message input box OR the invalid number dialog
                 // Uses only Playwright locators — no page.evaluate() to avoid WhatsApp's obfuscated JS crashing
                 let isInvalid = false;
-                const inputBoxSel = '[data-testid="conversation-compose-box-input"], [aria-label="Type a message"], footer';
-                try {
-                    await Promise.race([
-                        page.waitForSelector(inputBoxSel, { timeout: 15000 }),
-                        page.waitForSelector(
-                            'div[role="dialog"], div[data-animate-modal-body="true"]',
-                            { timeout: 15000 }
-                        )
-                    ]);
-                } catch (raceErr) {
-                    // Timeout — proceed and check for dialog
-                }
+                let loaded = false;
+                const startTime = Date.now();
+                const timeoutLimit = 45000; // 45 seconds total wait time
 
-                // Now use safe locator-based check (no page.evaluate)
-                isInvalid = await isWANumberInvalid(page);
+                while (Date.now() - startTime < timeoutLimit) {
+                    const isInputVisible = await page.locator('[data-testid="conversation-compose-box-input"], [aria-label="Type a message"], footer [contenteditable="true"]').first().isVisible().catch(() => false);
+                    if (isInputVisible) {
+                        loaded = true;
+                        break;
+                    }
+
+                    isInvalid = await isWANumberInvalid(page);
+                    if (isInvalid) {
+                        break;
+                    }
+
+                    await sleep(1000);
+                }
 
                 if (isInvalid) {
                     // Dismiss dialog
@@ -356,30 +396,82 @@ async function sendLocalWA(ids, isFollowup = false, options = {}) {
                     continue;
                 }
 
-                // Click Send Button
-                let sent_ok = false;
-                const sendSelectors = ['[data-testid="send"]', 'button[aria-label="Send"]', 'span[data-icon="send"]', 'button:has(span[data-icon="send"])'];
-                for (const sel of sendSelectors) {
-                    const el = page.locator(sel).first();
-                    if (await el.isVisible({ timeout: 3000 }).catch(() => false)) {
-                        await el.click();
-                        sent_ok = true;
+                if (!loaded) {
+                    emit({ type: 'failed', name: lead.name, reason: 'Timeout loading chat (WhatsApp Web took too long)', sent, failed });
+                    failed++;
+                    continue;
+                }
+
+                const inputBox = page.locator('[data-testid="conversation-compose-box-input"], [aria-label="Type a message"], footer [contenteditable="true"]').first();
+
+                // 1. Wait up to 10 seconds for the input box to contain the message text (prefilled by URL)
+                let textPrefilled = false;
+                for (let attempt = 0; attempt < 20; attempt++) {
+                    const currentText = await inputBox.innerText().catch(() => '');
+                    if (currentText.trim().length > 0) {
+                        textPrefilled = true;
                         break;
                     }
+                    await sleep(500);
                 }
-                
+
+                if (!textPrefilled) {
+                    console.log(`[WA] Warning: Text did not auto-fill in composer for ${lead.name}. Typing manually...`);
+                    await inputBox.focus().catch(() => {});
+                    await inputBox.fill(msg).catch(async () => {
+                        await page.keyboard.insertText(msg).catch(() => {});
+                    });
+                    await sleep(1000);
+                }
+
+                // 2. Poll for the send button to be visible and click it
+                let sent_ok = false;
+                const sendSelectors = [
+                    '[data-testid="send"]',
+                    'button[aria-label="Send"]',
+                    'span[data-icon="send"]',
+                    'button:has(span[data-icon="send"])',
+                    '[data-icon="send"]'
+                ];
+
+                for (let attempt = 0; attempt < 20; attempt++) {
+                    for (const sel of sendSelectors) {
+                        const el = page.locator(sel).first();
+                        if (await el.isVisible().catch(() => false)) {
+                            await el.click().catch(() => {});
+                            sent_ok = true;
+                            break;
+                        }
+                    }
+                    if (sent_ok) {
+                        // Wait a moment to see if compose box becomes empty (indicating success)
+                        await sleep(1000);
+                        const txt = await inputBox.innerText().catch(() => '');
+                        if (txt.trim() === '') {
+                            break;
+                        } else {
+                            sent_ok = false; // reset and click again if text is still there
+                        }
+                    }
+                    await sleep(500);
+                }
+
+                // 3. Fallback: If still not sent, try pressing Enter
                 if (!sent_ok) {
-                    const inputBox = page.locator('[data-testid="conversation-compose-box-input"], [contenteditable="true"], [aria-label="Type a message"]').first();
-                    if (await inputBox.isVisible({ timeout: 2000 }).catch(() => false)) {
-                        await inputBox.focus();
-                        await sleep(500);
-                        await inputBox.press('Enter');
+                    console.log('[WA] Send button did not clear text. Trying Enter key fallback...');
+                    await inputBox.focus().catch(() => {});
+                    await sleep(500);
+                    await page.keyboard.press('Enter').catch(() => {});
+                    await sleep(1500);
+
+                    const txt = await inputBox.innerText().catch(() => '');
+                    if (txt.trim() === '') {
                         sent_ok = true;
                     }
                 }
 
                 if (!sent_ok) {
-                    emit({ type: 'failed', name: lead.name, reason: 'Could not find Send button', sent, failed });
+                    emit({ type: 'failed', name: lead.name, reason: 'Could not send message (Send button and Enter failed)', sent, failed });
                     failed++;
                     continue;
                 }
@@ -439,7 +531,6 @@ async function sendLocalWA(ids, isFollowup = false, options = {}) {
             }
         }
 
-        await browser.close();
         if (onComplete) onComplete(sent, failed);
         emit({ type: 'done', sent, failed, total });
         return { sent, failed, total };
@@ -448,6 +539,10 @@ async function sendLocalWA(ids, isFollowup = false, options = {}) {
         emit({ type: 'error', message: 'Internal error: ' + e.message });
         if (onComplete) onComplete(finalSent, finalFailed);
         return { sent: finalSent, failed: finalFailed, total: 0 };
+    } finally {
+        if (browser) {
+            await browser.close().catch(() => {});
+        }
     }
 }
 
@@ -457,6 +552,7 @@ async function sendLocalWA(ids, isFollowup = false, options = {}) {
 async function sendLocalWA_Manual(ids, isFollowup = false, options = {}) {
     const { skipWaSent = false } = options;
     let finalSent = 0, finalFailed = 0;
+    let browser;
     try {
         const Lead = getLeadModel();
         const leads = await Lead.find({ _id: { $in: ids }, phone: { $exists: true, $ne: '' } });
@@ -470,8 +566,6 @@ async function sendLocalWA_Manual(ids, isFollowup = false, options = {}) {
 
         const sessionDir = getSessionDir(options.companyId);
         if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
-
-        let browser;
         try {
             browser = await chromium.launchPersistentContext(sessionDir, {
                 headless: false,
@@ -527,18 +621,23 @@ async function sendLocalWA_Manual(ids, isFollowup = false, options = {}) {
                 continue;
             }
 
-            // Run pre-validation (landlines/formatting)
-            const preCheck = isPotentialLandlineOrInvalid(lead.phone);
-            if (preCheck.invalid) {
+            // ── Resolve best phone (handles comma-separated / garbage fields) ──
+            const resolvedPhone = pickBestPhone(lead.phone);
+            if (!resolvedPhone) {
                 const LeadDB = getLeadModel();
                 await LeadDB.findByIdAndUpdate(lead._id, {
                     $set: { wa_invalid: true },
-                    $push: { activity: { type: 'wa_invalid', message: `Pre-check failed: ${preCheck.reason}`, date: new Date() } }
+                    $push: { activity: { type: 'wa_invalid', message: `No valid Indian mobile in phone field: "${lead.phone}" — skipped permanently.`, date: new Date() } }
                 }).catch(() => {});
-
-                emit({ type: 'failed', name: lead.name, reason: `Skipped: ${preCheck.reason}`, sent, failed: ++failed });
+                emit({ type: 'failed', name: lead.name, reason: `No valid phone number in: "${lead.phone}"`, sent, failed: ++failed });
                 finalFailed = failed;
                 continue;
+            }
+            // If phone field was dirty, clean it in DB
+            if (resolvedPhone !== lead.phone) {
+                const LeadDB = getLeadModel();
+                await LeadDB.findByIdAndUpdate(lead._id, { $set: { phone: resolvedPhone } }).catch(() => {});
+                lead.phone = resolvedPhone;
             }
 
             let msg = '';
@@ -553,19 +652,21 @@ async function sendLocalWA_Manual(ids, isFollowup = false, options = {}) {
             emit({ type: 'status', message: `⏳ [${i+1}/${total}] Opening chat for ${lead.name}... Please click SEND in WhatsApp.` });
 
             try {
-                // Open WhatsApp with message pre-filled
-                const waUrl = `https://web.whatsapp.com/send?phone=${lead.phone}&text=${encodeURIComponent(msg)}`;
-                await page.goto(waUrl, { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
+                // Open WhatsApp with message pre-filled using the resolved clean phone
+                const waUrl = `https://web.whatsapp.com/send?phone=${resolvedPhone}&text=${encodeURIComponent(msg)}`;
+                await page.goto(waUrl, { waitUntil: 'commit', timeout: 45000 }).catch(() => {});
 
                 // Wait for input box OR invalid dialog — locator only, no page.evaluate
                 let isInvalid = false;
+                let loaded = false;
                 try {
                     await Promise.race([
-                        page.waitForSelector('[data-testid="conversation-compose-box-input"], [aria-label="Type a message"], footer', { timeout: 15000 }),
-                        page.waitForSelector('div[role="dialog"], div[data-animate-modal-body="true"]', { timeout: 15000 })
+                        page.waitForSelector('[data-testid="conversation-compose-box-input"], [aria-label="Type a message"], footer [contenteditable="true"]', { timeout: 60000 }),
+                        page.waitForSelector('div[role="dialog"], div[data-animate-modal-body="true"]', { timeout: 60000 })
                     ]);
+                    loaded = true;
                 } catch (raceErr) {
-                    // Timeout — proceed and check for dialog
+                    console.log(`[WA-Manual] Timeout waiting for chat interface to load for ${lead.name}`);
                 }
 
                 // Safe locator-based invalid check (no page.evaluate)
@@ -589,6 +690,35 @@ async function sendLocalWA_Manual(ids, isFollowup = false, options = {}) {
                     emit({ type: 'failed', name: lead.name, reason: 'Invalid WhatsApp Number', sent, failed: ++failed });
                     finalFailed = failed;
                     continue;
+                }
+
+                // If not invalid and input box is not visible, it's a real load timeout
+                const inputBox = page.locator('[data-testid="conversation-compose-box-input"], [aria-label="Type a message"], footer [contenteditable="true"]').first();
+                const isInputVisible = await inputBox.isVisible({ timeout: 3000 }).catch(() => false);
+                if (!isInputVisible) {
+                    emit({ type: 'failed', name: lead.name, reason: 'Timeout loading chat (WhatsApp Web took too long)', sent, failed: ++failed });
+                    finalFailed = failed;
+                    continue;
+                }
+
+                // Wait up to 10 seconds for the input box to contain the message text (prefilled by URL)
+                let textPrefilled = false;
+                for (let attempt = 0; attempt < 20; attempt++) {
+                    const currentText = await inputBox.innerText().catch(() => '');
+                    if (currentText.trim().length > 0) {
+                        textPrefilled = true;
+                        break;
+                    }
+                    await sleep(500);
+                }
+
+                if (!textPrefilled) {
+                    console.log(`[WA-Manual] Warning: Text did not auto-fill in composer for ${lead.name}. Typing manually...`);
+                    await inputBox.focus().catch(() => {});
+                    await inputBox.fill(msg).catch(async () => {
+                        await page.keyboard.insertText(msg).catch(() => {});
+                    });
+                    await sleep(1000);
                 }
 
                 // 👆 Wait for USER to click send — we watch for the input box to become empty
@@ -666,13 +796,16 @@ async function sendLocalWA_Manual(ids, isFollowup = false, options = {}) {
             }
         }
 
-        await browser.close();
         emit({ type: 'done', sent, failed, total });
         return { sent, failed, total };
 
     } catch(e) {
         emit({ type: 'error', message: 'Internal error: ' + e.message });
         return { sent: finalSent, failed: finalFailed, total: 0 };
+    } finally {
+        if (browser) {
+            await browser.close().catch(() => {});
+        }
     }
 }
 
@@ -753,18 +886,23 @@ async function sendLocalWA_Draft(ids, isFollowup = false, options = {}) {
                 continue;
             }
 
-            // Run pre-validation (landlines/formatting)
-            const preCheck = isPotentialLandlineOrInvalid(lead.phone);
-            if (preCheck.invalid) {
+            // ── Resolve best phone (handles comma-separated / garbage fields) ──
+            const resolvedPhone = pickBestPhone(lead.phone);
+            if (!resolvedPhone) {
                 const LeadDB = getLeadModel();
                 await LeadDB.findByIdAndUpdate(lead._id, {
                     $set: { wa_invalid: true },
-                    $push: { activity: { type: 'wa_invalid', message: `Pre-check failed: ${preCheck.reason}`, date: new Date() } }
+                    $push: { activity: { type: 'wa_invalid', message: `No valid Indian mobile in phone field: "${lead.phone}" — skipped permanently.`, date: new Date() } }
                 }).catch(() => {});
-
-                emit({ type: 'failed', name: lead.name, reason: `Skipped: ${preCheck.reason}`, sent: drafted, failed: ++failed });
+                emit({ type: 'failed', name: lead.name, reason: `No valid phone number in: "${lead.phone}"`, sent: drafted, failed: ++failed });
                 finalFailed = failed;
                 continue;
+            }
+            // If phone field was dirty, clean it in DB
+            if (resolvedPhone !== lead.phone) {
+                const LeadDB = getLeadModel();
+                await LeadDB.findByIdAndUpdate(lead._id, { $set: { phone: resolvedPhone } }).catch(() => {});
+                lead.phone = resolvedPhone;
             }
 
             let msg = '';
@@ -779,19 +917,21 @@ async function sendLocalWA_Draft(ids, isFollowup = false, options = {}) {
             emit({ type: 'status', message: `📝 [${i+1}/${total}] Drafting for: ${lead.name}` });
 
             try {
-                // Navigate to chat — WhatsApp URL auto-fills the text in compose box
-                const waUrl = `https://web.whatsapp.com/send?phone=${lead.phone}&text=${encodeURIComponent(msg)}`;
-                await page.goto(waUrl, { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
+                // Navigate to chat using the resolved clean phone number
+                const waUrl = `https://web.whatsapp.com/send?phone=${resolvedPhone}&text=${encodeURIComponent(msg)}`;
+                await page.goto(waUrl, { waitUntil: 'commit', timeout: 45000 }).catch(() => {});
 
                 // Wait for the input box or the invalid popup in a race (no page.evaluate)
                 let isInvalid = false;
+                let loaded = false;
                 try {
                     await Promise.race([
-                        page.waitForSelector('[data-testid="conversation-compose-box-input"], [aria-label="Type a message"], footer', { timeout: 15000 }),
-                        page.waitForSelector('div[role="dialog"], div[data-animate-modal-body="true"]', { timeout: 15000 })
+                        page.waitForSelector('[data-testid="conversation-compose-box-input"], [aria-label="Type a message"], footer [contenteditable="true"]', { timeout: 60000 }),
+                        page.waitForSelector('div[role="dialog"], div[data-animate-modal-body="true"]', { timeout: 60000 })
                     ]);
+                    loaded = true;
                 } catch (raceErr) {
-                    // Timeout — proceed and check for dialog
+                    console.log(`[WA-Draft] Timeout waiting for chat interface to load for ${lead.name}`);
                 }
 
                 // Safe locator-based invalid check (no page.evaluate)
@@ -815,6 +955,35 @@ async function sendLocalWA_Draft(ids, isFollowup = false, options = {}) {
                     emit({ type: 'failed', name: lead.name, reason: 'Invalid WhatsApp Number', sent: drafted, failed: ++failed });
                     finalFailed = failed;
                     continue;
+                }
+
+                // If not invalid and input box is not visible, it's a real load timeout
+                const inputBox = page.locator('[data-testid="conversation-compose-box-input"], [aria-label="Type a message"], footer [contenteditable="true"]').first();
+                const isInputVisible = await inputBox.isVisible({ timeout: 3000 }).catch(() => false);
+                if (!isInputVisible) {
+                    emit({ type: 'failed', name: lead.name, reason: 'Timeout loading chat (WhatsApp Web took too long)', sent: drafted, failed: ++failed });
+                    finalFailed = drafted;
+                    continue;
+                }
+
+                // Wait up to 10 seconds for the input box to contain the message text (prefilled by URL)
+                let textPrefilled = false;
+                for (let attempt = 0; attempt < 20; attempt++) {
+                    const currentText = await inputBox.innerText().catch(() => '');
+                    if (currentText.trim().length > 0) {
+                        textPrefilled = true;
+                        break;
+                    }
+                    await sleep(500);
+                }
+
+                if (!textPrefilled) {
+                    console.log(`[WA-Draft] Warning: Text did not auto-fill in composer for ${lead.name}. Typing manually...`);
+                    await inputBox.focus().catch(() => {});
+                    await inputBox.fill(msg).catch(async () => {
+                        await page.keyboard.insertText(msg).catch(() => {});
+                    });
+                    await sleep(1000);
                 }
 
                 // Navigate away immediately — WhatsApp saves text as draft automatically
@@ -875,5 +1044,5 @@ async function sendLocalWA_Draft(ids, isFollowup = false, options = {}) {
     }
 }
 
-module.exports = { sendLocalWA, sendLocalWA_Manual, sendLocalWA_Draft, registerSSE, removeSSE, getDailyStats, WA_LIMITS };
+module.exports = { sendLocalWA, sendLocalWA_Manual, sendLocalWA_Draft, registerSSE, removeSSE, getDailyStats, WA_LIMITS, pickBestPhone, normalisePhone };
 

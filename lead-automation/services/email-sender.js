@@ -21,13 +21,27 @@ function isValidEmail(email) {
     if (!RFC5321.test(trimmed)) return false;
     // Reject consecutive dots anywhere
     if (trimmed.includes('..')) return false;
-    // Domain must have at least one dot and a valid TLD (2+ chars)
+    // Domain must have at least one dot and a valid TLD (letters only, 2+ chars — rejects numeric TLDs like 300, 900)
     const domain = trimmed.split('@')[1];
     const parts = domain.split('.');
     if (parts.length < 2) return false;
     const tld = parts[parts.length - 1];
-    if (tld.length < 2) return false;
+    if (!/^[a-zA-Z]{2,}$/.test(tld)) return false;
     return true;
+}
+
+/**
+ * If an email field contains multiple comma-separated addresses,
+ * return the first one that passes RFC 5321 validation.
+ * Returns null if none are valid.
+ */
+function pickBestEmail(rawEmail) {
+    if (!rawEmail || typeof rawEmail !== 'string') return null;
+    const candidates = rawEmail.split(/[,;\s]+/).map(e => e.trim()).filter(Boolean);
+    for (const candidate of candidates) {
+        if (isValidEmail(candidate)) return candidate;
+    }
+    return null;
 }
 
 function todayStr() {
@@ -204,13 +218,17 @@ async function recordSent(accountId) {
 // ── Main sendEmail (load-balancer aware) ─────────────────────
 
 async function sendEmail(to, subject, html, userId) {
-    // ── Validate recipient address before touching SMTP ──────
-    if (!isValidEmail(to)) {
-        const err = new Error(`Invalid email address: "${to}" — skipping (not a valid RFC 5321 address).`);
+    // ── Handle comma-separated email fields: pick first valid address ────
+    // Leads sometimes have multiple emails stored as "wght@300..900,info@real.com"
+    const resolvedTo = pickBestEmail(to);
+    if (!resolvedTo) {
+        const err = new Error(`Invalid email address: "${to}" — no valid RFC 5321 address found.`);
         err.code = 'INVALID_EMAIL';
-        logger.error(`Skipping send — invalid recipient address: ${to}`, err);
+        logger.error(`Skipping send — no valid recipient in: ${to}`, err);
         throw err;
     }
+    // Use the resolved (clean) email going forward
+    to = resolvedTo;
 
     logger.log(`Attempting to send email to: ${to} (Subject: "${subject}") for user: ${userId}`, 'EMAIL');
 
@@ -239,8 +257,9 @@ async function sendEmail(to, subject, html, userId) {
         };
     }
 
+    let transporter;
     try {
-        const transporter = createTransport(cfg);
+        transporter = createTransport(cfg);
         const fromName = cfg.from || cfg.smtp_from || 'Lead Automation';
         const fromUser = cfg.user || cfg.smtp_user;
         const info = await transporter.sendMail({
@@ -260,6 +279,10 @@ async function sendEmail(to, subject, html, userId) {
     } catch (e) {
         logger.error(`Failed to send email to ${to} via ${maskEmail(cfg.user || cfg.smtp_user)}`, e);
         throw e;
+    } finally {
+        if (transporter) {
+            transporter.close();
+        }
     }
 }
 
@@ -270,8 +293,9 @@ async function testSmtpAccountById(accountId, userId) {
     if (!acct) return { success: false, error: 'Account not found.' };
 
     logger.log(`Testing SMTP account: ${maskEmail(acct.smtp_user)}`, 'SMTP_TEST');
+    let t;
     try {
-        const t = createTransport({
+        t = createTransport({
             host: acct.smtp_host, port: acct.smtp_port, secure: acct.smtp_secure,
             user: acct.smtp_user, pass: acct.smtp_pass
         });
@@ -289,6 +313,10 @@ async function testSmtpAccountById(accountId, userId) {
             msg = 'SSL mismatch. Port 587 → use STARTTLS (secure=false). Port 465 → use SSL (secure=true).';
         }
         return { success: false, error: msg };
+    } finally {
+        if (t) {
+            t.close();
+        }
     }
 }
 
@@ -300,8 +328,9 @@ async function testSmtp(userId) {
     if (!cfg) {
         return { success: false, error: 'SMTP not configured — add a Gmail account in Settings → Email Accounts.' };
     }
+    let t;
     try {
-        const t = createTransport(cfg);
+        t = createTransport(cfg);
         await t.verify();
         logger.log(`✅ Legacy SMTP verified for ${maskEmail(cfg.user)}`, 'SMTP_TEST');
         return { success: true, message: '✅ SMTP connection verified!' };
@@ -316,6 +345,10 @@ async function testSmtp(userId) {
             msg = 'SSL/TLS mismatch. Port 587 → No (STARTTLS); Port 465 → Yes (SSL).';
         }
         return { success: false, error: msg };
+    } finally {
+        if (t) {
+            t.close();
+        }
     }
 }
 
@@ -348,6 +381,7 @@ async function migrateOldSettingsIfNeeded(userId) {
 module.exports = {
     sendEmail,
     isValidEmail,
+    pickBestEmail,
     testSmtp,
     testSmtpAccountById,
     migrateOldSettingsIfNeeded,

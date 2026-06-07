@@ -277,7 +277,7 @@ app.use(express.static(path.join(__dirname, 'dashboard')));
 const { connectDB, isConnected }  = require('./services/mongodb');
 const { categorize, ALL_CATEGORIES } = require('./services/categories');
 const { exportLeads }             = require('./services/excel');
-const { sendEmail, testSmtp, testSmtpAccountById, migrateOldSettingsIfNeeded } = require('./services/email-sender');
+const { sendEmail, testSmtp, testSmtpAccountById, migrateOldSettingsIfNeeded, pickBestEmail } = require('./services/email-sender');
 const { buildInitialWA, buildFollowupWA, buildInitialEmail, buildFollowupEmail, daysSince } = require('./services/ai-messages');
 const { setTemplates } = require('./services/templates-cache');
 const googleContacts = require('./services/google-contacts');
@@ -345,31 +345,63 @@ app.get('/api/db-status', (req, res) => res.json({ connected: isConnected() }));
 app.get('/api/stats', async (req, res) => {
     try {
         const userId = uid(req);
-        const total     = await Lead.countDocuments({ userId });
-        const pending   = await Lead.countDocuments({ userId, wa_sent: false });
-        const waSent    = await Lead.countDocuments({ userId, wa_sent: true });
-        const emailSent = await Lead.countDocuments({ userId, email_sent: true });
-        const contacted = await Lead.countDocuments({
-            userId,
-            $or: [
-                { status: 'contacted' },
-                { wa_sent: true },
-                { email_sent: true }
-            ]
-        });
-        const followup  = await Lead.countDocuments({ userId, next_followup: { $lte: new Date() } });
         const today = todayStr();
-        const waToday = await Lead.countDocuments({ userId, wa_last_date: today });
-        const emailToday = await Lead.countDocuments({ userId, email_last_date: today });
-        // Per-category breakdown
-        const catAgg = await Lead.aggregate([
-            { $match: { userId } },
-            { $group: { _id: '$category', count: { $sum: 1 } } },
-            { $sort: { count: -1 } }
+
+        // Run all queries in parallel to avoid sequential blocking & DB connection overhead
+        const [
+            total,
+            pending,
+            waSent,
+            emailSent,
+            contacted,
+            followup,
+            waToday,
+            emailToday,
+            catAgg,
+            scraperConfig
+        ] = await Promise.all([
+            Lead.countDocuments({ userId }).catch(() => 0),
+            Lead.countDocuments({ userId, wa_sent: false }).catch(() => 0),
+            Lead.countDocuments({ userId, wa_sent: true }).catch(() => 0),
+            Lead.countDocuments({ userId, email_sent: true }).catch(() => 0),
+            Lead.countDocuments({
+                userId,
+                $or: [
+                    { status: 'contacted' },
+                    { wa_sent: true },
+                    { email_sent: true }
+                ]
+            }).catch(() => 0),
+            Lead.countDocuments({ userId, next_followup: { $lte: new Date() } }).catch(() => 0),
+            Lead.countDocuments({ userId, wa_last_date: today }).catch(() => 0),
+            Lead.countDocuments({ userId, email_last_date: today }).catch(() => 0),
+            Lead.aggregate([
+                { $match: { userId } },
+                { $group: { _id: '$category', count: { $sum: 1 } } },
+                { $sort: { count: -1 } }
+            ]).catch(() => []),
+            (async () => {
+                const activeMongoose = global.activeMongoose || require('mongoose');
+                const AutoScraperModel = activeMongoose.models.AutoScraper || require('./models/AutoScraper');
+                return AutoScraperModel.findOne({ userId }).catch(() => null);
+            })()
         ]);
-        const categoryBreakdown = catAgg.map(c => ({ name: c._id || 'Uncategorized', count: c.count }));
-        res.json({ total, pending, waSent, emailSent, contacted, followup, waToday, emailToday, categoryBreakdown });
-    } catch(e) { res.json({ total:0, pending:0, waSent:0, emailSent:0, contacted:0, followup:0, waToday:0, emailToday:0, categoryBreakdown:[] }); }
+
+        const categoryBreakdown = (catAgg || []).map(c => ({ name: c._id || 'Uncategorized', count: c.count }));
+        const autoScraperEnabled = scraperConfig ? !!scraperConfig.enabled : false;
+        const autoScraperStatus = scraperConfig ? scraperConfig.status : 'Stopped';
+
+        res.json({ 
+            total, pending, waSent, emailSent, contacted, followup, waToday, emailToday, categoryBreakdown,
+            autoScraperEnabled, autoScraperStatus
+        });
+    } catch(e) { 
+        console.error('Stats aggregation failed:', e);
+        res.json({ 
+            total:0, pending:0, waSent:0, emailSent:0, contacted:0, followup:0, waToday:0, emailToday:0, categoryBreakdown:[],
+            autoScraperEnabled: false, autoScraperStatus: 'Stopped'
+        }); 
+    }
 });
 
 
@@ -1751,6 +1783,136 @@ app.get('/api/wa/daily-stats', requireAuth, (req, res) => {
     }
 });
 
+// Helper to execute a task (like WhatsApp sending) while temporarily pausing the Auto-Scraper to avoid resource conflicts.
+async function executeWithPausedScraper(userId, runTask) {
+    const { stopAutoScraper, startAutoScraper } = require('./services/auto-scraper');
+    const activeMongoose = global.activeMongoose || require('mongoose');
+    const AutoScraperModel = activeMongoose.models.AutoScraper || require('./models/AutoScraper');
+    
+    let wasActive = false;
+    try {
+        const config = await AutoScraperModel.findOne({ userId });
+        if (config && config.enabled) {
+            wasActive = true;
+            console.log(`[SCRAPER AUTO-PAUSE] Pausing background scraper for user ${userId} to avoid browser conflict during WhatsApp campaign.`);
+            await stopAutoScraper(userId);
+            // Wait 2 seconds for browser context / scraper cycle to gracefully exit
+            await new Promise(r => setTimeout(r, 2000));
+        }
+    } catch (err) {
+        console.error('[SCRAPER AUTO-PAUSE] Error pausing auto-scraper:', err.message);
+    }
+
+    try {
+        await runTask();
+    } finally {
+        if (wasActive) {
+            try {
+                console.log(`[SCRAPER AUTO-RESUME] Resuming background scraper for user ${userId} now that WhatsApp campaign has completed.`);
+                await startAutoScraper(userId);
+            } catch (err) {
+                console.error('[SCRAPER AUTO-RESUME] Error resuming auto-scraper:', err.message);
+            }
+        }
+    }
+}
+
+// ── POST Bulk Clean Invalid Emails from Leads ──────────────────
+// Scans all leads for the current user, picks the best valid email
+// from comma-separated fields, cleans the DB record, and marks
+// permanently invalid emails so the scheduler skips them.
+app.post('/api/leads/clean-emails', requireAuth, async (req, res) => {
+    const userId = uid(req);
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+    res.json({ success: true, message: 'Email cleanup started in background — check console for progress.' });
+
+    setImmediate(async () => {
+        try {
+            const leads = await Lead.find({ userId, email: { $exists: true, $ne: '' } }).lean();
+            let cleaned = 0, marked = 0, already_ok = 0;
+
+            for (const lead of leads) {
+                const resolvedEmail = pickBestEmail(lead.email);
+                if (!resolvedEmail) {
+                    // No valid email at all — mark as invalid
+                    if (!lead.email_invalid) {
+                        await Lead.findOneAndUpdate({ _id: lead._id, userId }, {
+                            $set: { email_invalid: true },
+                            $push: { activity: { type: 'email_invalid', message: `Bulk cleanup: no valid RFC 5321 address in "${lead.email}" — skipped permanently.`, date: new Date() } }
+                        });
+                        marked++;
+                    }
+                } else if (resolvedEmail !== lead.email) {
+                    // Clean up comma-separated or garbage prefix
+                    await Lead.findOneAndUpdate({ _id: lead._id, userId }, {
+                        $set: { email: resolvedEmail, email_invalid: false }
+                    });
+                    cleaned++;
+                } else {
+                    already_ok++;
+                }
+            }
+
+            console.log(`📧 Email bulk cleanup done for user ${userId}: ${cleaned} cleaned, ${marked} marked invalid, ${already_ok} already OK.`);
+            if (global.emit) {
+                global.emit({ type: 'status', message: `✅ Email cleanup done: ${cleaned} cleaned, ${marked} permanently invalid, ${already_ok} already OK.` });
+            }
+        } catch (e) {
+            console.error('Email bulk cleanup error:', e.message);
+        }
+    });
+});
+
+// ── POST Bulk Clean Invalid Phones from Leads ──────────────────
+// Mirrors the email cleanup: scans all leads, picks the best valid
+// Indian mobile from comma-separated phone fields, normalises it,
+// cleans the DB record, and marks permanently invalid numbers so
+// the WA scheduler never retries them.
+app.post('/api/leads/clean-phones', requireAuth, async (req, res) => {
+    const userId = uid(req);
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+    res.json({ success: true, message: 'Phone cleanup started in background — check console for progress.' });
+
+    setImmediate(async () => {
+        try {
+            const { pickBestPhone } = require('./playwright-sender');
+            const leads = await Lead.find({ userId, phone: { $exists: true, $ne: '' } }).lean();
+            let cleaned = 0, marked = 0, already_ok = 0;
+
+            for (const lead of leads) {
+                const resolvedPhone = pickBestPhone(lead.phone);
+                if (!resolvedPhone) {
+                    // No valid mobile at all — mark as WA invalid
+                    if (!lead.wa_invalid) {
+                        await Lead.findOneAndUpdate({ _id: lead._id, userId }, {
+                            $set: { wa_invalid: true },
+                            $push: { activity: { type: 'wa_invalid', message: `Bulk cleanup: no valid Indian mobile in "${lead.phone}" — skipped permanently.`, date: new Date() } }
+                        });
+                        marked++;
+                    }
+                } else if (resolvedPhone !== lead.phone) {
+                    // Normalise and clean the phone field in DB
+                    await Lead.findOneAndUpdate({ _id: lead._id, userId }, {
+                        $set: { phone: resolvedPhone, wa_invalid: false }
+                    });
+                    cleaned++;
+                } else {
+                    already_ok++;
+                }
+            }
+
+            console.log(`📱 Phone bulk cleanup done for user ${userId}: ${cleaned} normalised, ${marked} marked invalid, ${already_ok} already OK.`);
+            if (global.emit) {
+                global.emit({ type: 'status', message: `✅ Phone cleanup done: ${cleaned} normalised, ${marked} permanently invalid, ${already_ok} already OK.` });
+            }
+        } catch (e) {
+            console.error('Phone bulk cleanup error:', e.message);
+        }
+    });
+});
+
 // ── POST Send WhatsApp (Local Automation via Playwright) ──────
 app.post('/api/send/wa', async (req, res) => {
     const userId = uid(req);
@@ -1766,8 +1928,10 @@ app.post('/api/send/wa', async (req, res) => {
     const msg = gateway === 'ultramsg' ? 'UltraMsg Cloud API send started!' : 'Local WA Auto-send started!';
     res.json({ success: true, message: msg });
     setImmediate(async () => {
-        const { sendWA } = require('./services/whatsapp-dispatcher');
-        await sendWA(allowedIds, false, { skipWaSent: !!skipWaSent, companyId: userId });
+        await executeWithPausedScraper(userId, async () => {
+            const { sendWA } = require('./services/whatsapp-dispatcher');
+            await sendWA(allowedIds, false, { skipWaSent: !!skipWaSent, companyId: userId });
+        });
     });
 });
 
@@ -1781,8 +1945,10 @@ app.post('/api/send/wa-draft', async (req, res) => {
     if (!allowedIds.length) return res.status(400).json({ error: 'No authorized leads selected' });
     res.json({ success: true, message: '📝 Draft mode started — WhatsApp will open and pre-fill all messages!' });
     setImmediate(async () => {
-        const { sendLocalWA_Draft } = require('./playwright-sender');
-        await sendLocalWA_Draft(allowedIds, false, { skipWaSent: !!skipWaSent, companyId: userId });
+        await executeWithPausedScraper(userId, async () => {
+            const { sendLocalWA_Draft } = require('./playwright-sender');
+            await sendLocalWA_Draft(allowedIds, false, { skipWaSent: !!skipWaSent, companyId: userId });
+        });
     });
 });
 
@@ -1796,8 +1962,10 @@ app.post('/api/send/wa-manual', async (req, res) => {
     if (!allowedIds.length) return res.status(400).json({ error: 'No authorized leads selected' });
     res.json({ success: true, message: '👆 Manual WA mode started — WhatsApp will open. Click Send for each lead!' });
     setImmediate(async () => {
-        const { sendLocalWA_Manual } = require('./playwright-sender');
-        await sendLocalWA_Manual(allowedIds, false, { skipWaSent: !!skipWaSent, companyId: userId });
+        await executeWithPausedScraper(userId, async () => {
+            const { sendLocalWA_Manual } = require('./playwright-sender');
+            await sendLocalWA_Manual(allowedIds, false, { skipWaSent: !!skipWaSent, companyId: userId });
+        });
     });
 });
 
@@ -1829,25 +1997,30 @@ app.post('/api/send/email', async (req, res) => {
                     continue;
                 }
 
-                // ── Validate email format before touching SMTP ────────────
-                const { isValidEmail } = require('./services/email-sender');
-                if (!isValidEmail(lead.email)) {
+                // ── Validate + resolve email before touching SMTP (handles comma-separated fields) ──
+                const resolvedEmail = pickBestEmail(lead.email);
+                if (!resolvedEmail) {
                     skipped++;
                     failed++;
                     emit({ type: 'failed', name: lead.name,
-                        reason: `❌ Invalid email address: "${lead.email}" — this looks like a CSS/font value scraped by mistake. Use "Extract Emails" to re-scrape.`,
+                        reason: `❌ No valid email in: "${lead.email}" — this may be a CSS/font value scraped by mistake. Use "Extract Emails" to re-scrape.`,
                         sent, failed });
                     // Mark permanently so scheduler won't retry either
                     await Lead.findOneAndUpdate({ _id: lead._id, userId }, {
                         $set: { email_invalid: true },
-                        $push: { activity: { type: 'email_invalid', message: `Email "${lead.email}" is not a valid RFC 5321 address — skipped permanently.`, date: new Date() } }
+                        $push: { activity: { type: 'email_invalid', message: `No valid RFC 5321 address in "${lead.email}" — skipped permanently.`, date: new Date() } }
                     });
                     continue;
+                }
+                // If email field had garbage/multiple, clean it
+                if (resolvedEmail !== lead.email) {
+                    await Lead.findOneAndUpdate({ _id: lead._id, userId }, { $set: { email: resolvedEmail } });
+                    lead.email = resolvedEmail;
                 }
 
                 try {
                     const { subject, html } = await buildInitialEmail(lead);
-                    await sendEmail(lead.email, subject, html, userId);
+                    await sendEmail(resolvedEmail, subject, html, userId);
                     await Lead.findOneAndUpdate({ _id: lead._id, userId }, {
                         $inc:  { email_count: 1 },
                         $set:  { email_sent: true, email_last_date: todayStr() },
@@ -1901,8 +2074,10 @@ app.post('/api/send/followup', async (req, res) => {
             const matchingLeads = await Lead.find({ _id: { $in: ids }, userId }).select('_id');
             const allowedIds = matchingLeads.map(l => l._id.toString());
             if (allowedIds.length) {
-                const { sendWA } = require('./services/whatsapp-dispatcher');
-                await sendWA(allowedIds, true, { companyId: userId });
+                await executeWithPausedScraper(userId, async () => {
+                    const { sendWA } = require('./services/whatsapp-dispatcher');
+                    await sendWA(allowedIds, true, { companyId: userId });
+                });
             }
         }
 

@@ -165,7 +165,7 @@ async function findContactLinks(page, baseUrl) {
     }
 }
 
-async function extractEmailsForLeads(leadIds, userId, onProgress) {
+async function extractEmailsForLeads(leadIds, userId, onProgress, shouldCancel = null, registerBrowser = null) {
     const filter = { userId };
     if (leadIds?.length) {
         filter._id = { $in: leadIds };
@@ -192,6 +192,10 @@ async function extractEmailsForLeads(leadIds, userId, onProgress) {
         args: ['--no-sandbox', '--disable-setuid-sandbox']
     });
 
+    if (registerBrowser) {
+        registerBrowser(browser);
+    }
+
     const context = await browser.newContext({
         ignoreHTTPSErrors: true,
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -200,6 +204,10 @@ async function extractEmailsForLeads(leadIds, userId, onProgress) {
     let extracted = 0, failed = 0;
 
     for (let i = 0; i < targetLeads.length; i++) {
+        if (shouldCancel && await shouldCancel()) {
+            console.log(`🤖 [AutoScraper:${userId}] [EMAIL EXTRACTOR] Crawling cancelled by caller.`);
+            break;
+        }
         const lead = targetLeads[i];
         let startUrl = lead.website.trim();
         if (!startUrl.startsWith('http')) startUrl = 'https://' + startUrl;

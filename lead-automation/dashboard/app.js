@@ -99,6 +99,10 @@ async function loadStats(){
         ).join('') +
         '<span class="cat-count-chip" onclick="clearCatFilter()" style="background:#1e293b;border-color:#475569" title="Show All">All <span class="cat-count-num" style="background:#475569">'+ s.total +'</span></span>';
     }
+
+    if (s.autoScraperEnabled !== undefined) {
+      updateQuickScraperUI(s.autoScraperStatus, s.autoScraperEnabled);
+    }
   }catch(e){}
 }
 
@@ -1598,6 +1602,7 @@ loadUserSession();
 fetchLeads(1);
 loadFilters();
 loadStats();
+setInterval(loadStats, 10000);
 loadSettings();
 checkConnections();
 
@@ -5547,3 +5552,59 @@ async function pollCampaignStatus() {
     console.error('Error polling campaign status:', err);
   }
 }
+
+// ── Quick Scraper Control Helper Functions ──────────────────────────────
+async function toggleQuickScraper() {
+  const btn = document.getElementById('quick-scraper-btn');
+  const statusEl = document.getElementById('quick-scraper-status');
+  if (!btn || !statusEl) return;
+  const isRunning = btn.textContent === 'Stop' || statusEl.textContent.includes('RUNNING');
+  
+  btn.disabled = true;
+  btn.textContent = '⏳';
+  try {
+    const res = await fetch('/api/auto-scraper', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: !isRunning })
+    });
+    const data = await res.json();
+    if (data.success && data.config) {
+      updateQuickScraperUI(data.config.status, data.config.enabled);
+    }
+  } catch (e) {
+    console.error('toggleQuickScraper error:', e);
+    alert('Error toggling scraper: ' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function updateQuickScraperUI(status, enabled) {
+  const statusEl = document.getElementById('quick-scraper-status');
+  const btn = document.getElementById('quick-scraper-btn');
+  if (!statusEl || !btn) return;
+  if (!enabled) {
+    statusEl.textContent = '🔴 STOPPED';
+    statusEl.style.background = '#ef4444';
+    btn.textContent = 'Start';
+    btn.style.background = '#16a34a';
+    btn.style.color = '#fff';
+    btn.style.border = 'none';
+  } else {
+    let text = '🟢 RUNNING';
+    let color = '#22c55e';
+    if (status === 'Target Reached') { text = '🎯 TARGET REACHED'; color = '#10b981'; }
+    else if (status === 'Scraping Maps') { text = '⚡ SCRAPING MAPS'; color = '#0ea5e9'; }
+    else if (status === 'Extracting Contacts') { text = '🌐 EXTRACTING'; color = '#8b5cf6'; }
+    else if (status === 'Idle') { text = '⏳ IDLE'; color = '#d97706'; }
+
+    statusEl.textContent = text;
+    statusEl.style.background = color;
+    btn.textContent = 'Stop';
+    btn.style.background = '#ef4444';
+    btn.style.color = '#fff';
+    btn.style.border = 'none';
+  }
+}
+

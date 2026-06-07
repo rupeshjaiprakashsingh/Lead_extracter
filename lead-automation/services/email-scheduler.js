@@ -5,7 +5,7 @@
 // ============================================================
 const cron     = require('node-cron');
 const mongoose = require('mongoose');
-const { sendEmail, isValidEmail } = require('./email-sender');
+const { sendEmail, isValidEmail, pickBestEmail } = require('./email-sender');
 const { buildInitialEmail } = require('./ai-messages');
 
 let _hourlyJob = null;
@@ -136,20 +136,21 @@ async function runScheduledSendForRule(schedule) {
             }
 
             try {
-                // ── Validate email before sending ──────────────────
-                if (!isValidEmail(lead.email)) {
-                    console.warn(`⏰ Email Scheduler: Skipping lead "${lead.name}" — invalid email address: "${lead.email}"`);
+                // ── Validate email before sending (handles comma-separated lists) ──
+                const resolvedEmail = pickBestEmail(lead.email);
+                if (!resolvedEmail) {
+                    console.warn(`⏰ Email Scheduler: Skipping lead "${lead.name}" — no valid email in: "${lead.email}"`);
                     // Mark in DB so it is never picked up again
                     await Lead.findOneAndUpdate({ _id: lead._id, userId }, {
                         $set: { email_invalid: true },
-                        $push: { activity: { type: 'email_invalid', message: `Email address "${lead.email}" is not a valid RFC 5321 address — skipped permanently.`, date: new Date() } }
+                        $push: { activity: { type: 'email_invalid', message: `Email "${lead.email}" has no valid RFC 5321 address — skipped permanently.`, date: new Date() } }
                     });
                     failed++;
                     if (global.emit) {
                         global.emit({
                             type: 'failed',
                             name: lead.name || lead.email,
-                            reason: `Invalid email address: "${lead.email}"`,
+                            reason: `No valid email address in: "${lead.email}"`,
                             sent,
                             failed,
                             total: leads.length
@@ -157,9 +158,16 @@ async function runScheduledSendForRule(schedule) {
                     }
                     continue;
                 }
+                // If email field had garbage/multiple addresses, clean it in DB
+                if (resolvedEmail !== lead.email) {
+                    await Lead.findOneAndUpdate({ _id: lead._id, userId }, {
+                        $set: { email: resolvedEmail }
+                    });
+                    lead.email = resolvedEmail;
+                }
 
                 const { subject, html } = await buildInitialEmail(lead);
-                await sendEmail(lead.email, subject, html, userId);
+                await sendEmail(resolvedEmail, subject, html, userId);
                 
                 await Lead.findOneAndUpdate({ _id: lead._id, userId }, {
                     $inc:  { email_count: 1 },

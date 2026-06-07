@@ -73,6 +73,8 @@ leadSchema.index({ userId: 1, email_sent: 1, createdAt: -1 });
 leadSchema.index({ userId: 1, rating: -1, createdAt: 1, email: 1 });
 leadSchema.index({ userId: 1, temperature: 1, rating: -1, createdAt: 1, email: 1 });
 leadSchema.index({ userId: 1, next_followup: 1 });
+leadSchema.index({ userId: 1, wa_last_date: 1 });
+leadSchema.index({ userId: 1, email_last_date: 1 });
 
 leadSchema.pre('save', async function() {
     const hasPhone = !!(this.phone && this.phone.trim());

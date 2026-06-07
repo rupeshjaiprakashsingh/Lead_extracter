@@ -111,6 +111,12 @@
   </style>
   <div class="ctrl">
     <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <!-- Auto-Scraper Quick Control Widget -->
+      <div id="quick-scraper-widget" style="display:inline-flex;align-items:center;gap:6px;background:rgba(30,41,59,0.5);border:1px solid #334155;border-radius:20px;padding:4px 12px;font-size:11px;color:#cbd5e1;margin-right:8px;backdrop-filter:blur(8px)">
+        <span style="font-weight:600">🤖 Extractor:</span>
+        <span id="quick-scraper-status" class="badge-sm s-err" style="padding:2px 8px;font-size:9px;font-weight:700;line-height:1">🔴 STOPPED</span>
+        <button id="quick-scraper-btn" class="btn" style="padding:3px 10px;font-size:10px;line-height:1;min-width:45px;background:#1e293b;border:1px solid #475569;color:#cbd5e1;border-radius:12px;margin:0" onclick="toggleQuickScraper()">Start</button>
+      </div>
       <button class="btn b-auto" id="btn-autosend" onclick="startAutoSend()">🚀 Auto-Send WA</button>
       <button class="btn b-green" onclick="startFollowup('wa')">🔄 Follow-Up WA</button>
       <button class="btn b-purple" id="btn-schedule" onclick="openSchedule()">⏰ Auto Schedule</button>

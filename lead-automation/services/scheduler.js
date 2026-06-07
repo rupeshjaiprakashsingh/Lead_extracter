@@ -8,7 +8,7 @@
 // ============================================================
 const cron     = require('node-cron');
 const mongoose = require('mongoose');
-const { isValidEmail } = require('./email-sender');
+const { isValidEmail, pickBestEmail } = require('./email-sender');
 
 let _minuteJob = null;
 let _reportJob  = null;
@@ -237,7 +237,7 @@ async function runScheduledSendForRule(schedule) {
 
                 if (leads.length) {
                     console.log(`\n📧 Email Schedule "${schedule.name}": sending ${leads.length} emails for company ${companyKey}`);
-                    const { sendEmail } = require('./email-sender');
+                    const { sendEmail, pickBestEmail } = require('./email-sender');
                     const { buildInitialEmail } = require('./ai-messages');
 
                     for (let i = 0; i < leads.length; i++) {
@@ -246,19 +246,25 @@ async function runScheduledSendForRule(schedule) {
                         if (i > 0) {
                             await new Promise(r => setTimeout(r, 2000 + Math.random() * 3000));
                         }
-                        // ── Validate email before sending ─────────────
-                        if (!isValidEmail(lead.email)) {
-                            console.warn(`⏰ Scheduler: Skipping "${lead.name}" — invalid email: "${lead.email}"`);
+                        // ── Validate email before sending (handles comma-separated lists) ──
+                        const resolvedEmail = pickBestEmail(lead.email);
+                        if (!resolvedEmail) {
+                            console.warn(`⏰ Scheduler: Skipping "${lead.name}" — no valid email in: "${lead.email}"`);
                             await Lead.findByIdAndUpdate(lead._id, {
                                 $set:  { email_invalid: true },
-                                $push: { activity: { type: 'email_invalid', message: `Email "${lead.email}" is not a valid address — skipped permanently.`, date: new Date() } }
+                                $push: { activity: { type: 'email_invalid', message: `Email "${lead.email}" has no valid address — skipped permanently.`, date: new Date() } }
                             });
                             emailResult.failed++;
                             continue;
                         }
+                        // If email field had garbage/multiple addresses, clean it in DB
+                        if (resolvedEmail !== lead.email) {
+                            await Lead.findByIdAndUpdate(lead._id, { $set: { email: resolvedEmail } });
+                            lead.email = resolvedEmail;
+                        }
                         try {
                             const { subject, html } = await buildInitialEmail(lead);
-                            await sendEmail(lead.email, subject, html, companyKey);
+                            await sendEmail(resolvedEmail, subject, html, companyKey);
 
                             await Lead.findByIdAndUpdate(lead._id, {
                                 $inc:  { email_count: 1 },
@@ -268,7 +274,7 @@ async function runScheduledSendForRule(schedule) {
                             emailResult.sent++;
                         } catch(err) {
                             emailResult.failed++;
-                            console.error(`⏰ Email fail for ${lead.email}:`, err.message);
+                            console.error(`⏰ Email fail for ${resolvedEmail}:`, err.message);
                         }
                     }
                 } else {
