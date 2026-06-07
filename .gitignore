@@ -39,3 +39,7 @@ Thumbs.db
 # App Data
 leads.json
 leads.json.bak
+*.dat
+/lead-automation/wa_sessions/6a118ad7233c520ca1587307/Crashpad
+/lead-automation/wa_sessions
+/lead-automation/wa_sessions
