@@ -269,16 +269,15 @@ async function scrapeWebsite(url) {
     console.log(`🌐 Scraper: Crawling website: ${targetUrl}`);
     
     // 1. Try fast fetch first
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
     try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
         const res = await fetch(targetUrl, {
             signal: controller.signal,
             headers: { 
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' 
             }
         });
-        clearTimeout(timeoutId);
         if (res.ok) {
             const html = await res.text();
             const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
@@ -308,6 +307,8 @@ async function scrapeWebsite(url) {
         }
     } catch(e) {
         console.log(`⚠️ Scraper: Fetch failed (${e.message}). Falling back to Playwright...`);
+    } finally {
+        clearTimeout(timeoutId);
     }
 
     // 2. Playwright fallback (headless browser)
